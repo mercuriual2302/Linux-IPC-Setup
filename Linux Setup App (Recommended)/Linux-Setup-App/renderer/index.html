@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src * data:blob; script-src 'self'">
+  <title>Linux IPC Setup Console</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="tc-root">
+
+  
+  <div class="header">
+    <div class="header-logo">
+      <img src="Tux.svg" height="38" alt="Tux" style="display:block">
+    </div>
+    <div>
+      <div class="header-title">LINUX IPC SETUP CONSOLE</div>
+      <div class="header-sub">Automated provisioning tool</div>
+    </div>
+    <div class="header-right">
+      <button class="theme-toggle" id="theme-toggle" title="Switch theme">☀ LIGHT</button>
+      <div class="global-conn-badge" id="global-conn">
+        <span class="status-dot" id="global-dot"></span>
+        <span id="global-conn-text">NOT CONNECTED</span>
+      </div>
+    </div>
+  </div>
+
+
+  <div class="tab-bar">
+    <div class="tab active" data-tab="setup">01 // FULL SETUP</div>
+    <div class="tab" data-tab="tf1200">02 // TF1200 CONFIG</div>
+    <div class="tab" data-tab="cxmgmt">03 // CX MANAGEMENT</div>
+    <div class="tab" data-tab="script">04 // TERMINAL / SCRIPT</div>
+  </div>
+
+  <div class="page-scroll">
+
+  <!-- PAGE 1: FULL SETUP  -->
+  <div class="page active" id="page-setup">
+    <div class="status-bar">
+      <div class="status-dot" id="conn-dot"></div>
+      <span id="conn-status">not connected</span>
+      <span style="margin-left:auto;color:var(--tc-accent)">twincat_auto_setup.sh</span>
+    </div>
+
+    <div class="section">
+      <div class="section-label">connection</div>
+      <div class="row-inline" style="margin-bottom:1rem">
+        <div class="field" style="margin-bottom:0">
+          <label>CX IP ADDRESS</label>
+          <input type="text" id="cx-ip" placeholder="e.g. 192.168.1.100" autocomplete="off">
+        </div>
+        <button class="test-btn" id="btn-test">TEST CONNECTION</button>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label>ADMINISTRATOR PASSWORD</label>
+          <input type="password" id="cx-pass" placeholder="default: 1" value="1" autocomplete="off">
+          <div class="hint">Shared across all tabs — enter once, used everywhere</div>
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label>MYBECKHOFF USERNAME</label>
+          <input type="text" id="bk-user" placeholder="username@company.com" autocomplete="off">
+        </div>
+        <div class="field">
+          <label>MYBECKHOFF PASSWORD</label>
+          <input type="password" id="bk-pass" placeholder="••••••••" autocomplete="off">
+        </div>
+      </div>
+      <div class="row-inline" style="margin-top:-.25rem;margin-bottom:.5rem;align-items:center;gap:.75rem">
+        <button class="sel-btn" id="btn-validate-creds" style="font-size:11px;padding:.35rem .9rem">✓ VALIDATE MYBECKHOFF CREDENTIALS</button>
+        <span id="creds-status" style="font-family:var(--tc-mono);font-size:10px;color:var(--tc-muted)"></span>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-label">apt feed</div>
+      <div class="field">
+        <label>REPOSITORY CHANNEL</label>
+        <div class="toggle-group" id="feed-toggle">
+          <div class="toggle-opt active" data-val="trixie-stable">trixie-stable</div>
+          <div class="toggle-opt" data-val="trixie-unstable">trixie-unstable</div>
+        </div>
+        <div class="hint" id="feed-hint">Recommended · production-ready packages</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-label">packages</div>
+
+      <div class="pkg-section-hdr">Runtime — always installed</div>
+      <div class="pkg-grid" style="margin-bottom:.25rem">
+        <div class="pkg-card required">
+          <div class="pkg-badge badge-req">REQUIRED</div>
+          <div class="pkg-name"><span class="pkg-check"><svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></span>tc31-xar-um</div>
+          <div class="pkg-desc">TwinCAT 3 XAR base runtime</div>
+        </div>
+        <div class="pkg-card required">
+          <div class="pkg-badge badge-req">REQUIRED</div>
+          <div class="pkg-name"><span class="pkg-check"><svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></span>console-setup</div>
+          <div class="pkg-desc">Keyboard / console config</div>
+        </div>
+      </div>
+
+      <div class="pkg-section-hdr">Optional functions — click to toggle</div>
+      <div class="pkg-controls">
+        <input class="pkg-search" type="text" id="pkg-search" placeholder="filter...">
+        <button class="sel-btn fetch-btn" id="btn-fetch-pkgs" title="SSH to the CX and run apt-cache search">⟳ FETCH FROM FEED VIA CX</button>
+        <button class="sel-btn" id="sel-all">ALL</button>
+        <button class="sel-btn none-btn" id="sel-none">NONE</button>
+      </div>
+      <div class="pkg-count" id="pkg-count"></div>
+      <div class="pkg-grid" id="pkg-grid"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-label">package versions</div>
+      <div class="section-subtitle">Choose "latest" to always pull the newest from APT, or "pinned" to lock a specific version (e.g. <code style="color:var(--tc-warn)">4026.19.0</code>). Version strings are appended as <code style="color:var(--tc-warn)">apt install pkg=version</code>.</div>
+      <div id="ver-list"></div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn-run" id="btn-run-setup">▶ RUN SETUP LIVE (SSH)</button>
+      <button class="btn-run secondary" id="btn-gen-setup">GENERATE SCRIPT</button>
+    </div>
+  </div>
+
+  <!-- PAGE 2: TF1200 CONFIG  -->
+  <div class="page" id="page-tf1200">
+    <div class="status-bar">
+      <div class="status-dot" id="conn-dot2"></div>
+      <span>configure existing CX</span>
+      <span style="margin-left:auto;color:var(--tc-accent)">tf1200-config.sh</span>
+    </div>
+
+    <div class="cred-banner" id="cred-sync-banner" style="display:none">
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="#00a8e8" stroke-width="1.5"/><path d="M8 5v3.5l2 1.5" stroke="#00a8e8" stroke-width="1.5" stroke-linecap="round"/></svg>
+      <span>Credentials synced from tab 01 — CX IP: <strong id="sync-ip-label">—</strong></span>
+    </div>
+
+    <div class="section">
+      <div class="section-label">target</div>
+      <div class="row">
+        <div class="field">
+          <label>CX IP ADDRESS</label>
+          <input type="text" id="cx-ip2" placeholder="e.g. 192.168.1.100" autocomplete="off">
+        </div>
+        <div class="field">
+          <label>ADMINISTRATOR PASSWORD</label>
+          <input type="password" id="cx-pass2" placeholder="default: 1" value="1" autocomplete="off">
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-label">hmi server</div>
+      <div class="field">
+        <label>HMI SERVER URL</label>
+        <input type="text" id="hmi-url" placeholder="https://192.168.1.100:2020" autocomplete="off">
+        <div class="hint">Self-hosted: https://[CX_IP]:2020 · Remote: https://[server]:2020</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-label">tf1200 json configuration</div>
+      <div class="section-subtitle">All settings written directly to <code style="color:var(--tc-warn)">/home/TF1200/.config/TF1200-UI-Client/config.json</code> on the CX. A timestamped backup is created first.</div>
+      <div class="json-editor" id="json-editor"></div>
+    </div>
+
+    <div class="btn-row">
+      <button class="btn-run" id="btn-run-tf1200">▶ APPLY CONFIG LIVE (SSH)</button>
+      <button class="btn-run secondary" id="btn-gen-tf1200">GENERATE SCRIPT</button>
+    </div>
+  </div>
+
+
+  <!-- PAGE 3: CX MANAGEMENT -->
+  <div class="page" id="page-cxmgmt">
+    <div class="status-bar">
+      <div class="status-dot" id="conn-dot3"></div>
+      <span>manage connected CX</span>
+      <span style="margin-left:auto;color:var(--tc-accent)">cx_management</span>
+    </div>
+
+    <!-- Connection row for this tab -->
+    <div class="section">
+      <div class="section-label">connection</div>
+      <div class="row-inline" style="margin-bottom:.75rem">
+        <div class="field" style="margin-bottom:0">
+          <label>CX IP ADDRESS</label>
+          <input type="text" id="cx-ip3" placeholder="e.g. 192.168.1.100" autocomplete="off">
+        </div>
+        <div class="field" style="margin-bottom:0;max-width:180px">
+          <label>ADMINISTRATOR PASSWORD</label>
+          <input type="password" id="cx-pass3" placeholder="default: 1" value="1" autocomplete="off">
+        </div>
+      </div>
+    </div>
+
+    <!-- NETWORK CONFIGURATOR -->
+    <div class="section">
+      <div class="section-label">network configurator</div>
+      <div class="section-subtitle">Writes a systemd-networkd unit file to the CX and reloads immediately. The CX9240 has two independent Ethernet interfaces — <code style="color:var(--tc-warn)">end0</code> (X000) and <code style="color:var(--tc-warn)">end1</code> (X001).</div>
+      <div class="row-inline" style="margin-bottom:.75rem;gap:.75rem">
+        <div class="field" style="margin-bottom:0;max-width:140px">
+          <label>INTERFACE</label>
+          <div class="toggle-group" id="net-iface-toggle">
+            <div class="toggle-opt active" data-val="end0">end0 (X000)</div>
+            <div class="toggle-opt" data-val="end1">end1 (X001)</div>
+          </div>
+        </div>
+        <div class="field" style="margin-bottom:0;max-width:180px">
+          <label>MODE</label>
+          <div class="toggle-group" id="net-mode-toggle">
+            <div class="toggle-opt active" data-val="dhcp">DHCP</div>
+            <div class="toggle-opt" data-val="static">STATIC</div>
+          </div>
+        </div>
+      </div>
+      <div id="net-static-fields" style="display:none">
+        <div class="row">
+          <div class="field">
+            <label>IP ADDRESS</label>
+            <input type="text" id="net-ip" placeholder="e.g. 192.168.1.100" autocomplete="off">
+          </div>
+          <div class="field" style="max-width:120px">
+            <label>PREFIX (CIDR)</label>
+            <input type="text" id="net-prefix" placeholder="24" value="24" autocomplete="off">
+          </div>
+        </div>
+        <div class="row">
+          <div class="field">
+            <label>GATEWAY</label>
+            <input type="text" id="net-gateway" placeholder="e.g. 192.168.1.1" autocomplete="off">
+          </div>
+          <div class="field">
+            <label>DNS SERVER</label>
+            <input type="text" id="net-dns" placeholder="8.8.8.8" value="8.8.8.8" autocomplete="off">
+          </div>
+        </div>
+      </div>
+      <div class="btn-row" style="margin-top:.5rem">
+        <button class="btn-run" id="btn-apply-network">▶ APPLY NETWORK CONFIG</button>
+      </div>
+    </div>
+
+    <!-- FIREWALL MANAGER -->
+    <div class="section">
+      <div class="section-label">firewall manager</div>
+      <div class="section-subtitle">Configures nftables on the CX. Default policy is DROP — only ticked ports are opened. Disabling flushes all rules.</div>
+      <div class="field" style="margin-bottom:.75rem">
+        <label>NFTABLES</label>
+        <div class="toggle-group" id="fw-enable-toggle">
+          <div class="toggle-opt" data-val="false">DISABLED</div>
+          <div class="toggle-opt active" data-val="true">ENABLED</div>
+        </div>
+      </div>
+      <div id="fw-ports-grid" class="pkg-grid" style="margin-bottom:.5rem">
+        <div class="pkg-card" id="fw-port-2010" data-port="2010" data-proto="tcp" data-label="TF2000 HTTP">
+          <div class="pkg-badge badge-opt">TCP</div>
+          <div class="pkg-name"><span class="pkg-check fw-check"><svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></span>TF2000 HTTP</div>
+          <div class="pkg-desc">Port 2010 — HMI server unencrypted</div>
+        </div>
+        <div class="pkg-card" id="fw-port-48898" data-port="48898" data-proto="tcp" data-label="ADS TCP">
+          <div class="pkg-badge badge-opt">TCP</div>
+          <div class="pkg-name"><span class="pkg-check fw-check selected"><svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></span>ADS TCP</div>
+          <div class="pkg-desc">Port 48898 — ADS data communication</div>
+        </div>
+        <div class="pkg-card" id="fw-port-48898-udp" data-port="48898" data-proto="udp" data-label="ADS UDP">
+          <div class="pkg-badge badge-opt">UDP</div>
+          <div class="pkg-name"><span class="pkg-check fw-check selected"><svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></span>ADS UDP</div>
+          <div class="pkg-desc">Port 48898 — ADS cyclic data</div>
+        </div>
+        <div class="pkg-card" id="fw-port-48899-udp" data-port="48899" data-proto="udp" data-label="ADS Discovery">
+          <div class="pkg-badge badge-opt">UDP</div>
+          <div class="pkg-name"><span class="pkg-check fw-check selected"><svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></span>ADS Discovery</div>
+          <div class="pkg-desc">Port 48899 — TwinCAT broadcast search</div>
+        </div>
+        <div class="pkg-card" id="fw-port-8016" data-port="8016" data-proto="tcp" data-label="ADS Secure">
+          <div class="pkg-badge badge-opt">TCP</div>
+          <div class="pkg-name"><span class="pkg-check fw-check selected"><svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></span>ADS Secure</div>
+          <div class="pkg-desc">Port 8016 — Secure ADS connection</div>
+        </div>
+        <div class="pkg-card" id="fw-port-2020" data-port="2020" data-proto="tcp" data-label="TF2000 HMI">
+          <div class="pkg-badge badge-opt">TCP</div>
+          <div class="pkg-name"><span class="pkg-check fw-check"><svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></span>TF2000 HMI</div>
+          <div class="pkg-desc">Port 2020 — HMI server HTTPS</div>
+        </div>
+        <div class="pkg-card" id="fw-port-4840" data-port="4840" data-proto="tcp" data-label="OPC-UA">
+          <div class="pkg-badge badge-opt">TCP</div>
+          <div class="pkg-name"><span class="pkg-check fw-check"><svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></span>OPC-UA</div>
+          <div class="pkg-desc">Port 4840 — OPC Unified Architecture</div>
+        </div>
+        <div class="pkg-card" id="fw-port-80" data-port="80" data-proto="tcp" data-label="HTTP">
+          <div class="pkg-badge badge-opt">TCP</div>
+          <div class="pkg-name"><span class="pkg-check fw-check"><svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></span>HTTP</div>
+          <div class="pkg-desc">Port 80 — unencrypted web</div>
+        </div>
+        <div class="pkg-card" id="fw-port-443" data-port="443" data-proto="tcp" data-label="HTTPS">
+          <div class="pkg-badge badge-opt">TCP</div>
+          <div class="pkg-name"><span class="pkg-check fw-check"><svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></span>HTTPS</div>
+          <div class="pkg-desc">Port 443 — encrypted web</div>
+        </div>
+      </div>
+      <div class="row-inline" style="margin-bottom:.5rem;gap:.5rem">
+        <input type="text" id="fw-custom-port" placeholder="Custom port..." style="width:140px;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.45rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)">
+        <div class="toggle-group" id="fw-custom-proto" style="width:auto">
+          <div class="toggle-opt active" data-val="tcp">TCP</div>
+          <div class="toggle-opt" data-val="udp">UDP</div>
+        </div>
+        <button class="sel-btn" id="btn-fw-add-port">+ ADD</button>
+      </div>
+      <div class="btn-row" style="margin-top:.5rem">
+        <button class="btn-run" id="btn-apply-firewall">▶ APPLY FIREWALL CONFIG</button>
+      </div>
+    </div>
+
+    <!-- INSTALLED PACKAGES + UPDATES -->
+    <div class="section">
+      <div class="section-label">installed packages</div>
+      <div class="section-subtitle">Lists all installed TwinCAT packages on the CX and their current versions. Use <strong>CHECK FOR UPDATES</strong> to see what can be upgraded, then select and apply.</div>
+      <div class="btn-row" style="margin-bottom:.75rem;gap:.5rem">
+        <button class="btn-run secondary" id="btn-fetch-installed">⟳ FETCH INSTALLED</button>
+        <button class="btn-run secondary" id="btn-fetch-updates" style="display:none">⟳ CHECK FOR UPDATES</button>
+        <button class="btn-run" id="btn-upgrade-selected" disabled style="display:none">▲ UPGRADE SELECTED</button>
+      </div>
+      <div id="installed-result" style="display:none">
+        <div id="installed-count" style="font-family:var(--tc-mono);font-size:11px;color:var(--tc-muted);margin-bottom:.5rem"></div>
+        <div id="installed-table" style="background:var(--tc-surface2);border:1px solid var(--tc-border);border-radius:4px;overflow:hidden;font-family:var(--tc-mono);font-size:11px;max-height:300px;overflow-y:auto">
+          <div style="display:grid;grid-template-columns:1fr auto auto 36px;gap:.5rem;padding:.4rem .6rem;background:var(--tc-surface);font-size:10px;color:var(--tc-muted);font-weight:600;border-bottom:1px solid var(--tc-border)">
+            <span>PACKAGE</span><span>INSTALLED</span><span>AVAILABLE</span><span></span>
+          </div>
+          <div id="installed-rows"></div>
+        </div>
+        <div id="updates-select-all-row" style="display:none;margin-top:.4rem;font-family:var(--tc-mono);font-size:10px;color:var(--tc-muted)">
+          <label style="cursor:pointer"><input type="checkbox" id="chk-select-all-updates" style="margin-right:.4rem">Select all upgradable</label>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- PAGE 4: TERMINAL / SCRIPT OUTPUT -->
+  <div class="page" id="page-script">
+    <div class="section">
+      <div class="section-label">output</div>
+      <div class="view-toggle" id="view-toggle">
+        <div class="view-opt active" data-view="terminal">LIVE TERMINAL</div>
+        <div class="view-opt" data-view="script">SCRIPT PREVIEW</div>
+      </div>
+
+      <div class="progress-bar-wrap"><div class="progress-bar" id="prog"></div></div>
+
+      <!-- Terminal pane — holds live SSH output -->
+      <div class="output-panel terminal" id="terminal-output">
+        <span style="color:var(--tc-muted)">// terminal idle — click "RUN SETUP LIVE" or "APPLY CONFIG LIVE" to stream output</span>
+      </div>
+
+      <!-- Script pane — holds generated bash script -->
+      <div class="output-panel" id="script-output" style="display:none">
+        <span style="color:var(--tc-muted)">// configure settings on tab 01 or 02, then click GENERATE SCRIPT</span>
+      </div>
+
+      <div class="action-row">
+        <span id="session-status" style="font-family:var(--tc-mono);font-size:11px;color:var(--tc-muted);margin-right:auto"></span>
+        <button class="copy-btn danger" id="cancel-btn" style="display:none;border-color:var(--tc-danger);color:var(--tc-danger)">[ CANCEL ]</button>
+        <button class="copy-btn" id="clear-btn">[ CLEAR ]</button>
+        <button class="copy-btn" id="copy-btn">[ COPY SCRIPT ]</button>
+        <button class="copy-btn" id="dl-btn">[ SAVE .sh ]</button>
+      </div>
+    </div>
+  </div>
+
+  </div><!-- /.page-scroll -->
+</div>
+
+<!-- toast container -->
+<div id="toast" class="toast"></div>
+
+<!-- disclaimer -->
+<div id="disclaimer-overlay" class="disclaimer-overlay">
+  <div class="disclaimer-modal">
+    <div class="disclaimer-header">
+      <img src="Tux.svg" height="42" alt="Tux" style="display:block;flex-shrink:0">
+      <div>
+        <div class="disclaimer-title">LINUX SETUP CONSOLE</div>
+        <div class="disclaimer-sub">Please read before continuing</div>
+      </div>
+    </div>
+    <div class="disclaimer-body">
+      <p>This app and the associated scripts are provided <strong>"as is,"</strong> without any warranties — express or implied — including, but not limited to, accuracy, completeness, reliability, or suitability for any purpose.</p>
+      <p>The author(s) shall not be held liable for any errors, omissions, delays, or damages arising from the use or display of this information. All opinions expressed are solely those of the author(s) and do not necessarily represent those of any organisation, employer, or other entity.</p>
+      <p>Any assumptions or conclusions presented are subject to revision or rethinking at any time. Use of this information, code, or scripts provided is <strong>at your own risk.</strong> Readers are encouraged to independently verify facts.</p>
+      <p>This content does not constitute professional advice, and no client or advisory relationship is formed through its use.</p>
+    </div>
+    <div class="disclaimer-footer">
+      <label class="disclaimer-check-label">
+        <input type="checkbox" id="disclaimer-check">
+        <span>I have read and understood the above disclaimer and accept the terms of use</span>
+      </label>
+      <button class="disclaimer-btn" id="disclaimer-btn" disabled>CONTINUE</button>
+    </div>
+  </div>
+</div>
+
+<script src="renderer.js"></script>
+</body>
+</html>

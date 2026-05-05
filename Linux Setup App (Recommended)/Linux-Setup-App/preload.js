@@ -1,0 +1,43 @@
+//Stop snooping around... 
+
+
+// preload.js runs in isolated context, bridges renderer ↔ main
+const { contextBridge, ipcRenderer } = require('electron');
+
+const VALID_EVENTS = ['ssh:output', 'ssh:status'];
+
+contextBridge.exposeInMainWorld('api', {
+  // one-shot invokes — existing
+  testConnection: (opts) => ipcRenderer.invoke('ssh:test', opts),
+  fetchPackages:  (opts) => ipcRenderer.invoke('ssh:fetch-packages', opts),
+  runSetup:       (opts) => ipcRenderer.invoke('ssh:run-setup', opts),
+  runTF1200:      (opts) => ipcRenderer.invoke('ssh:run-tf1200', opts),
+  cancelSession:  (sessionId) => ipcRenderer.invoke('ssh:cancel', { sessionId }),
+  buildSetupScript:  (opts) => ipcRenderer.invoke('script:build-setup', opts),
+  buildTF1200Script: (opts) => ipcRenderer.invoke('script:build-tf1200', opts),
+  saveScript:     (content, defaultName) => ipcRenderer.invoke('script:save', { content, defaultName }),
+
+  // CX Management — new
+  validateCreds:  (opts) => ipcRenderer.invoke('cx:validate-creds', opts),
+  applyNetwork:   (opts) => ipcRenderer.invoke('cx:network', opts),
+  applyFirewall:  (opts) => ipcRenderer.invoke('cx:firewall', opts),
+  changePassword: (opts) => ipcRenderer.invoke('cx:passwd', opts),
+  tcRuntime:      (opts) => ipcRenderer.invoke('cx:tc-runtime', opts),
+  fetchUpdates:   (opts) => ipcRenderer.invoke('cx:fetch-updates', opts),
+  runUpgrade:     (opts) => ipcRenderer.invoke('cx:upgrade', opts),
+  runVerify:      (opts) => ipcRenderer.invoke('cx:verify', opts),
+
+  // streaming events
+  on: (channel, cb) => {
+    if (!VALID_EVENTS.includes(channel)) {
+      console.warn('[preload] refused unknown channel:', channel);
+      return () => {};
+    }
+    const listener = (_evt, payload) => cb(payload);
+    ipcRenderer.on(channel, listener);
+    return () => ipcRenderer.removeListener(channel, listener);
+  },
+
+  platform: process.platform,
+  versions: { ...process.versions }
+});

@@ -1,0 +1,14 @@
+node_modules/
+dist/
+out/
+build/icon-sources/
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.tmp
+.env
+.env.local
