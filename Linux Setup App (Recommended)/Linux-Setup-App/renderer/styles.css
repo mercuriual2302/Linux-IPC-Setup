@@ -293,3 +293,27 @@ html:not([data-theme="dark"]) .power-confirm-glyph.danger{background:rgba(204,0,
 .power-confirm-btn.go:hover{opacity:.85;color:#000}
 .power-confirm-btn.go.danger{background:var(--tc-danger);border-color:var(--tc-danger);color:#fff}
 .power-confirm-btn.go.danger:hover{opacity:.85;color:#fff}
+/*  User Management (CX Management tab)  */
+.um-table{border:1px solid var(--tc-border);border-radius:5px;overflow:hidden;font-family:var(--tc-mono);font-size:11px;margin-bottom:.8rem;background:var(--tc-surface2)}
+.um-head,.um-row{display:grid;grid-template-columns:1fr 70px 64px 78px;gap:.5rem;padding:.45rem .65rem;align-items:center}
+.um-head{background:var(--tc-surface);font-size:10px;color:var(--tc-muted);font-weight:600;border-bottom:1px solid var(--tc-border);letter-spacing:.04em}
+.um-row{border-top:1px solid var(--tc-border)}
+.um-name{color:var(--tc-text);font-weight:600;overflow:hidden;text-overflow:ellipsis}
+.um-uid{color:var(--tc-muted)}
+.um-badge{justify-self:start;font-size:9px;padding:.15rem .4rem;border-radius:3px;letter-spacing:.04em;background:var(--tc-bg);color:var(--tc-muted);border:1px solid var(--tc-border)}
+.um-badge.on{color:var(--tc-accent2);border-color:var(--tc-accent2)}
+.um-badge.ok{color:var(--tc-warn);border-color:transparent;background:transparent}
+.um-badge.lock{color:var(--tc-danger);border-color:var(--tc-danger)}
+.um-empty{padding:.6rem .65rem;color:var(--tc-muted);font-size:10px}
+.um-target-row{display:flex;align-items:center;gap:.6rem;margin-bottom:.4rem}
+.um-target-row .um-label{margin-bottom:0;white-space:nowrap}
+.um-label{font-family:var(--tc-mono);font-size:10px;color:var(--tc-muted);letter-spacing:.04em;text-transform:uppercase;display:block;margin-bottom:.35rem}
+.um-input{background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.45rem .65rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text);min-width:160px}
+.um-input:focus{outline:none;border-color:var(--tc-accent)}
+.um-textarea{width:100%;resize:vertical;min-height:46px;box-sizing:border-box}
+.um-inline{display:flex;flex-wrap:wrap;align-items:center;gap:.45rem}
+.um-action{padding:.7rem 0;border-top:1px solid var(--tc-border)}
+.um-add{margin-top:.3rem}
+.um-check{display:inline-flex;align-items:center;gap:.35rem;font-family:var(--tc-mono);font-size:10px;color:var(--tc-muted);cursor:pointer;white-space:nowrap}
+.sel-btn.danger{border-color:var(--tc-danger);color:var(--tc-danger)}
+.sel-btn.danger:hover{background:var(--tc-danger);color:#fff}
