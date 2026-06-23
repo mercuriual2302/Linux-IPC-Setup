@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('api', {
   applyFirewall:  (opts) => ipcRenderer.invoke('cx:firewall', opts),
   changePassword: (opts) => ipcRenderer.invoke('cx:passwd', opts),
   tcRuntime:      (opts) => ipcRenderer.invoke('cx:tc-runtime', opts),
+  power:          (opts) => ipcRenderer.invoke('cx:power', opts),
   fetchUpdates:   (opts) => ipcRenderer.invoke('cx:fetch-updates', opts),
   runUpgrade:     (opts) => ipcRenderer.invoke('cx:upgrade', opts),
   runVerify:      (opts) => ipcRenderer.invoke('cx:verify', opts),

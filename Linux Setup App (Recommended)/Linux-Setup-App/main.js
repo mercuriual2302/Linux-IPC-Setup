@@ -720,3 +720,86 @@ echo "=== END ==="
     return { ok: false, error: err.message };
   }
 });
+
+//  Power Management — shutdown / restart / TwinCAT runtime restart
+ipcMain.handle('cx:power', async (_evt, opts) => {
+  // opts: { host, password, port, action: 'shutdown' | 'restart' | 'tc-restart' }
+  const { host, password, port, action } = opts;
+  const sessionId = `power-${Date.now()}`;
+
+  const escPass = String(password || '').replace(/'/g, "'\\''");
+  const _sudo = `echo '${escPass}' | sudo -S -p ''`;
+
+  let cmd, label, expectDrop;
+  if (action === 'shutdown') {
+    cmd = `${_sudo} systemctl poweroff`;
+    label = 'Powering off the CX';
+    expectDrop = true;
+  } else if (action === 'restart') {
+    cmd = `${_sudo} systemctl reboot`;
+    label = 'Rebooting the CX';
+    expectDrop = true;
+  } else if (action === 'tc-restart') {
+    // Restart only the TwinCAT 3 runtime — the SSH session stays up.
+    // The live target image runs the runtime as TcSystemServiceUm; other images
+    // use tc31-xar, so try the first and fall back to the second.
+    cmd = `${_sudo} bash -c "systemctl restart TcSystemServiceUm 2>/dev/null || systemctl restart tc31-xar; systemctl is-active TcSystemServiceUm 2>/dev/null || systemctl is-active tc31-xar"`;
+    label = 'Restarting the TwinCAT runtime';
+    expectDrop = false;
+  } else {
+    return { ok: false, error: `Unknown power action: ${action}` };
+  }
+
+  const mgr = new SSHManager();
+  activeSessions.set(sessionId, mgr);
+  sendToRenderer('ssh:status', { sessionId, status: 'connecting', message: `Connecting to ${host}...` });
+
+  try {
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+    sendToRenderer('ssh:status', { sessionId, status: 'connected', message: `SSH OK — ${host}` });
+    sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m ${label}...\r\n` });
+
+    const result = await mgr.execStream(cmd, {
+      onStdout: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() }),
+      onStderr: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() })
+    });
+
+    mgr.dispose();
+    activeSessions.delete(sessionId);
+
+    if (expectDrop) {
+      // poweroff/reboot can return cleanly OR sever the link first — both mean success
+      const msg = action === 'shutdown' ? 'CX is powering off' : 'CX is rebooting';
+      sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;32m[LOCAL]\x1b[0m ${msg}.\r\n` });
+      sendToRenderer('ssh:status', { sessionId, status: 'complete', message: msg });
+      return { ok: true, sessionId, action, rebooted: action === 'restart' };
+    }
+
+    const ok = result.code === 0;
+    sendToRenderer('ssh:status', {
+      sessionId,
+      status: ok ? 'complete' : 'failed',
+      message: ok ? 'TwinCAT runtime restarted' : `TwinCAT runtime not active (exit ${result.code})`
+    });
+    return { ok, sessionId, action };
+
+  } catch (err) {
+    const msg = String(err.message || err);
+    const looksLikeDrop = /ECONNRESET|not connected|Connection lost|Client network socket disconnected|ETIMEDOUT|channel close/i.test(msg);
+    mgr.dispose();
+    activeSessions.delete(sessionId);
+
+    if (expectDrop && looksLikeDrop) {
+      const okMsg = action === 'shutdown'
+        ? 'CX powering off (connection dropped as expected)'
+        : 'CX rebooting (connection dropped as expected)';
+      sendToRenderer('ssh:output', { sessionId, data: `\r\n\x1b[0;32m[LOCAL]\x1b[0m ${okMsg}\r\n` });
+      sendToRenderer('ssh:status', { sessionId, status: 'complete', message: okMsg });
+      return { ok: true, sessionId, action, rebooted: action === 'restart' };
+    }
+
+    sendToRenderer('ssh:output', { sessionId, data: `\r\n\x1b[1;33m[LOCAL]\x1b[0m ${msg}\r\n` });
+    sendToRenderer('ssh:status', { sessionId, status: 'failed', message: msg });
+    return { ok: false, sessionId, action, error: msg };
+  }
+});
