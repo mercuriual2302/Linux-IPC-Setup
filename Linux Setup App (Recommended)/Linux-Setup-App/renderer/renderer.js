@@ -1136,3 +1136,142 @@ $('btn-validate-creds').addEventListener('click', async () => {
   }
 });
 // Why are you here? 
+//  POWER MANAGEMENT (header menu) — shutdown / restart / TwinCAT runtime
+(function initPowerMenu() {
+  const wrap = $('power-wrap');
+  const btn = $('power-btn');
+  const menu = $('power-menu');
+  const overlay = $('power-confirm-overlay');
+  if (!wrap || !btn || !menu || !overlay) return;
+
+  // Resolve the CX connection the same way the CX Management tab does:
+  // prefer the tab-03 fields, fall back to tab-01, default password '1'.
+  function resolveConn() {
+    const host = ($('cx-ip3') && $('cx-ip3').value.trim()) || ($('cx-ip') && $('cx-ip').value.trim()) || '';
+    const password = ($('cx-pass3') && $('cx-pass3').value) || ($('cx-pass') && $('cx-pass').value) || '1';
+    return { host, password, port: 22 };
+  }
+
+  const ACTIONS = {
+    'tc-restart': {
+      title: 'Restart the TwinCAT runtime?',
+      glyph: '↻',
+      body: (h) => `Restarts the TwinCAT 3 runtime (tc31-xar) on ${h}. The SSH connection stays up, but any running PLC tasks stop briefly while it cycles.`,
+      go: 'RESTART RUNTIME', danger: false,
+      pending: 'Restarting TwinCAT runtime…',
+      okMsg: 'TwinCAT runtime restarted',
+      failMsg: 'Runtime restart failed — see terminal'
+    },
+    'restart': {
+      title: 'Restart the CX?',
+      glyph: '⟳',
+      body: (h) => `Reboots ${h}. The connection will drop and come back in roughly 40 seconds.`,
+      go: 'RESTART', danger: false,
+      pending: 'Rebooting the CX…',
+      okMsg: 'CX is rebooting — back in ~40s',
+      failMsg: 'Restart failed — see terminal'
+    },
+    'shutdown': {
+      title: 'Shut down the CX?',
+      glyph: '⏻',
+      body: (h) => `Powers off ${h}. You'll need physical access or a remote power switch to turn it back on.`,
+      go: 'SHUT DOWN', danger: true,
+      pending: 'Powering off the CX…',
+      okMsg: 'CX is powering off',
+      failMsg: 'Shutdown failed — see terminal'
+    }
+  };
+
+  let pending = null;
+
+  function openMenu() {
+    const { host } = resolveConn();
+    $('power-menu-target').textContent = host ? `target: ${host}` : 'target: not set — enter a CX IP first';
+    menu.classList.add('open');
+    btn.classList.add('active');
+    btn.setAttribute('aria-expanded', 'true');
+  }
+  function closeMenu() {
+    menu.classList.remove('open');
+    btn.classList.remove('active');
+    btn.setAttribute('aria-expanded', 'false');
+  }
+  function closeConfirm() { overlay.classList.remove('open'); pending = null; }
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    menu.classList.contains('open') ? closeMenu() : openMenu();
+  });
+  document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) closeMenu(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { closeMenu(); if (overlay.classList.contains('open')) closeConfirm(); }
+  });
+
+  menu.querySelectorAll('.power-item').forEach((item) => {
+    item.addEventListener('click', () => {
+      const action = item.dataset.action;
+      const cfg = ACTIONS[action];
+      if (!cfg) return;
+      const { host } = resolveConn();
+      closeMenu();
+      if (!host) { toast('Enter the CX IP first (Setup or CX Management tab)', 'warn'); return; }
+
+      pending = action;
+      $('power-confirm-title').textContent = cfg.title;
+      $('power-confirm-body').textContent = cfg.body(host);
+      const glyph = $('power-confirm-glyph');
+      glyph.textContent = cfg.glyph;
+      glyph.classList.toggle('danger', !!cfg.danger);
+      const go = $('power-confirm-go');
+      go.textContent = cfg.go;
+      go.classList.toggle('danger', !!cfg.danger);
+      overlay.classList.add('open');
+    });
+  });
+
+  $('power-confirm-cancel').addEventListener('click', closeConfirm);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closeConfirm(); });
+
+  $('power-confirm-go').addEventListener('click', async () => {
+    if (!pending) return;
+    const action = pending;
+    const cfg = ACTIONS[action];
+    pending = null;
+    overlay.classList.remove('open');
+
+    const conn = resolveConn();
+    if (!conn.host) { toast('Enter the CX IP first', 'warn'); return; }
+
+    // Switch to the live terminal and prime the progress bar (mirrors RUN SETUP).
+    showTab('script');
+    setView('terminal');
+    clearTerminal();
+    $('prog').classList.add('running');
+    $('prog').style.width = '8%';
+    $('session-status').textContent = 'connecting…';
+    toast(cfg.pending, 'success');
+
+    let res;
+    if (action === 'tc-restart') {
+      // SSH stays up, so wait for the real result.
+      try { res = await window.api.power({ ...conn, action }); }
+      catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
+    } else {
+      // poweroff/reboot sever the link; a dropped connection means success.
+      // Race a timeout so a clean drop doesn't leave the UI hanging.
+      try {
+        res = await Promise.race([
+          window.api.power({ ...conn, action }),
+          new Promise((resolve) => setTimeout(() => resolve({ ok: true, timedOut: true }), 12000))
+        ]);
+      } catch (e) { res = { ok: true }; }
+    }
+
+    $('prog').classList.remove('running');
+    $('prog').style.width = '100%';
+    activeSessionId = null;
+
+    if (res && res.ok) toast(cfg.okMsg, 'success');
+    else toast(cfg.failMsg, 'error');
+  });
+})();
