@@ -1,14 +1,28 @@
+# Dependencies
 node_modules/
+
+# Build outputs
 dist/
 out/
+build/
+
+# Electron builder icon sources (large raw assets)
 build/icon-sources/
+
+# Logs
 *.log
 npm-debug.log*
+
+# OS junk
 .DS_Store
 Thumbs.db
+
+# Editor config
 .vscode/
 .idea/
 *.swp
 *.tmp
+
+# Environment / secrets
 .env
 .env.local
