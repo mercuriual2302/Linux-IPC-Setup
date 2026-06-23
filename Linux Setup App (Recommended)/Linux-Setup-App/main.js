@@ -533,7 +533,7 @@ TARGET='${targetUser}'
 _sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
 _sudo -v
 echo "[CX] Changing password for user: $TARGET"
-echo "$TARGET:$NEW_PASS" | _sudo chpasswd
+_sudo sh -c 'printf "%s:%s\\n" "$1" "$2" | chpasswd' _ "$TARGET" "$NEW_PASS"
 echo "[CX] Password changed successfully for $TARGET."
 `;
 
@@ -801,5 +801,145 @@ ipcMain.handle('cx:power', async (_evt, opts) => {
     sendToRenderer('ssh:output', { sessionId, data: `\r\n\x1b[1;33m[LOCAL]\x1b[0m ${msg}\r\n` });
     sendToRenderer('ssh:status', { sessionId, status: 'failed', message: msg });
     return { ok: false, sessionId, action, error: msg };
+  }
+});
+
+//  User Management — enumerate human accounts (read-only, structured return)
+ipcMain.handle('cx:users-list', async (_evt, opts) => {
+  const { host, password, port } = opts || {};
+  const escPass = String(password || '').replace(/'/g, "'\\''");
+  const script = `#!/bin/bash
+SUDO_PASS='${escPass}'
+_sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
+_sudo -v 2>/dev/null || true
+SUDOERS=",$(getent group sudo | cut -d: -f4),"
+while IFS=: read -r name _ uid _ _ home _; do
+  if [ "$uid" -ge 1000 ] && [ "$uid" -lt 65534 ]; then
+    insudo=0; case "$SUDOERS" in *",$name,"*) insudo=1;; esac
+    st="$(_sudo passwd -S "$name" 2>/dev/null | awk '{print $2}')"
+    locked=0; case "$st" in L*) locked=1;; esac
+    echo "USERROW|$name|$uid|$insudo|$locked"
+  fi
+done < /etc/passwd`;
+
+  const sessionId = `userslist-${Date.now()}`;
+  const mgr = new SSHManager();
+  activeSessions.set(sessionId, mgr);
+  try {
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+    const result = await mgr.exec(script);
+    mgr.dispose();
+    activeSessions.delete(sessionId);
+    const users = String(result.stdout || '')
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith('USERROW|'))
+      .map((l) => {
+        const p = l.split('|');
+        return { name: p[1], uid: Number(p[2]), sudo: p[3] === '1', locked: p[4] === '1' };
+      });
+    return { ok: true, users };
+  } catch (err) {
+    mgr.dispose();
+    activeSessions.delete(sessionId);
+    return { ok: false, error: err.message, users: [] };
+  }
+});
+
+
+//  User Management — add / delete / passwd / sudo / lock / ssh-key / force-change
+ipcMain.handle('cx:user-mgmt', async (_evt, opts) => {
+  const { host, password, port, action, targetUser, newPassword, sshKey, addSudo, removeHome } = opts || {};
+  const sessionId = `usermgmt-${Date.now()}`;
+  const b64 = (s) => Buffer.from(String(s == null ? '' : s), 'utf8').toString('base64');
+  const escPass = String(password || '').replace(/'/g, "'\\''");
+
+  // Defence in depth — the renderer also blocks these, but never trust the client.
+  const PROTECTED = ['root', 'Administrator'];
+  if ((action === 'delete' || action === 'lock') && PROTECTED.includes(targetUser)) {
+    return { ok: false, error: `Refused: ${action} is blocked for protected user "${targetUser}"` };
+  }
+
+  // Per-action body. User-supplied values arrive as base64-decoded shell vars
+  // (injection-safe); booleans become safe literal flags here in JS.
+  let body, label;
+  switch (action) {
+    case 'passwd':
+      label = `Changing password for ${targetUser}`;
+      body = `_sudo sh -c 'printf "%s:%s\\n" "$1" "$2" | chpasswd' _ "$TARGET" "$NEW_PASS"
+echo "[CX] Password updated for $TARGET"`;
+      break;
+    case 'add':
+      label = `Creating user ${targetUser}`;
+      body = `if id "$TARGET" >/dev/null 2>&1; then echo "[CX] User $TARGET already exists" >&2; exit 1; fi
+_sudo useradd -m -s /bin/bash "$TARGET"
+_sudo sh -c 'printf "%s:%s\\n" "$1" "$2" | chpasswd' _ "$TARGET" "$NEW_PASS"
+${addSudo ? '_sudo usermod -aG sudo "$TARGET"\necho "[CX] $TARGET added to sudo group"' : ''}
+echo "[CX] User $TARGET created"`;
+      break;
+    case 'delete':
+      label = `Deleting user ${targetUser}`;
+      body = `case "$TARGET" in root|Administrator) echo "[CX] Refusing to delete $TARGET" >&2; exit 1;; esac
+_sudo userdel ${removeHome ? '-r ' : ''}"$TARGET"
+echo "[CX] User $TARGET deleted${removeHome ? ' (home removed)' : ''}"`;
+      break;
+    case 'sudo-grant':
+      label = `Granting sudo to ${targetUser}`;
+      body = `_sudo usermod -aG sudo "$TARGET"
+echo "[CX] $TARGET added to sudo group"`;
+      break;
+    case 'sudo-revoke':
+      label = `Revoking sudo from ${targetUser}`;
+      body = `_sudo gpasswd -d "$TARGET" sudo
+echo "[CX] $TARGET removed from sudo group"`;
+      break;
+    case 'lock':
+      label = `Locking ${targetUser}`;
+      body = `case "$TARGET" in root|Administrator) echo "[CX] Refusing to lock $TARGET" >&2; exit 1;; esac
+_sudo usermod -L "$TARGET"
+echo "[CX] $TARGET locked"`;
+      break;
+    case 'unlock':
+      label = `Unlocking ${targetUser}`;
+      body = `_sudo usermod -U "$TARGET"
+echo "[CX] $TARGET unlocked"`;
+      break;
+    case 'sshkey':
+      label = `Installing SSH key for ${targetUser}`;
+      body = `HOME_DIR="$(_sudo getent passwd "$TARGET" | cut -d: -f6)"
+if [ -z "$HOME_DIR" ]; then echo "[CX] User $TARGET not found" >&2; exit 1; fi
+_sudo install -d -m 700 -o "$TARGET" "$HOME_DIR/.ssh"
+_sudo sh -c 'AK="$2/.ssh/authorized_keys"; touch "$AK"; grep -qxF "$1" "$AK" || printf "%s\\n" "$1" >> "$AK"; chmod 600 "$AK"' _ "$SSH_KEY" "$HOME_DIR"
+_sudo chown -R "$TARGET": "$HOME_DIR/.ssh"
+echo "[CX] SSH key installed for $TARGET"`;
+      break;
+    case 'forcechpw':
+      label = `Forcing password change for ${targetUser}`;
+      body = `_sudo chage -d 0 "$TARGET"
+echo "[CX] $TARGET must set a new password at next login"`;
+      break;
+    default:
+      return { ok: false, error: `Unknown user action: ${action}` };
+  }
+
+  const script = `#!/bin/bash
+set -e
+SUDO_PASS='${escPass}'
+_sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
+_sudo -v 2>/dev/null || true
+TARGET="$(printf '%s' '${b64(targetUser)}' | base64 -d)"
+NEW_PASS="$(printf '%s' '${b64(newPassword)}' | base64 -d)"
+SSH_KEY="$(printf '%s' '${b64(sshKey)}' | base64 -d)"
+echo "[CX] ${label}..."
+${body}`;
+
+  try {
+    const result = await sshStream(sessionId, { host, password, port }, script);
+    const ok = result.code === 0;
+    sendToRenderer('ssh:status', { sessionId, status: ok ? 'complete' : 'failed', message: ok ? `Done: ${action}` : `Failed (exit ${result.code})` });
+    return { ok, sessionId, action };
+  } catch (err) {
+    sendToRenderer('ssh:status', { sessionId, status: 'failed', message: err.message });
+    return { ok: false, sessionId, action, error: err.message };
   }
 });
