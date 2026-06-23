@@ -1,13 +1,7 @@
-gitattributes# Normalise all text to LF, in the repo and the working tree.
-# Fine for Electron/Node, and keeps shell scripts valid on the CX.
 * text=auto eol=lf
-
-# Shell scripts must stay LF (they run on the Beckhoff target)
 *.sh text eol=lf
-
-# Leave these bytes alone
-*.png  binary
-*.ico  binary
-*.svg  binary
+*.png binary
+*.ico binary
+*.svg binary
 *.docx binary
-*.exe  binary
+*.exe binary
