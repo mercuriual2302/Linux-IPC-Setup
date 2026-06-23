@@ -19,6 +19,36 @@
       <div class="header-sub">Automated provisioning tool</div>
     </div>
     <div class="header-right">
+      <div class="power-wrap" id="power-wrap">
+        <button class="power-btn" id="power-btn" title="Power options" aria-haspopup="true" aria-expanded="false">
+          <span class="power-glyph">⏻</span><span class="power-label">POWER</span>
+        </button>
+        <div class="power-menu" id="power-menu" role="menu">
+          <div class="power-menu-target" id="power-menu-target">target: not set</div>
+          <button class="power-item" data-action="tc-restart" role="menuitem">
+            <span class="power-item-glyph">↻</span>
+            <span class="power-item-text">
+              <span class="power-item-title">Restart TwinCAT runtime</span>
+              <span class="power-item-sub">Bounce tc31-xar · SSH stays up</span>
+            </span>
+          </button>
+          <button class="power-item" data-action="restart" role="menuitem">
+            <span class="power-item-glyph">⟳</span>
+            <span class="power-item-text">
+              <span class="power-item-title">Restart</span>
+              <span class="power-item-sub">Reboot the CX · back in ~40s</span>
+            </span>
+          </button>
+          <div class="power-menu-sep"></div>
+          <button class="power-item danger" data-action="shutdown" role="menuitem">
+            <span class="power-item-glyph">⏻</span>
+            <span class="power-item-text">
+              <span class="power-item-title">Shut down</span>
+              <span class="power-item-sub">Power off · needs manual start</span>
+            </span>
+          </button>
+        </div>
+      </div>
       <button class="theme-toggle" id="theme-toggle" title="Switch theme">☀ LIGHT</button>
       <div class="global-conn-badge" id="global-conn">
         <span class="status-dot" id="global-dot"></span>
@@ -403,6 +433,19 @@
         <span>I have read and understood the above disclaimer and accept the terms of use</span>
       </label>
       <button class="disclaimer-btn" id="disclaimer-btn" disabled>CONTINUE</button>
+    </div>
+  </div>
+</div>
+
+<!-- power confirm -->
+<div id="power-confirm-overlay" class="power-confirm-overlay">
+  <div class="power-confirm-modal">
+    <div class="power-confirm-glyph" id="power-confirm-glyph">⏻</div>
+    <div class="power-confirm-title" id="power-confirm-title">Shut down the CX?</div>
+    <div class="power-confirm-body" id="power-confirm-body"></div>
+    <div class="power-confirm-actions">
+      <button class="power-confirm-btn" id="power-confirm-cancel">CANCEL</button>
+      <button class="power-confirm-btn go" id="power-confirm-go">SHUT DOWN</button>
     </div>
   </div>
 </div>
