@@ -943,3 +943,30 @@ ${body}`;
     return { ok: false, sessionId, action, error: err.message };
   }
 });
+
+//  TF1200 — read current config.json from the CX (non-destructive)
+ipcMain.handle('cx:read-tf1200-config', async (_evt, opts) => {
+  const { host, password, port } = opts || {};
+  const escPass = String(password || '').replace(/'/g, "'\\''");
+  const cmd = `echo '${escPass}' | sudo -S -p '' cat /home/TF1200/.config/TF1200-UI-Client/config.json 2>&1`;
+  const mgr = new SSHManager();
+  const sessionId = `readtf1200-${Date.now()}`;
+  activeSessions.set(sessionId, mgr);
+  try {
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+    const result = await mgr.exec(cmd);
+    mgr.dispose();
+    activeSessions.delete(sessionId);
+    const raw = (result.stdout || '').trim();
+    let config;
+    try { config = JSON.parse(raw); }
+    catch (e) {
+      return { ok: false, error: `Could not parse config.json: ${e.message}. Raw: ${raw.slice(0, 120)}` };
+    }
+    return { ok: true, config };
+  } catch (err) {
+    mgr.dispose();
+    activeSessions.delete(sessionId);
+    return { ok: false, error: err.message };
+  }
+});
