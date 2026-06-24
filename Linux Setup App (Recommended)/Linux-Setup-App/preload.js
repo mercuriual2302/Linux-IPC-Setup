@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('api', {
   profilesLoad:     ()     => ipcRenderer.invoke('profiles:load'),
   profilesSave:     (data) => ipcRenderer.invoke('profiles:save', data),
   tcRuntime:      (opts) => ipcRenderer.invoke('cx:tc-runtime', opts),
+  serviceMgmt:    (opts) => ipcRenderer.invoke('cx:service-mgmt', opts),
   power:          (opts) => ipcRenderer.invoke('cx:power', opts),
   fetchUpdates:   (opts) => ipcRenderer.invoke('cx:fetch-updates', opts),
   runUpgrade:     (opts) => ipcRenderer.invoke('cx:upgrade', opts),

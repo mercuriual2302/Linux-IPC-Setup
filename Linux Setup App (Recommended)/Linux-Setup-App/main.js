@@ -1193,3 +1193,130 @@ ipcMain.handle('profiles:save', async (_evt, { profiles }) => {
     return { ok: false, error: e.message };
   }
 });
+
+// Service management - status, start, stop, restart, and TF2000 reinit
+ipcMain.handle('cx:service-mgmt', async (_evt, opts) => {
+  const { host, password, port, action, service } = opts || {};
+  const sessionId = `svcmgmt-${Date.now()}`;
+  const escPass = String(password || '').replace(/'/g, "'\\''");
+
+  // Map friendly service names to systemd unit names
+  const SERVICE_UNITS = {
+    TcSystemServiceUm: 'TcSystemServiceUm',
+    TcHmiSrv:          'TcHmiSrv',
+    nftables:          'nftables',
+    ssh:               'ssh',
+    MDPService:        'MDPService'
+  };
+
+  const unit = SERVICE_UNITS[service];
+  if (!unit) return { ok: false, error: `Unknown service: ${service}` };
+
+  // Status read - no streaming needed, just return state
+  if (action === 'status') {
+    const mgr = new SSHManager();
+    try {
+      await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+      const result = await mgr.exec(
+        `echo '${escPass}' | sudo -S -p '' systemctl is-active ${unit} 2>/dev/null || echo inactive`
+      );
+      mgr.dispose();
+      const state = String(result.stdout || '').replace(/\r?\n/g, '').trim();
+      return { ok: true, service, state };
+    } catch (err) {
+      mgr.dispose();
+      return { ok: false, error: err.message };
+    }
+  }
+
+  // TF2000 reinitialise - stop service, wipe init state, re-run with new password
+  if (action === 'reinit') {
+    const { tf2000Pass = '1' } = opts;
+    const escTf2000Pass = String(tf2000Pass).replace(/'/g, "'\\''");
+    const script = `#!/bin/bash
+set -e
+export TERM=dumb
+SUDO_PASS='${escPass}'
+_sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
+_sudo -v
+echo "[CX] Stopping TcHmiSrv..."
+_sudo systemctl stop TcHmiSrv || true
+echo "[CX] Removing existing HMI Server init state..."
+_sudo rm -rf /var/lib/tchmisrv/* 2>/dev/null || true
+_sudo rm -f /etc/TwinCAT/Functions/TF2000-HMI-Server/TcHmiSrv.cfg 2>/dev/null || true
+echo "[CX] Reinitialising TF2000 HMI Server..."
+_sudo TcHmiSrv --initialize --password='${escTf2000Pass}'
+echo "[CX] Enabling and starting TcHmiSrv..."
+_sudo systemctl enable TcHmiSrv
+_sudo systemctl start TcHmiSrv
+echo "[CX] TF2000 HMI Server reinitialised successfully."
+_sudo systemctl is-active TcHmiSrv
+`;
+    try {
+      const tmpPath = path.join(os.tmpdir(), `cx-reinit-${Date.now()}.sh`);
+      await fs.promises.writeFile(tmpPath, script, { mode: 0o755 });
+      const mgr = new SSHManager();
+      activeSessions.set(sessionId, mgr);
+      sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m Reinitialising TF2000 HMI Server...\r\n` });
+      await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+      await mgr.putFile(tmpPath, '/tmp/cx_reinit.sh');
+      await fs.promises.unlink(tmpPath).catch(() => {});
+      const result = await mgr.execStream('chmod +x /tmp/cx_reinit.sh && /tmp/cx_reinit.sh', {
+        onStdout: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() }),
+        onStderr: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() })
+      });
+      mgr.dispose();
+      activeSessions.delete(sessionId);
+      const ok = result.code === 0;
+      sendToRenderer('ssh:status', { sessionId, status: ok ? 'complete' : 'failed', message: ok ? 'TF2000 reinitialised' : `Exit ${result.code}` });
+      return { ok, sessionId };
+    } catch (err) {
+      sendToRenderer('ssh:status', { sessionId, status: 'failed', message: err.message });
+      return { ok: false, error: err.message };
+    }
+  }
+
+  // start / stop / restart - generic systemd action
+  const VALID_ACTIONS = ['start', 'stop', 'restart'];
+  if (!VALID_ACTIONS.includes(action)) return { ok: false, error: `Unknown action: ${action}` };
+
+  // Guard: never stop SSH while connected via SSH
+  if (action === 'stop' && unit === 'ssh') {
+    return { ok: false, error: 'Stopping the SSH service would disconnect you. Blocked.' };
+  }
+
+  const script = `#!/bin/bash
+set -e
+SUDO_PASS='${escPass}'
+_sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
+_sudo -v
+echo "[CX] Running: systemctl ${action} ${unit}"
+_sudo systemctl ${action} ${unit}
+sleep 1
+STATE=$(_sudo systemctl is-active ${unit} 2>/dev/null || echo unknown)
+echo "[CX] ${unit} is now: $STATE"
+`;
+
+  try {
+    const tmpPath = path.join(os.tmpdir(), `cx-svc-${Date.now()}.sh`);
+    await fs.promises.writeFile(tmpPath, script, { mode: 0o755 });
+    const mgr = new SSHManager();
+    activeSessions.set(sessionId, mgr);
+    sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m ${action} ${unit}...\r\n` });
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+    await mgr.putFile(tmpPath, '/tmp/cx_svc.sh');
+    await fs.promises.unlink(tmpPath).catch(() => {});
+    const result = await mgr.execStream('chmod +x /tmp/cx_svc.sh && /tmp/cx_svc.sh', {
+      onStdout: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() }),
+      onStderr: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() })
+    });
+    mgr.dispose();
+    activeSessions.delete(sessionId);
+    const ok = result.code === 0;
+    sendToRenderer('ssh:status', { sessionId, status: ok ? 'complete' : 'failed', message: ok ? `${unit} ${action}ed` : `Exit ${result.code}` });
+    return { ok, sessionId };
+  } catch (err) {
+    sendToRenderer('ssh:status', { sessionId, status: 'failed', message: err.message });
+    return { ok: false, error: err.message };
+  }
+});
