@@ -7,7 +7,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 const VALID_EVENTS = ['ssh:output', 'ssh:status'];
 
 contextBridge.exposeInMainWorld('api', {
-  // one-shot invokes — existing
+  // one-shot invokes - existing
   testConnection: (opts) => ipcRenderer.invoke('ssh:test', opts),
   fetchPackages:  (opts) => ipcRenderer.invoke('ssh:fetch-packages', opts),
   runSetup:       (opts) => ipcRenderer.invoke('ssh:run-setup', opts),
@@ -17,7 +17,7 @@ contextBridge.exposeInMainWorld('api', {
   buildTF1200Script: (opts) => ipcRenderer.invoke('script:build-tf1200', opts),
   saveScript:     (content, defaultName) => ipcRenderer.invoke('script:save', { content, defaultName }),
 
-  // CX Management — new
+  // CX Management - new
   validateCreds:  (opts) => ipcRenderer.invoke('cx:validate-creds', opts),
   applyNetwork:   (opts) => ipcRenderer.invoke('cx:network', opts),
   applyFirewall:  (opts) => ipcRenderer.invoke('cx:firewall', opts),

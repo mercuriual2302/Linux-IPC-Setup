@@ -1,5 +1,5 @@
 // why is javascript so hard? 
-// renderer/renderer.js — UI logic for the Electron app.
+// renderer/renderer.js - UI logic for the Electron app.
 // Adapted from the inline <script> in twincat_setup_gui_v4.html, plus:
 //   • Test Connection button  → main.invoke('ssh:test')
 //   • Fetch From CX button    → main.invoke('ssh:fetch-packages')
@@ -7,8 +7,7 @@
 //   • View toggle (terminal vs script preview)
 
 
-// Curated list with descriptions/grouping. Any extras discovered from
-// `apt-cache search` get appended as "discovered" with group = 'Discovered'.
+// Curated package list. Extras from apt-cache search get appended as discovered.
 const PACKAGES_SEED = [
   { name:'tf1200-ui-client',             desc:'TF1200 TwinCAT UI Client',                group:'HMI / UI',      default:false  },
   { name:'tf1810-plc-hmi-web',           desc:'TF1810 TC3 PLC HMI Web',                  group:'HMI / UI',      default:false },
@@ -34,7 +33,7 @@ const PACKAGES_SEED = [
   { name:'twincat-function-installer',   desc:'Install TwinCAT functions from licenses', group:'System',        default:false },
 ];
 
-// Mutable list — seeds the grid, gets merged with discovery results.
+// Package list - seeds the grid, merged with live discovery results.
 let PACKAGES = [...PACKAGES_SEED];
 const selectedPkgs = new Set(PACKAGES.filter(p => p.default).map(p => p.name));
 const pkgVersions = {};
@@ -42,7 +41,7 @@ PACKAGES.forEach(p => pkgVersions[p.name] = { mode:'latest', version:'' });
 pkgVersions['tc31-xar-um'] = { mode:'latest', version:'' };
 pkgVersions['console-setup'] = { mode:'latest', version:'' };
 
-// TF1200 JSON CONFIG STATE 
+// TF1200 JSON config state
 const jsonConfig = {
   allowMove:              { type:'bool',   value:true,   desc:'Allow window move' },
   allowResize:            { type:'bool',   value:true,   desc:'Allow window resize' },
@@ -75,7 +74,7 @@ let terminalBuffer = '';
 
 const $ = (id) => document.getElementById(id);
 
-// HELPERS 
+// Helpers
 function chk() {
   return `<span class="pkg-check"><svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></span>`;
 }
@@ -96,13 +95,10 @@ function getConnOpts(which = 1) {
   return { host: ip, username: 'Administrator', password: pass, port: 22 };
 }
 
-// CREDENTIAL SYNC ACROSS TABS 
-// Bidirectional credential sync.
-// All three IP fields (cx-ip, cx-ip2, cx-ip3) and password fields stay in
-// lockstep. Whichever field was just edited becomes the source of truth and
-// propagates to the other two. If the user types a different IP into a field
-// that already has a value, a warning toast fires once to flag the mismatch
-// (rather than silently overwriting or refusing to sync).
+// Credential sync across tabs
+// All IP and password fields sync bidirectionally.
+// Whichever field was last edited becomes the source of truth.
+// Typing a different IP into any field shows a warning toast.
 let _syncLock = false; // prevent re-entrant sync loops
 
 function propagateCreds(srcIp, srcPass) {
@@ -137,7 +133,7 @@ function onIpInput(thisEl) {
     return v && v !== newIp;
   });
   if (conflict && ipOk(newIp)) {
-    toast(`IP updated to ${newIp} — all tabs synced`, 'warn');
+    toast(`IP updated to ${newIp} - all tabs synced`, 'warn');
   }
   const pass = $('cx-pass').value || $('cx-pass2').value || $('cx-pass3').value || '';
   propagateCreds(newIp, pass);
@@ -179,7 +175,7 @@ function updateConnDots() {
   $('conn-dot2').className = 'status-dot' + (ok2 ? ' ok' : '');
 }
 
-// GLOBAL CONNECTION STATUS BADGE
+// Global connection status badge
 function setGlobalConn(state, text) {
   const badge = $('global-conn');
   const dot = $('global-dot');
@@ -191,7 +187,7 @@ function setGlobalConn(state, text) {
   $('global-conn-text').textContent = text;
 }
 
-// TEST CONNECTION 
+// Test connection
 $('btn-test').addEventListener('click', async () => {
   const opts = getConnOpts(1);
   if (!ipOk(opts.host)) { toast('Enter a valid IPv4 address first', 'warn'); return; }
@@ -205,14 +201,14 @@ $('btn-test').addEventListener('click', async () => {
 
   if (res.ok) {
     setGlobalConn('ok', 'CONNECTED · ' + opts.host);
-    toast('SSH OK — ' + (res.output.split('\n')[0] || 'connected'), 'success');
+    toast('SSH OK - ' + (res.output.split('\n')[0] || 'connected'), 'success');
   } else {
     setGlobalConn('err', 'FAILED');
     toast('SSH failed: ' + res.error, 'error');
   }
 });
 
-// FETCH PACKAGES FROM CX 
+// Fetch packages from CX
 $('btn-fetch-pkgs').addEventListener('click', async () => {
   const opts = getConnOpts(1);
   if (!ipOk(opts.host)) { toast('Enter the CX IP first', 'warn'); return; }
@@ -238,7 +234,7 @@ $('btn-fetch-pkgs').addEventListener('click', async () => {
     if (runtimePkgs.has(p.name) || existingNames.has(p.name)) continue;
     PACKAGES.push({
       name: p.name,
-      desc: p.desc || '(discovered — no description)',
+      desc: p.desc || '(discovered - no description)',
       group: 'Discovered',
       default: false,
       discovered: true
@@ -253,7 +249,7 @@ $('btn-fetch-pkgs').addEventListener('click', async () => {
   renderVersionList();
 });
 
-// PACKAGE GRID RENDER
+// Package grid render
 function renderPkgGrid(filter) {
   const grid = $('pkg-grid');
   const term = (filter || '').toLowerCase();
@@ -345,7 +341,7 @@ $('pkg-search').addEventListener('input', function () { renderPkgGrid(this.value
 $('sel-all').addEventListener('click', () => { PACKAGES.forEach(p => selectedPkgs.add(p.name)); renderPkgGrid($('pkg-search').value); renderVersionList(); });
 $('sel-none').addEventListener('click', () => { selectedPkgs.clear(); renderPkgGrid($('pkg-search').value); renderVersionList(); });
 
-// VERSION LIST
+// Version list
 function renderVersionList() {
   const container = $('ver-list');
   const allPkgs = ['tc31-xar-um', 'console-setup', ...PACKAGES.filter(p => selectedPkgs.has(p.name)).map(p => p.name)];
@@ -388,7 +384,7 @@ function renderVersionList() {
   });
 }
 
-// TABS
+// Tabs
 const tabs = document.querySelectorAll('.tab');
 const pages = { setup:'page-setup', tf1200:'page-tf1200', cxmgmt:'page-cxmgmt', script:'page-script' };
 tabs.forEach(t => t.addEventListener('click', () => {
@@ -399,7 +395,7 @@ tabs.forEach(t => t.addEventListener('click', () => {
   if (t.dataset.tab === 'tf1200') syncCredentials();
 }));
 
-//  FEED TOGGLE 
+// Feed toggle
 document.querySelectorAll('#feed-toggle .toggle-opt').forEach(o => o.addEventListener('click', () => {
   document.querySelectorAll('#feed-toggle .toggle-opt').forEach(x => x.classList.remove('active'));
   o.classList.add('active');
@@ -409,7 +405,7 @@ document.querySelectorAll('#feed-toggle .toggle-opt').forEach(o => o.addEventLis
     : 'Cutting-edge · may contain unstable packages';
 }));
 
-//  JSON EDITOR 
+// JSON editor
 function renderJsonEditor() {
   const editor = $('json-editor');
   editor.innerHTML = '';
@@ -491,7 +487,7 @@ function renderJsonEditor() {
   });
 }
 
-//  VIEW TOGGLE (terminal ↔ script preview) 
+// View toggle
 document.querySelectorAll('#view-toggle .view-opt').forEach(o => o.addEventListener('click', () => {
   document.querySelectorAll('#view-toggle .view-opt').forEach(x => x.classList.remove('active'));
   o.classList.add('active');
@@ -517,7 +513,7 @@ function setView(view) {
   $('script-output').style.display   = view === 'script'   ? '' : 'none';
 }
 
-// TINY ANSI PARSER (for streamed SSH output) 
+// ANSI parser for streamed SSH output
 // Handles \x1b[<n>[;<n>...]m color sequences and \r\n / \r. Non-color escape
 // sequences (cursor moves, scroll regions, OSC titles) are stripped so apt's
 // progress-bar control codes don't show up as literal text.
@@ -542,7 +538,7 @@ function stripNonColorAnsi(str) {
   // dpkg/apt progress rewrites: `[24;0f` (cursor-position), `[0;23r`
   // (scroll-region), `[1A` (cursor-up), `[J` / `[K` (erase), etc.
   // Match a literal `[` followed by digits/semicolons/question-mark, then
-  // a non-SGR final byte. Leave `[...]m` alone — those are color codes
+  // a non-SGR final byte. Leave `[...]m` alone - those are color codes
   // that the color parser needs, and also leave single `[` chars in text.
   str = str.replace(/\[[0-9;?]+[A-HJKLPSTfhlnsu]/g, '');
   str = str.replace(/\[[0-9;?]*J/g, '');  // erase-display
@@ -555,7 +551,7 @@ function stripNonColorAnsi(str) {
   // dpkg's progress-bar redraw wraps every update in `7...8` (save → write
   // → restore). After ESC is stripped, these appear as bare `7` and `8`
   // characters hugging the CSI codes. We can only safely strip them when
-  // adjacent to a CSI-like pattern or at the start of a progress line —
+  // adjacent to a CSI-like pattern or at the start of a progress line -
   // never globally, since real output contains digits.
   str = str.replace(/7(?=\[[0-9;])/g, '');  // `7[24;0f...` → `[24;0f...`
   str = str.replace(/([A-Za-z%\]])8(?=\s|$|[A-Z])/gm, '$1'); // `...]8` → `...]`
@@ -567,7 +563,7 @@ function stripNonColorAnsi(str) {
 
 // Collapse repeated progress-style lines ("Reading package lists... N%",
 // "N% [Working]", download percentage bars) so the terminal doesn't scroll
-// madly — the last version of such a line replaces the previous one.
+// madly - the last version of such a line replaces the previous one.
 function collapseProgressLines(str) {
   const lines = str.split('\n');
   const out = [];
@@ -588,7 +584,7 @@ function collapseProgressLines(str) {
 
 function ansiToHtml(str) {
   // Normalize line endings. A lone \r (without \n) is apt's "rewrite the
-  // current line" trick — turn it into a newline so each update is its own
+  // current line" trick - turn it into a newline so each update is its own
   // line, then collapseProgressLines will dedupe the spam.
   str = str.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   str = stripNonColorAnsi(str);
@@ -651,7 +647,7 @@ function clearTerminal() {
   $('terminal-output').innerHTML = '<span style="color:var(--tc-muted)">// terminal idle</span>';
 }
 
-//  SCRIPT PREVIEW PANE
+// Script preview pane
 function showScriptPreview(script, name) {
   lastScript = script; lastFilename = name;
   const out = $('script-output'); const prog = $('prog');
@@ -678,7 +674,7 @@ function showScriptPreview(script, name) {
   setView('script');
 }
 
-// RUN SETUP LIVE 
+// Run setup live
 $('btn-run-setup').addEventListener('click', async () => {
   const ip = $('cx-ip').value.trim();
   const cxPass = $('cx-pass').value;
@@ -721,7 +717,7 @@ $('btn-run-setup').addEventListener('click', async () => {
   activeSessionId = null;
 
   if (res.ok) {
-    toast(res.rebooted ? 'Setup complete — CX rebooting' : 'Setup finished', 'success');
+    toast(res.rebooted ? 'Setup complete - CX rebooting' : 'Setup finished', 'success');
   } else {
     toast('Setup failed: ' + (res.error || 'unknown'), 'error');
   }
@@ -762,25 +758,25 @@ $('btn-run-tf1200').addEventListener('click', async () => {
   $('btn-run-setup').disabled = false;
   activeSessionId = null;
 
-  if (res.ok) toast(res.rebooted ? 'Config applied — CX rebooting' : 'Config applied', 'success');
+  if (res.ok) toast(res.rebooted ? 'Config applied - CX rebooting' : 'Config applied', 'success');
   else toast('Config apply failed: ' + (res.error || 'unknown'), 'error');
 });
 
-//  CANCEL 
+// Cancel
 $('cancel-btn').addEventListener('click', async () => {
   if (!activeSessionId) return;
   await window.api.cancelSession(activeSessionId);
   appendTerminal('\r\n\x1b[0;31m[LOCAL]\x1b[0m Cancelled by user.\r\n');
 });
 
-//  CLEAR 
+// Clear
 $('clear-btn').addEventListener('click', () => {
   clearTerminal();
   $('prog').style.width = '0%';
   $('session-status').textContent = '';
 });
 
-//  STREAMING EVENTS FROM MAIN 
+// Streaming events from main
 window.api.on('ssh:output', ({ sessionId, data }) => {
   activeSessionId = sessionId;
   appendTerminal(data);
@@ -801,7 +797,7 @@ window.api.on('ssh:status', ({ sessionId, status, message }) => {
   s.textContent = `[${status}] ${message || ''}`;
 });
 
-//  GENERATE SCRIPT (Copy/Download workflow, uses main-process builder) 
+// Generate script (copy/download)
 $('btn-gen-setup').addEventListener('click', async () => {
   const res = await window.api.buildSetupScript({
     cxIp: $('cx-ip').value.trim() || '<CX_IP>',
@@ -867,7 +863,7 @@ $('theme-toggle').addEventListener('click', () => {
   }
 });
 
-//  DISCLAIMER 
+// Disclaimer
 $('disclaimer-check').addEventListener('change', function () {
   $('disclaimer-btn').disabled = !this.checked;
 });
@@ -885,8 +881,8 @@ syncCredentials();
 
 
 
-// CX MANAGEMENT TAB — renderer logic
-//  Helpers 
+// CX management tab
+// Helpers
 function getCxMgmtConn() {
   return {
     host: $('cx-ip3').value.trim() || $('cx-ip').value.trim(),
@@ -906,7 +902,7 @@ function goToTerminal(sessionId) {
   if (sessionId) $('session-status').textContent = `session: ${sessionId}`;
 }
 
-//  Network Configurator
+// Network configurator
 toggleGroupInit('net-iface-toggle');
 toggleGroupInit('net-mode-toggle');
 
@@ -951,12 +947,12 @@ $('btn-apply-network').addEventListener('click', async () => {
   }
   $('btn-apply-network').disabled = false;
   $('btn-apply-network').textContent = '▶ APPLY NETWORK CONFIG';
-  if (res.timedOut) toast('Config applied — connection dropped (IP changed)', 'success');
-  else if (!res.ok) toast('Network config failed — see terminal', 'error');
+  if (res.timedOut) toast('Config applied - connection dropped (IP changed)', 'success');
+  else if (!res.ok) toast('Network config failed - see terminal', 'error');
   else toast('Network config applied', 'success');
 });
 
-//  Firewall Manager 
+// Firewall manager
 toggleGroupInit('fw-enable-toggle');
 toggleGroupInit('fw-custom-proto');
 
@@ -1017,10 +1013,10 @@ $('btn-apply-firewall').addEventListener('click', async () => {
   const res = await window.api.applyFirewall({ ...conn, enable, ports });
   $('btn-apply-firewall').disabled = false;
   $('btn-apply-firewall').textContent = '▶ APPLY FIREWALL CONFIG';
-  if (!res.ok) toast('Firewall config failed — see terminal', 'error');
+  if (!res.ok) toast('Firewall config failed - see terminal', 'error');
 });
 
-//  TF2000 confirm field on tab 01 
+// TF2000 password field on tab 01
 function checkTf2000Match() {
   const a = $('tf2000-pass')?.value || '';
   const b = $('tf2000-pass-confirm')?.value || '';
@@ -1055,8 +1051,8 @@ $('btn-run-setup').addEventListener('click', (e) => {
 }, true);
 
 
-//  Package Update Checker 
-//  Installed Packages + Selective Updates 
+// Package update checker
+// Installed packages and selective updates
 let _installedPkgs = []; // [{name, version, upgradable, newVer}]
 
 function renderInstalledTable() {
@@ -1090,7 +1086,7 @@ $('btn-fetch-installed').addEventListener('click', async () => {
   const res = await window.api.fetchUpdates(conn);
   $('btn-fetch-installed').disabled = false;
   $('btn-fetch-installed').textContent = '⟳ FETCH INSTALLED';
-  if (!res.ok) { toast('Failed to fetch packages — check connection', 'error'); return; }
+  if (!res.ok) { toast('Failed to fetch packages - check connection', 'error'); return; }
   _installedPkgs = res.packages;
   $('installed-result').style.display = 'block';
   $('installed-count').textContent = `${res.packages.length} TwinCAT package${res.packages.length !== 1 ? 's' : ''} installed`;
@@ -1130,7 +1126,7 @@ $('btn-upgrade-selected').addEventListener('click', async () => {
   goToTerminal(null);
   const res = await window.api.runUpgrade({ ...conn, packages: selected });
   $('btn-upgrade-selected').disabled = false;
-  if (!res.ok) toast('Upgrade failed — see terminal', 'error');
+  if (!res.ok) toast('Upgrade failed - see terminal', 'error');
 });
 
 
@@ -1159,7 +1155,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
   }
 });
 // Why are you here? 
-//  POWER MANAGEMENT (header menu) — shutdown / restart / TwinCAT runtime
+// Power management
 (function initPowerMenu() {
   const wrap = $('power-wrap');
   const btn = $('power-btn');
@@ -1183,7 +1179,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
       go: 'RESTART RUNTIME', danger: false,
       pending: 'Restarting TwinCAT runtime…',
       okMsg: 'TwinCAT runtime restarted',
-      failMsg: 'Runtime restart failed — see terminal'
+      failMsg: 'Runtime restart failed - see terminal'
     },
     'restart': {
       title: 'Restart the CX?',
@@ -1191,8 +1187,8 @@ $('btn-validate-creds').addEventListener('click', async () => {
       body: (h) => `Reboots ${h}. The connection will drop and come back in roughly 40 seconds.`,
       go: 'RESTART', danger: false,
       pending: 'Rebooting the CX…',
-      okMsg: 'CX is rebooting — back in ~40s',
-      failMsg: 'Restart failed — see terminal'
+      okMsg: 'CX is rebooting - back in ~40s',
+      failMsg: 'Restart failed - see terminal'
     },
     'shutdown': {
       title: 'Shut down the CX?',
@@ -1201,7 +1197,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
       go: 'SHUT DOWN', danger: true,
       pending: 'Powering off the CX…',
       okMsg: 'CX is powering off',
-      failMsg: 'Shutdown failed — see terminal'
+      failMsg: 'Shutdown failed - see terminal'
     }
   };
 
@@ -1209,7 +1205,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
 
   function openMenu() {
     const { host } = resolveConn();
-    $('power-menu-target').textContent = host ? `target: ${host}` : 'target: not set — enter a CX IP first';
+    $('power-menu-target').textContent = host ? `target: ${host}` : 'target: not set - enter a CX IP first';
     menu.classList.add('open');
     btn.classList.add('active');
     btn.setAttribute('aria-expanded', 'true');
@@ -1298,7 +1294,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
     else toast(cfg.failMsg, 'error');
   });
 })();
-//  USER MANAGEMENT (CX Management tab)
+// User management
 (function initUserMgmt() {
   if (!$('btn-um-refresh')) return;
 
@@ -1316,7 +1312,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
       row.className = 'um-row';
       const name = document.createElement('span'); name.className = 'um-name'; name.textContent = u.name;
       const uid = document.createElement('span'); uid.className = 'um-uid'; uid.textContent = u.uid;
-      const sudo = document.createElement('span'); sudo.className = 'um-badge' + (u.sudo ? ' on' : ''); sudo.textContent = u.sudo ? 'sudo' : '—';
+      const sudo = document.createElement('span'); sudo.className = 'um-badge' + (u.sudo ? ' on' : ''); sudo.textContent = u.sudo ? 'sudo' : '-';
       const st = document.createElement('span'); st.className = 'um-badge ' + (u.locked ? 'lock' : 'ok'); st.textContent = u.locked ? 'locked' : 'active';
       row.append(name, uid, sudo, st);
       rows.appendChild(row);
@@ -1350,7 +1346,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
     catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
     $('prog').classList.remove('running'); $('prog').style.width = '100%';
     if (res && res.ok) { toast(okMsg, 'success'); refreshUsers(); }
-    else { toast((failMsg || 'Action failed') + (res && res.error ? ': ' + res.error : '') + ' — see terminal', 'error'); }
+    else { toast((failMsg || 'Action failed') + (res && res.error ? ': ' + res.error : '') + ' - see terminal', 'error'); }
     return res;
   }
 
@@ -1427,7 +1423,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
   });
 })();
 
-//  TF1200 — READ CONFIG FROM CX button
+// TF1200 - read config from CX
 (function initReadTF1200() {
   const btn = $('btn-read-tf1200');
   const status = $('tf1200-read-status');
@@ -1453,7 +1449,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
     if (!res || !res.ok) {
       status.textContent = 'Failed: ' + (res && res.error ? res.error : 'unknown error');
       status.style.color = 'var(--tc-danger)';
-      toast('Could not read TF1200 config — see status message', 'error');
+      toast('Could not read TF1200 config - see status message', 'error');
       return;
     }
 
@@ -1488,7 +1484,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
   });
 })();
 
-//  CX INFO PANEL
+// CX info panel
 (function initCxInfo() {
   const btnInit = $('btn-info-read-init');
   const btnHeader = $('btn-info-read');
@@ -1523,7 +1519,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
     $('btn-info-read-init').style.display = 'none';
     $('info-header').style.display = 'flex';
     $('info-body').style.display = 'block';
-    $('info-hostname').textContent = info.HOSTNAME || '—';
+    $('info-hostname').textContent = info.HOSTNAME || '-';
     $('info-sub').textContent = [
       getCxMgmtConn().host,
       info.OS || ''
@@ -1532,10 +1528,10 @@ $('btn-validate-creds').addEventListener('click', async () => {
 
     // metrics
     const metrics = [
-      { label: 'uptime',     value: info.UPTIME || '—',    sub: 'since last reboot' },
-      { label: 'kernel',     value: info.KERNEL || '—',    sub: info.ARCH || '' },
-      { label: 'feed',       value: info.FEED   || '—',    sub: 'apt channel' },
-      { label: 'tc runtime', value: info.TC_VER || '—',    sub: 'tc31-xar-um' }
+      { label: 'uptime',     value: info.UPTIME || '-',    sub: 'since last reboot' },
+      { label: 'kernel',     value: info.KERNEL || '-',    sub: info.ARCH || '' },
+      { label: 'feed',       value: info.FEED   || '-',    sub: 'apt channel' },
+      { label: 'tc runtime', value: info.TC_VER || '-',    sub: 'tc31-xar-um' }
     ];
     $('info-metrics').innerHTML = metrics.map(m => `
       <div class="info-metric">
@@ -1547,8 +1543,8 @@ $('btn-validate-creds').addEventListener('click', async () => {
     // disk
     const dp = Number(info.DISK_PCT) || 0;
     $('info-disk').innerHTML = `
-      <div class="info-row"><span class="info-row-label">used</span><span class="info-row-val">${bar(dp)}${info.DISK_USED || '—'} MB / ${info.DISK_TOTAL || '—'} MB</span></div>
-      <div class="info-row"><span class="info-row-label">available</span><span class="info-row-val">${info.DISK_AVAIL || '—'} MB</span></div>`;
+      <div class="info-row"><span class="info-row-label">used</span><span class="info-row-val">${bar(dp)}${info.DISK_USED || '-'} MB / ${info.DISK_TOTAL || '-'} MB</span></div>
+      <div class="info-row"><span class="info-row-label">available</span><span class="info-row-val">${info.DISK_AVAIL || '-'} MB</span></div>`;
 
     // memory
     const mt = Number(info.MEM_TOTAL) || 1;
@@ -1556,7 +1552,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
     const mp = Math.round(mu / mt * 100);
     $('info-mem').innerHTML = `
       <div class="info-row"><span class="info-row-label">used</span><span class="info-row-val">${bar(mp)}${mu} MB / ${mt} MB</span></div>
-      <div class="info-row"><span class="info-row-label">available</span><span class="info-row-val">${info.MEM_AVAIL || '—'} MB</span></div>`;
+      <div class="info-row"><span class="info-row-label">available</span><span class="info-row-val">${info.MEM_AVAIL || '-'} MB</span></div>`;
 
     // interfaces
     $('info-ifaces').innerHTML = ifaces.length
@@ -1607,11 +1603,11 @@ $('btn-validate-creds').addEventListener('click', async () => {
   });
 })();
 
-//  APT FEED MANAGER + MYBECKHOFF CREDENTIAL AUTO-READ
+// APT feed manager and MyBeckhoff credential auto-read
 
-// ── Credential auto-read (tab 01) ──────────────────────────────────────────
+// Credential auto-read (tab 01)----------------------------------------
 // After a successful test connection, check if bhf.conf already exists on the
-// CX and pre-fill the username field. Password is never read back — just
+// CX and pre-fill the username field. Password is never read back - just
 // confirmed as present so the user knows they don't need to retype it.
 (function initAptCredsAutoRead() {
   const banner  = $('apt-creds-banner');
@@ -1632,15 +1628,15 @@ $('btn-validate-creds').addEventListener('click', async () => {
     const passEl = $('bk-pass');
     if (userEl && !userEl.value.trim()) userEl.value = res.username;
     // Show banner
-    bannerText.textContent = `MyBeckhoff credentials found on CX (${res.username}) — password already set`;
+    bannerText.textContent = `MyBeckhoff credentials found on CX (${res.username}) - password already set`;
     banner.style.display = 'flex';
     // If credentials are confirmed on the CX, mark the password field as pre-set
     // so validation isn't mandatory before running setup
-    if (passEl && !passEl.value) passEl.placeholder = '(set on CX — leave blank to keep)';
+    if (passEl && !passEl.value) passEl.placeholder = '(set on CX - leave blank to keep)';
     _credsCached = true;
   }
 
-  // Hook into the existing test connection button — read creds after success
+  // Hook into the existing test connection button - read creds after success
   const testBtn = $('btn-test');
   if (testBtn) {
     testBtn.addEventListener('click', () => {
@@ -1659,7 +1655,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
 })();
 
 
-// ── APT Feed Manager (CX Management tab) ───────────────────────────────────
+// APT feed manager-------------------------------─
 (function initAptFeedManager() {
   const readBtn    = $('btn-apt-read-feed');
   const switchBtn  = $('btn-switch-feed');
@@ -1710,7 +1706,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
         }
         toast('Feed read from CX: ' + feed, 'success');
       } else {
-        currentEl.textContent = 'could not read — see terminal';
+        currentEl.textContent = 'could not read - see terminal';
         currentEl.style.color = 'var(--tc-danger)';
         toast('Could not read feed from CX', 'error');
       }
@@ -1739,7 +1735,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
       currentEl.style.color = 'var(--tc-text)';
       toast('Feed switched to ' + selectedFeed, 'success');
     } else {
-      toast('Feed switch failed — see terminal', 'error');
+      toast('Feed switch failed - see terminal', 'error');
     }
   });
 
@@ -1752,11 +1748,11 @@ $('btn-validate-creds').addEventListener('click', async () => {
     const res = await window.api.updateFeed(conn);
     $('prog').classList.remove('running'); $('prog').style.width = '100%';
     if (res && res.ok) toast('apt update complete', 'success');
-    else toast('apt update failed — see terminal', 'error');
+    else toast('apt update failed - see terminal', 'error');
   });
 })();
 
-//  CONNECTION PROFILES (header dropdown)
+// Connection profiles
 (function initProfiles() {
   const wrap    = $('profile-wrap');
   const btn     = $('profile-btn');

@@ -109,7 +109,7 @@
         <div class="field">
           <label>ADMINISTRATOR PASSWORD</label>
           <input type="password" id="cx-pass" placeholder="default: 1" value="1" autocomplete="off">
-          <div class="hint">Shared across all tabs — enter once, used everywhere</div>
+          <div class="hint">Shared across all tabs - enter once, used everywhere</div>
         </div>
       </div>
       <div class="row">
@@ -148,7 +148,7 @@
     <div class="section">
       <div class="section-label">packages</div>
 
-      <div class="pkg-section-hdr">Runtime — always installed</div>
+      <div class="pkg-section-hdr">Runtime - always installed</div>
       <div class="pkg-grid" style="margin-bottom:.25rem">
         <div class="pkg-card required">
           <div class="pkg-badge badge-req">REQUIRED</div>
@@ -162,7 +162,7 @@
         </div>
       </div>
 
-      <div class="pkg-section-hdr">Optional functions — click to toggle</div>
+      <div class="pkg-section-hdr">Optional functions - click to toggle</div>
       <div class="pkg-controls">
         <input class="pkg-search" type="text" id="pkg-search" placeholder="filter...">
         <button class="sel-btn fetch-btn" id="btn-fetch-pkgs" title="SSH to the CX and run apt-cache search">⟳ FETCH FROM FEED VIA CX</button>
@@ -195,7 +195,7 @@
 
     <div class="cred-banner" id="cred-sync-banner" style="display:none">
       <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="#00a8e8" stroke-width="1.5"/><path d="M8 5v3.5l2 1.5" stroke="#00a8e8" stroke-width="1.5" stroke-linecap="round"/></svg>
-      <span>Credentials synced from tab 01 — CX IP: <strong id="sync-ip-label">—</strong></span>
+      <span>Credentials synced from tab 01 - CX IP: <strong id="sync-ip-label">-</strong></span>
     </div>
 
     <div class="section">
@@ -266,8 +266,8 @@
       <div class="section-label">cx information</div>
       <div class="info-header" id="info-header" style="display:none">
         <div>
-          <div class="info-hostname" id="info-hostname">—</div>
-          <div class="info-sub" id="info-sub">—</div>
+          <div class="info-hostname" id="info-hostname">-</div>
+          <div class="info-sub" id="info-sub">-</div>
         </div>
         <div style="display:flex;align-items:center;gap:.6rem">
           <span class="info-ts" id="info-ts"></span>
@@ -310,7 +310,7 @@
     <!-- NETWORK CONFIGURATOR -->
     <div class="section">
       <div class="section-label">network configurator</div>
-      <div class="section-subtitle">Writes a systemd-networkd unit file to the CX and reloads immediately. The CX9240 has two independent Ethernet interfaces — <code style="color:var(--tc-warn)">end0</code> (X000) and <code style="color:var(--tc-warn)">end1</code> (X001).</div>
+      <div class="section-subtitle">Writes a systemd-networkd unit file to the CX and reloads immediately. The CX9240 has two independent Ethernet interfaces - <code style="color:var(--tc-warn)">end0</code> (X000) and <code style="color:var(--tc-warn)">end1</code> (X001).</div>
       <div class="row-inline" style="margin-bottom:.75rem;gap:.75rem">
         <div class="field" style="margin-bottom:0;max-width:140px">
           <label>INTERFACE</label>
@@ -357,7 +357,7 @@
     <!-- FIREWALL MANAGER -->
     <div class="section">
       <div class="section-label">firewall manager</div>
-      <div class="section-subtitle">Configures nftables on the CX. Default policy is DROP — only ticked ports are opened. Disabling flushes all rules.</div>
+      <div class="section-subtitle">Configures nftables on the CX. Default policy is DROP - only ticked ports are opened. Disabling flushes all rules.</div>
       <div class="field" style="margin-bottom:.75rem">
         <label>NFTABLES</label>
         <div class="toggle-group" id="fw-enable-toggle">
@@ -369,47 +369,47 @@
         <div class="pkg-card" id="fw-port-2010" data-port="2010" data-proto="tcp" data-label="TF2000 HTTP">
           <div class="pkg-badge badge-opt">TCP</div>
           <div class="pkg-name"><span class="pkg-check fw-check"><svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></span>TF2000 HTTP</div>
-          <div class="pkg-desc">Port 2010 — HMI server unencrypted</div>
+          <div class="pkg-desc">Port 2010 - HMI server unencrypted</div>
         </div>
         <div class="pkg-card" id="fw-port-48898" data-port="48898" data-proto="tcp" data-label="ADS TCP">
           <div class="pkg-badge badge-opt">TCP</div>
           <div class="pkg-name"><span class="pkg-check fw-check selected"><svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></span>ADS TCP</div>
-          <div class="pkg-desc">Port 48898 — ADS data communication</div>
+          <div class="pkg-desc">Port 48898 - ADS data communication</div>
         </div>
         <div class="pkg-card" id="fw-port-48898-udp" data-port="48898" data-proto="udp" data-label="ADS UDP">
           <div class="pkg-badge badge-opt">UDP</div>
           <div class="pkg-name"><span class="pkg-check fw-check selected"><svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></span>ADS UDP</div>
-          <div class="pkg-desc">Port 48898 — ADS cyclic data</div>
+          <div class="pkg-desc">Port 48898 - ADS cyclic data</div>
         </div>
         <div class="pkg-card" id="fw-port-48899-udp" data-port="48899" data-proto="udp" data-label="ADS Discovery">
           <div class="pkg-badge badge-opt">UDP</div>
           <div class="pkg-name"><span class="pkg-check fw-check selected"><svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></span>ADS Discovery</div>
-          <div class="pkg-desc">Port 48899 — TwinCAT broadcast search</div>
+          <div class="pkg-desc">Port 48899 - TwinCAT broadcast search</div>
         </div>
         <div class="pkg-card" id="fw-port-8016" data-port="8016" data-proto="tcp" data-label="ADS Secure">
           <div class="pkg-badge badge-opt">TCP</div>
           <div class="pkg-name"><span class="pkg-check fw-check selected"><svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></span>ADS Secure</div>
-          <div class="pkg-desc">Port 8016 — Secure ADS connection</div>
+          <div class="pkg-desc">Port 8016 - Secure ADS connection</div>
         </div>
         <div class="pkg-card" id="fw-port-2020" data-port="2020" data-proto="tcp" data-label="TF2000 HMI">
           <div class="pkg-badge badge-opt">TCP</div>
           <div class="pkg-name"><span class="pkg-check fw-check"><svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></span>TF2000 HMI</div>
-          <div class="pkg-desc">Port 2020 — HMI server HTTPS</div>
+          <div class="pkg-desc">Port 2020 - HMI server HTTPS</div>
         </div>
         <div class="pkg-card" id="fw-port-4840" data-port="4840" data-proto="tcp" data-label="OPC-UA">
           <div class="pkg-badge badge-opt">TCP</div>
           <div class="pkg-name"><span class="pkg-check fw-check"><svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></span>OPC-UA</div>
-          <div class="pkg-desc">Port 4840 — OPC Unified Architecture</div>
+          <div class="pkg-desc">Port 4840 - OPC Unified Architecture</div>
         </div>
         <div class="pkg-card" id="fw-port-80" data-port="80" data-proto="tcp" data-label="HTTP">
           <div class="pkg-badge badge-opt">TCP</div>
           <div class="pkg-name"><span class="pkg-check fw-check"><svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></span>HTTP</div>
-          <div class="pkg-desc">Port 80 — unencrypted web</div>
+          <div class="pkg-desc">Port 80 - unencrypted web</div>
         </div>
         <div class="pkg-card" id="fw-port-443" data-port="443" data-proto="tcp" data-label="HTTPS">
           <div class="pkg-badge badge-opt">TCP</div>
           <div class="pkg-name"><span class="pkg-check fw-check"><svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></span>HTTPS</div>
-          <div class="pkg-desc">Port 443 — encrypted web</div>
+          <div class="pkg-desc">Port 443 - encrypted web</div>
         </div>
       </div>
       <div class="row-inline" style="margin-bottom:.5rem;gap:.5rem">
@@ -433,7 +433,7 @@
       <div class="field" style="margin-bottom:.6rem">
         <label>CURRENT FEED (READ FROM CX)</label>
         <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap">
-          <span id="apt-feed-current" style="font-family:var(--tc-mono);font-size:12px;color:var(--tc-muted)">unknown — connect to read</span>
+          <span id="apt-feed-current" style="font-family:var(--tc-mono);font-size:12px;color:var(--tc-muted)">unknown - connect to read</span>
           <button class="sel-btn" id="btn-apt-read-feed" style="font-size:10px;padding:.25rem .6rem">⟳ READ</button>
         </div>
       </div>
@@ -560,12 +560,12 @@
 
       <div class="progress-bar-wrap"><div class="progress-bar" id="prog"></div></div>
 
-      <!-- Terminal pane — holds live SSH output -->
+      <!-- Terminal pane - holds live SSH output -->
       <div class="output-panel terminal" id="terminal-output">
-        <span style="color:var(--tc-muted)">// terminal idle — click "RUN SETUP LIVE" or "APPLY CONFIG LIVE" to stream output</span>
+        <span style="color:var(--tc-muted)">// terminal idle - click "RUN SETUP LIVE" or "APPLY CONFIG LIVE" to stream output</span>
       </div>
 
-      <!-- Script pane — holds generated bash script -->
+      <!-- Script pane - holds generated bash script -->
       <div class="output-panel" id="script-output" style="display:none">
         <span style="color:var(--tc-muted)">// configure settings on tab 01 or 02, then click GENERATE SCRIPT</span>
       </div>
@@ -597,7 +597,7 @@
       </div>
     </div>
     <div class="disclaimer-body">
-      <p>This app and the associated scripts are provided <strong>"as is,"</strong> without any warranties — express or implied — including, but not limited to, accuracy, completeness, reliability, or suitability for any purpose.</p>
+      <p>This app and the associated scripts are provided <strong>"as is,"</strong> without any warranties - express or implied - including, but not limited to, accuracy, completeness, reliability, or suitability for any purpose.</p>
       <p>The author(s) shall not be held liable for any errors, omissions, delays, or damages arising from the use or display of this information. All opinions expressed are solely those of the author(s) and do not necessarily represent those of any organisation, employer, or other entity.</p>
       <p>Any assumptions or conclusions presented are subject to revision or rethinking at any time. Use of this information, code, or scripts provided is <strong>at your own risk.</strong> Readers are encouraged to independently verify facts.</p>
       <p>This content does not constitute professional advice, and no client or advisory relationship is formed through its use.</p>

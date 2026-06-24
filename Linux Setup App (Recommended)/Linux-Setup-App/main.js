@@ -7,7 +7,7 @@ const os = require('os');
 const SSHManager = require('./src/ssh-manager');
 const ScriptBuilder = require('./src/script-builder');
 
-// Suppress uncaught ECONNRESET errors — these are expected when the CX drops
+// Suppress uncaught ECONNRESET errors - these are expected when the CX drops
 // the SSH connection mid-operation (network reload, reboot, poweroff). The
 // individual handlers already detect and handle connection drops gracefully;
 // without this the raw TCP error bubbles up to Electron and shows a dialog.
@@ -18,7 +18,7 @@ process.on('uncaughtException', (err) => {
 });
 
 
-// Single-instance lock — prevents multiple windows
+// Single instance lock
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
@@ -89,7 +89,7 @@ app.on('activate', () => {
 });
 
 
-// Helper — send event to renderer
+// Send event to renderer
 function sendToRenderer(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(channel, payload);
@@ -171,7 +171,7 @@ ipcMain.handle('ssh:run-setup', async (_evt, opts) => {
 
   try {
     await mgr.connect({ host, username, password, port: port || 22 });
-    sendToRenderer('ssh:status', { sessionId, status: 'connected', message: `SSH OK — ${host}` });
+    sendToRenderer('ssh:status', { sessionId, status: 'connected', message: `SSH OK - ${host}` });
 
     // Generate inner script
     const innerScript = ScriptBuilder.buildInnerSetupScript({
@@ -190,7 +190,7 @@ ipcMain.handle('ssh:run-setup', async (_evt, opts) => {
     await mgr.putFile(tmpPath, '/tmp/twincat_setup.sh');
     await fs.promises.unlink(tmpPath).catch(() => {});
 
-    sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m Executing on CX — this takes 10-15 minutes. Do not interrupt.\r\n\r\n` });
+    sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m Executing on CX - this takes 10-15 minutes. Do not interrupt.\r\n\r\n` });
 
     const shellEscape = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
     const runCmd =
@@ -208,7 +208,7 @@ ipcMain.handle('ssh:run-setup', async (_evt, opts) => {
     sendToRenderer('ssh:status', {
       sessionId,
       status: isReboot || result.code === 0 ? 'complete' : 'failed',
-      message: isReboot ? 'CX rebooting — setup complete' : `Exit code ${result.code}`
+      message: isReboot ? 'CX rebooting - setup complete' : `Exit code ${result.code}`
     });
 
     mgr.dispose();
@@ -216,7 +216,7 @@ ipcMain.handle('ssh:run-setup', async (_evt, opts) => {
     return { ok: true, sessionId, exitCode: result.code, rebooted: isReboot };
 
   } catch (err) {
-    // SSH may drop as CX reboots — detect that and treat as success
+    // SSH may drop as CX reboots - detect that and treat as success
     const msg = String(err.message || err);
     const looksLikeReboot = /ECONNRESET|not connected|Connection lost|Client network socket disconnected/i.test(msg);
 
@@ -247,7 +247,7 @@ ipcMain.handle('ssh:run-tf1200', async (_evt, opts) => {
 
   try {
     await mgr.connect({ host, username, password, port: port || 22 });
-    sendToRenderer('ssh:status', { sessionId, status: 'connected', message: `SSH OK — ${host}` });
+    sendToRenderer('ssh:status', { sessionId, status: 'connected', message: `SSH OK - ${host}` });
 
     const innerScript = ScriptBuilder.buildInnerTF1200Script({ jsonConfig });
 
@@ -275,7 +275,7 @@ ipcMain.handle('ssh:run-tf1200', async (_evt, opts) => {
     sendToRenderer('ssh:status', {
       sessionId,
       status: isReboot || result.code === 0 ? 'complete' : 'failed',
-      message: isReboot ? 'CX rebooting — config applied' : `Exit code ${result.code}`
+      message: isReboot ? 'CX rebooting - config applied' : `Exit code ${result.code}`
     });
 
     mgr.dispose();
@@ -327,7 +327,7 @@ ipcMain.handle('script:save', async (_evt, { content, defaultName }) => {
 });
 
 
-// IPC: generate scripts (preview/copy) — delegates to script-builder
+// IPC: generate scripts for preview/copy
 ipcMain.handle('script:build-setup', async (_evt, opts) => {
   return { ok: true, script: ScriptBuilder.buildFullSetupScript(opts) };
 });
@@ -338,10 +338,10 @@ ipcMain.handle('script:build-tf1200', async (_evt, opts) => {
 //Skibidi end 67 big chungus
 
 
-// CX MANAGEMENT — new IPC handlers
+// CX management IPC handlers
 
 
-// Helper: run a short command and return full output
+// Run a short command and return full output
 async function sshExec(opts, cmd) {
   const mgr = new SSHManager();
   await mgr.connect({ host: opts.host, username: opts.username || 'Administrator', password: opts.password, port: opts.port || 22 });
@@ -350,13 +350,13 @@ async function sshExec(opts, cmd) {
   return result;
 }
 
-// Helper: stream a command to terminal tab
+// Run a command and stream output to the terminal tab
 async function sshStream(sessionId, opts, cmd) {
   const mgr = new SSHManager();
   activeSessions.set(sessionId, mgr);
   sendToRenderer('ssh:status', { sessionId, status: 'connecting', message: `Connecting to ${opts.host}...` });
   await mgr.connect({ host: opts.host, username: opts.username || 'Administrator', password: opts.password, port: opts.port || 22 });
-  sendToRenderer('ssh:status', { sessionId, status: 'connected', message: `SSH OK — ${opts.host}` });
+  sendToRenderer('ssh:status', { sessionId, status: 'connected', message: `SSH OK - ${opts.host}` });
   const result = await mgr.execStream(cmd, {
     onStdout: (chunk) => sendToRenderer('ssh:output', { sessionId, data: chunk.toString() }),
     onStderr: (chunk) => sendToRenderer('ssh:output', { sessionId, data: chunk.toString() })
@@ -367,12 +367,12 @@ async function sshStream(sessionId, opts, cmd) {
 }
 
 
-//  MyBeckhoff Credential Validator 
-// Uses curl on the CX to do a fast HEAD request against the Beckhoff APT repo.
-// Returns in <3 seconds — no apt update required.
+// MyBeckhoff credential validator
+// Uses curl on the CX to check credentials against the Beckhoff APT repo.
+// Returns in under 3 seconds - no apt update needed.
 ipcMain.handle('cx:validate-creds', async (_evt, { host, password, port, beckhoffUser, beckhoffPass }) => {
   const esc = (s) => (s || '').replace(/'/g, "'\''");
-  // curl a known Beckhoff InRelease file with basic auth — 200 = valid, 401 = bad creds
+  // curl a known Beckhoff InRelease file with basic auth - 200 = valid, 401 = bad creds
   const cmd = `curl -s -o /dev/null -w "%{http_code}" --max-time 10 ` +
     `--user '${esc(beckhoffUser)}:${esc(beckhoffPass)}' ` +
     `https://deb.beckhoff.com/debian/dists/trixie-stable/InRelease`;
@@ -384,14 +384,14 @@ ipcMain.handle('cx:validate-creds', async (_evt, { host, password, port, beckhof
     const code = (result.stdout || '').trim();
     if (code === '200') return { ok: true };
     if (code === '401' || code === '403') return { ok: false, error: 'Invalid MyBeckhoff credentials (server returned ' + code + ')' };
-    if (code === '000') return { ok: false, error: 'Could not reach deb.beckhoff.com — check CX network/internet' };
+    if (code === '000') return { ok: false, error: 'Could not reach deb.beckhoff.com - check CX network/internet' };
     return { ok: false, error: 'Unexpected response: HTTP ' + (code || 'timeout') };
   } catch (err) {
     return { ok: false, error: err.message };
   }
 });
 
-//  Network Configurator 
+// Network configurator
 ipcMain.handle('cx:network', async (_evt, opts) => {
   // opts: { host, password, iface, mode:'dhcp'|'static', ip, prefix, gateway, dns }
   const { host, password, port, iface = 'end0', mode, ip, prefix = '24', gateway, dns = '8.8.8.8' } = opts;
@@ -454,13 +454,13 @@ echo "[CX] Gateway: ${gateway || 'none'}  DNS: ${dns}"
     });
     mgr.dispose();
     activeSessions.delete(sessionId);
-    sendToRenderer('ssh:status', { sessionId, status: result.code === 0 ? 'complete' : 'failed', message: result.code === 0 ? 'Network config applied — connection may drop if IP changed' : `Exit ${result.code}` });
+    sendToRenderer('ssh:status', { sessionId, status: result.code === 0 ? 'complete' : 'failed', message: result.code === 0 ? 'Network config applied - connection may drop if IP changed' : `Exit ${result.code}` });
     return { ok: result.code === 0, sessionId };
   } catch (err) {
     const msg = String(err.message || err);
     const looksLikeReload = /ECONNRESET|not connected|Connection lost|Client network socket disconnected/i.test(msg);
     if (looksLikeReload) {
-      sendToRenderer('ssh:output', { sessionId, data: `\r\n\x1b[0;32m[LOCAL]\x1b[0m Connection dropped — this is expected when the IP changes. Config was applied.\r\n` });
+      sendToRenderer('ssh:output', { sessionId, data: `\r\n\x1b[0;32m[LOCAL]\x1b[0m Connection dropped - this is expected when the IP changes. Config was applied.\r\n` });
       sendToRenderer('ssh:status', { sessionId, status: 'complete', message: 'Network config applied (connection dropped as expected)' });
       return { ok: true, sessionId };
     }
@@ -469,7 +469,7 @@ echo "[CX] Gateway: ${gateway || 'none'}  DNS: ${dns}"
   }
 });
 
-//  Firewall Manager 
+// Firewall manager
 ipcMain.handle('cx:firewall', async (_evt, opts) => {
   // opts: { host, password, port, enable:bool, ports:[{port,proto,label,open}] }
   const { host, password, port, enable, ports = [] } = opts;
@@ -494,7 +494,7 @@ _sudo nft add chain inet filter output '{ type filter hook output priority 0; po
 # Always allow established/related and loopback
 _sudo nft add rule inet filter input ct state established,related accept
 _sudo nft add rule inet filter input iif lo accept
-# SSH port 22 is always open — hardcoded, cannot be blocked via the UI
+# SSH port 22 is always open - hardcoded, cannot be blocked via the UI
 _sudo nft add rule inet filter input tcp dport 22 accept
 ${openRules}
 _sudo systemctl enable nftables
@@ -504,7 +504,7 @@ echo "[CX] Firewall enabled with selected ports open."` :
 _sudo systemctl stop nftables || true
 _sudo systemctl disable nftables || true
 _sudo nft flush ruleset || true
-echo "[CX] Firewall disabled — all ports open."`}
+echo "[CX] Firewall disabled - all ports open."`}
 `;
 
   try {
@@ -529,7 +529,7 @@ echo "[CX] Firewall disabled — all ports open."`}
   }
 });
 
-//  Password Changer 
+// Password changer
 ipcMain.handle('cx:passwd', async (_evt, opts) => {
   // opts: { host, password, port, targetUser, newPassword }
   const { host, password, port, targetUser, newPassword } = opts;
@@ -570,7 +570,7 @@ echo "[CX] Password changed successfully for $TARGET."
 });
 
 
-//  Package Update Checker
+// Package update checker
 ipcMain.handle('cx:fetch-updates', async (_evt, opts) => {
   const { host, password, port, checkUpdates } = opts;
   try {
@@ -609,7 +609,7 @@ ipcMain.handle('cx:fetch-updates', async (_evt, opts) => {
   }
 });
 
-//  Run apt upgrade (selective or full) 
+// Run apt upgrade
 ipcMain.handle('cx:upgrade', async (_evt, opts) => {
   const { host, password, port, packages } = opts;
   const sessionId = `upgrade-${Date.now()}`;
@@ -650,7 +650,7 @@ echo "[CX] Upgrade complete."
   }
 });
 
-// Post-install verification 
+// Post-install verification
 ipcMain.handle('cx:verify', async (_evt, opts) => {
   const { host, password, port, packages = [] } = opts;
   const sessionId = `verify-${Date.now()}`;
@@ -731,7 +731,7 @@ echo "=== END ==="
   }
 });
 
-//  Power Management — shutdown / restart / TwinCAT runtime restart
+// Power management - shutdown, restart, TC runtime restart
 ipcMain.handle('cx:power', async (_evt, opts) => {
   // opts: { host, password, port, action: 'shutdown' | 'restart' | 'tc-restart' }
   const { host, password, port, action } = opts;
@@ -750,7 +750,7 @@ ipcMain.handle('cx:power', async (_evt, opts) => {
     label = 'Rebooting the CX';
     expectDrop = true;
   } else if (action === 'tc-restart') {
-    // Restart only the TwinCAT 3 runtime — the SSH session stays up.
+    // Restart only the TwinCAT 3 runtime - the SSH session stays up.
     // The live target image runs the runtime as TcSystemServiceUm; other images
     // use tc31-xar, so try the first and fall back to the second.
     cmd = `${_sudo} bash -c "systemctl restart TcSystemServiceUm 2>/dev/null || systemctl restart tc31-xar; systemctl is-active TcSystemServiceUm 2>/dev/null || systemctl is-active tc31-xar"`;
@@ -766,7 +766,7 @@ ipcMain.handle('cx:power', async (_evt, opts) => {
 
   try {
     await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
-    sendToRenderer('ssh:status', { sessionId, status: 'connected', message: `SSH OK — ${host}` });
+    sendToRenderer('ssh:status', { sessionId, status: 'connected', message: `SSH OK - ${host}` });
     sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m ${label}...\r\n` });
 
     const result = await mgr.execStream(cmd, {
@@ -778,7 +778,7 @@ ipcMain.handle('cx:power', async (_evt, opts) => {
     activeSessions.delete(sessionId);
 
     if (expectDrop) {
-      // poweroff/reboot can return cleanly OR sever the link first — both mean success
+      // poweroff/reboot can return cleanly OR sever the link first - both mean success
       const msg = action === 'shutdown' ? 'CX is powering off' : 'CX is rebooting';
       sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;32m[LOCAL]\x1b[0m ${msg}.\r\n` });
       sendToRenderer('ssh:status', { sessionId, status: 'complete', message: msg });
@@ -814,7 +814,7 @@ ipcMain.handle('cx:power', async (_evt, opts) => {
   }
 });
 
-//  User Management — enumerate human accounts (read-only, structured return)
+// User management - list accounts
 ipcMain.handle('cx:users-list', async (_evt, opts) => {
   const { host, password, port } = opts || {};
   const escPass = String(password || '').replace(/'/g, "'\\''");
@@ -857,14 +857,14 @@ done < /etc/passwd`;
 });
 
 
-//  User Management — add / delete / passwd / sudo / lock / ssh-key / force-change
+// User management - write actions (add, delete, passwd, sudo, lock, ssh key)
 ipcMain.handle('cx:user-mgmt', async (_evt, opts) => {
   const { host, password, port, action, targetUser, newPassword, sshKey, addSudo, removeHome } = opts || {};
   const sessionId = `usermgmt-${Date.now()}`;
   const b64 = (s) => Buffer.from(String(s == null ? '' : s), 'utf8').toString('base64');
   const escPass = String(password || '').replace(/'/g, "'\\''");
 
-  // Defence in depth — the renderer also blocks these, but never trust the client.
+  // Defence in depth - the renderer also blocks these, but never trust the client.
   const PROTECTED = ['root', 'Administrator'];
   if ((action === 'delete' || action === 'lock') && PROTECTED.includes(targetUser)) {
     return { ok: false, error: `Refused: ${action} is blocked for protected user "${targetUser}"` };
@@ -954,7 +954,7 @@ ${body}`;
   }
 });
 
-//  TF1200 — read current config.json from the CX (non-destructive)
+// TF1200 - read config.json from CX
 ipcMain.handle('cx:read-tf1200-config', async (_evt, opts) => {
   const { host, password, port } = opts || {};
   const escPass = String(password || '').replace(/'/g, "'\\''");
@@ -981,7 +981,7 @@ ipcMain.handle('cx:read-tf1200-config', async (_evt, opts) => {
   }
 });
 
-//  CX Info Panel — pulls system info in a single SSH session
+// CX info panel - reads system info over SSH
 ipcMain.handle('cx:info', async (_evt, opts) => {
   const { host, password, port } = opts || {};
   const escPass = String(password || '').replace(/'/g, "'\\''");
@@ -991,7 +991,7 @@ ipcMain.handle('cx:info', async (_evt, opts) => {
   try {
     await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
 
-    // One compound command — single round trip, all fields delimited by |||
+    // One compound command - single round trip, all fields delimited by |||
     const cmd = `
 _sudo() { echo '${escPass}' | sudo -S -p '' "$@"; }
 echo "HOSTNAME|||$(hostname)"
@@ -1042,7 +1042,7 @@ done
     return {
       ok: true,
       info,
-      ifaces: Object.entries(ifaces).map(([name, d]) => ({ name, ip: d.ip || '—', state: d.state || 'unknown' })),
+      ifaces: Object.entries(ifaces).map(([name, d]) => ({ name, ip: d.ip || '-', state: d.state || 'unknown' })),
       svcs
     };
   } catch (err) {
@@ -1052,7 +1052,7 @@ done
   }
 });
 
-//  APT Feed Manager — read existing MyBeckhoff credentials from CX
+// APT feed - read MyBeckhoff credentials from CX
 ipcMain.handle('cx:read-apt-creds', async (_evt, opts) => {
   const { host, password, port } = opts || {};
   const escPass = String(password || '').replace(/'/g, "'\\''");
@@ -1071,7 +1071,7 @@ ipcMain.handle('cx:read-apt-creds', async (_evt, opts) => {
       ok: true,
       username: loginMatch[1].trim(),
       hasPassword: !!passMatch,
-      // Never return the actual password — just confirm it exists
+      // Never return the actual password - just confirm it exists
     };
   } catch (err) {
     mgr.dispose();
@@ -1080,7 +1080,7 @@ ipcMain.handle('cx:read-apt-creds', async (_evt, opts) => {
 });
 
 
-//  APT Feed Manager — switch feed channel (rewrites bhf.list + apt update)
+// APT feed - switch channel and run apt update
 ipcMain.handle('cx:switch-feed', async (_evt, opts) => {
   const { host, password, port, feed } = opts || {};
   const sessionId = `switchfeed-${Date.now()}`;
@@ -1127,7 +1127,7 @@ echo "[CX] Done. Feed is now ${channel}."
 });
 
 
-//  APT Feed Manager — apt update only (no feed change)
+// APT feed - run apt update only
 ipcMain.handle('cx:update-feed', async (_evt, opts) => {
   const { host, password, port } = opts || {};
   const sessionId = `updatefeed-${Date.now()}`;
@@ -1171,19 +1171,19 @@ echo "[CX] apt update complete."
   }
 });
 
-//  Connection Profiles — load all profiles from userData
+// Connection profiles - load from disk
 ipcMain.handle('profiles:load', async () => {
   const profilesPath = path.join(app.getPath('userData'), 'cx-profiles.json');
   try {
     const raw = await fs.promises.readFile(profilesPath, 'utf8');
     return { ok: true, profiles: JSON.parse(raw) };
   } catch (e) {
-    // File doesn't exist yet — return empty array
+    // File doesn't exist yet - return empty array
     return { ok: true, profiles: [] };
   }
 });
 
-//  Connection Profiles — save all profiles to userData
+// Connection profiles - save to disk
 ipcMain.handle('profiles:save', async (_evt, { profiles }) => {
   const profilesPath = path.join(app.getPath('userData'), 'cx-profiles.json');
   try {
