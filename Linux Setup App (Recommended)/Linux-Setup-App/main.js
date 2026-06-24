@@ -980,3 +980,74 @@ ipcMain.handle('cx:read-tf1200-config', async (_evt, opts) => {
     return { ok: false, error: err.message };
   }
 });
+
+//  CX Info Panel — pulls system info in a single SSH session
+ipcMain.handle('cx:info', async (_evt, opts) => {
+  const { host, password, port } = opts || {};
+  const escPass = String(password || '').replace(/'/g, "'\\''");
+  const mgr = new SSHManager();
+  const sessionId = `cxinfo-${Date.now()}`;
+  activeSessions.set(sessionId, mgr);
+  try {
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+
+    // One compound command — single round trip, all fields delimited by |||
+    const cmd = `
+_sudo() { echo '${escPass}' | sudo -S -p '' "$@"; }
+echo "HOSTNAME|||$(hostname)"
+echo "OS|||$(grep PRETTY_NAME /etc/os-release | cut -d= -f2 | tr -d '"')"
+echo "KERNEL|||$(uname -r)"
+echo "ARCH|||$(uname -m)"
+echo "UPTIME|||$(awk '{d=int($1/86400);h=int(($1%86400)/3600);m=int(($1%3600)/60); if(d>0) printf d"d "h"h"; else if(h>0) printf h"h "m"m"; else printf m"m"}' /proc/uptime)"
+echo "TC_VER|||$(dpkg-query -W -f='\${Version}' tc31-xar-um 2>/dev/null || echo unknown)"
+echo "FEED|||$(grep -oE 'trixie-[a-z]+' /etc/apt/sources.list.d/bhf.list 2>/dev/null | head -1 || echo unknown)"
+df -BM / | awk 'NR==2{gsub("M","",$2);gsub("M","",$3);gsub("M","",$4); print "DISK_TOTAL|||"$2"\nDISK_USED|||"$3"\nDISK_AVAIL|||"$4"\nDISK_PCT|||"int($3/$2*100)}'
+free -m | awk '/^Mem:/{print "MEM_TOTAL|||"$2"\nMEM_USED|||"$3"\nMEM_AVAIL|||"$7}'
+ip -o addr show | awk '/inet / && !/127.0.0.1/{split($4,a,"/"); print "IFACE|||"$2"|||"a[1]"/"substr($4, index($4,"/")+1)}'
+ip link show | awk '/^[0-9]+: (end|eth|eno)[^:]+:/{match($0,/[0-9]+: ([^:]+):/,n); state=($9=="UP")?"up":"down"; print "IFACE_STATE|||"n[1]"|||"state}'
+for svc in TcSystemServiceUm TcHmiSrv nftables ssh MDPService; do
+  st=$(_sudo systemctl is-active $svc 2>/dev/null || echo inactive)
+  echo "SVC|||$svc|||$st"
+done
+`;
+    const result = await mgr.exec(cmd);
+    mgr.dispose();
+    activeSessions.delete(sessionId);
+
+    const info = {};
+    const ifaces = {};
+    const svcs = [];
+
+    String(result.stdout || '').split(/\r?\n/).forEach(line => {
+      const parts = line.trim().split('|||');
+      if (parts.length < 2) return;
+      const [key, v1, v2] = parts;
+      switch (key) {
+        case 'IFACE':
+          if (!ifaces[v1]) ifaces[v1] = {};
+          ifaces[v1].ip = v2;
+          break;
+        case 'IFACE_STATE':
+          if (!ifaces[v1]) ifaces[v1] = {};
+          ifaces[v1].state = v2;
+          break;
+        case 'SVC':
+          svcs.push({ name: v1, state: v2 });
+          break;
+        default:
+          info[key] = v1;
+      }
+    });
+
+    return {
+      ok: true,
+      info,
+      ifaces: Object.entries(ifaces).map(([name, d]) => ({ name, ip: d.ip || '—', state: d.state || 'unknown' })),
+      svcs
+    };
+  } catch (err) {
+    mgr.dispose();
+    activeSessions.delete(sessionId);
+    return { ok: false, error: err.message };
+  }
+});
