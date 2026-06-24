@@ -1001,8 +1001,8 @@ echo "ARCH|||$(uname -m)"
 echo "UPTIME|||$(awk '{d=int($1/86400);h=int(($1%86400)/3600);m=int(($1%3600)/60); if(d>0) printf d"d "h"h"; else if(h>0) printf h"h "m"m"; else printf m"m"}' /proc/uptime)"
 echo "TC_VER|||$(dpkg-query -W -f='\${Version}' tc31-xar-um 2>/dev/null || echo unknown)"
 echo "FEED|||$(grep -oE 'trixie-[a-z]+' /etc/apt/sources.list.d/bhf.list 2>/dev/null | head -1 || echo unknown)"
-df -BM / | awk 'NR==2{t=$2;u=$3;a=$4; gsub("M","",t); gsub("M","",u); gsub("M","",a); gsub("\r","",t); gsub("\r","",u); gsub("\r","",a); pct=int(u/t*100); print "DISK_TOTAL|||"t"\nDISK_USED|||"u"\nDISK_AVAIL|||"a"\nDISK_PCT|||"pct}'
-free -m | awk '/^Mem:/{t=$2;u=$3;av=$7; gsub("\r","",t); gsub("\r","",u); gsub("\r","",av); print "MEM_TOTAL|||"t"\nMEM_USED|||"u"\nMEM_AVAIL|||"av}'
+df -BM / | awk 'NR==2{t=$2;u=$3;a=$4; gsub("M","",t); gsub("M","",u); gsub("M","",a); gsub("\r","",t); gsub("\r","",u); gsub("\r","",a); pct=int(u/t*100); print "DISK_TOTAL|||"t; print "DISK_USED|||"u; print "DISK_AVAIL|||"a; print "DISK_PCT|||"pct}'
+free -m | awk '/^Mem:/{t=$2;u=$3;av=$7; gsub("\r","",t); gsub("\r","",u); gsub("\r","",av); print "MEM_TOTAL|||"t; print "MEM_USED|||"u; print "MEM_AVAIL|||"av}'
 ip -o addr show | awk '/inet / && !/127.0.0.1/{split($4,a,"/"); gsub("\r","",a[1]); n=$2; gsub("\r","",n); print "IFACE|||"n"|||"a[1]"/"substr($4,index($4,"/")+1)}'
 ip link show | awk '/^[0-9]/{iface=$2; gsub(":","",iface); gsub("\r","",iface)} /state/{for(i=1;i<=NF;i++) if($i=="state"){st=$(i+1); gsub("\r","",st); if(iface~/^(end|eth|eno)/) print "IFACE_STATE|||"iface"|||"(st=="UP"?"up":"down")}}'
 for svc in TcSystemServiceUm TcHmiSrv nftables ssh MDPService; do
