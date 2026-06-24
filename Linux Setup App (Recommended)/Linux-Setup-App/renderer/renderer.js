@@ -926,7 +926,7 @@ function toggleGroupInit(id) {
 
 $('btn-apply-network').addEventListener('click', async () => {
   const conn = getCxMgmtConn();
-  if (!conn.host) { showToast('Enter CX IP address', 'warn'); return; }
+  if (!conn.host) { toast('Enter CX IP address', 'warn'); return; }
   const iface = document.querySelector('#net-iface-toggle .toggle-opt.active')?.dataset.val || 'end0';
   const mode  = document.querySelector('#net-mode-toggle .toggle-opt.active')?.dataset.val || 'dhcp';
   const opts = { ...conn, iface, mode };
@@ -935,7 +935,7 @@ $('btn-apply-network').addEventListener('click', async () => {
     opts.prefix  = $('net-prefix').value.trim() || '24';
     opts.gateway = $('net-gateway').value.trim();
     opts.dns     = $('net-dns').value.trim() || '8.8.8.8';
-    if (!opts.ip) { showToast('Enter an IP address', 'warn'); return; }
+    if (!opts.ip) { toast('Enter an IP address', 'warn'); return; }
   }
   $('btn-apply-network').disabled = true;
   $('btn-apply-network').textContent = '...';
@@ -951,9 +951,9 @@ $('btn-apply-network').addEventListener('click', async () => {
   }
   $('btn-apply-network').disabled = false;
   $('btn-apply-network').textContent = '▶ APPLY NETWORK CONFIG';
-  if (res.timedOut) showToast('Config applied — connection dropped (IP changed)', 'ok');
-  else if (!res.ok) showToast('Network config failed — see terminal', 'error');
-  else showToast('Network config applied', 'ok');
+  if (res.timedOut) toast('Config applied — connection dropped (IP changed)', 'success');
+  else if (!res.ok) toast('Network config failed — see terminal', 'error');
+  else toast('Network config applied', 'success');
 });
 
 //  Firewall Manager 
@@ -971,11 +971,11 @@ document.querySelectorAll('#fw-ports-grid .pkg-card').forEach(card => {
 
 $('btn-fw-add-port').addEventListener('click', () => {
   const portVal = $('fw-custom-port').value.trim();
-  if (!portVal || isNaN(parseInt(portVal))) { showToast('Enter a valid port number', 'warn'); return; }
+  if (!portVal || isNaN(parseInt(portVal))) { toast('Enter a valid port number', 'warn'); return; }
   const proto = document.querySelector('#fw-custom-proto .toggle-opt.active')?.dataset.val || 'tcp';
   const grid = $('fw-ports-grid');
   if (grid.querySelector(`[data-port="${portVal}"][data-proto="${proto}"]`)) {
-    showToast(`Port ${portVal}/${proto.toUpperCase()} already in list`, 'warn'); return;
+    toast(`Port ${portVal}/${proto.toUpperCase()} already in list`, 'warn'); return;
   }
   const card = document.createElement('div');
   card.className = 'pkg-card';
@@ -995,12 +995,12 @@ $('btn-fw-add-port').addEventListener('click', () => {
   });
   grid.appendChild(card);
   $('fw-custom-port').value = '';
-  showToast(`Port ${portVal}/${proto.toUpperCase()} added`, 'ok');
+  toast(`Port ${portVal}/${proto.toUpperCase()} added`, 'success');
 });
 
 $('btn-apply-firewall').addEventListener('click', async () => {
   const conn = getCxMgmtConn();
-  if (!conn.host) { showToast('Enter CX IP address', 'warn'); return; }
+  if (!conn.host) { toast('Enter CX IP address', 'warn'); return; }
   const enable = document.querySelector('#fw-enable-toggle .toggle-opt.active')?.dataset.val === 'true';
   const ports = [];
   document.querySelectorAll('#fw-ports-grid .pkg-card').forEach(card => {
@@ -1017,7 +1017,7 @@ $('btn-apply-firewall').addEventListener('click', async () => {
   const res = await window.api.applyFirewall({ ...conn, enable, ports });
   $('btn-apply-firewall').disabled = false;
   $('btn-apply-firewall').textContent = '▶ APPLY FIREWALL CONFIG';
-  if (!res.ok) showToast('Firewall config failed — see terminal', 'error');
+  if (!res.ok) toast('Firewall config failed — see terminal', 'error');
 });
 
 //  TF2000 confirm field on tab 01 
@@ -1049,7 +1049,7 @@ $('tf2000-pass-confirm')?.addEventListener('input', checkTf2000Match);
 const _origSetupClick = $('btn-run-setup').onclick;
 $('btn-run-setup').addEventListener('click', (e) => {
   if ($('tf2000-pass-confirm') && $('tf2000-pass')?.value && !checkTf2000Match()) {
-    showToast('TF2000 passwords do not match', 'warn');
+    toast('TF2000 passwords do not match', 'warn');
     e.stopImmediatePropagation();
   }
 }, true);
@@ -1084,13 +1084,13 @@ function renderInstalledTable() {
 
 $('btn-fetch-installed').addEventListener('click', async () => {
   const conn = getCxMgmtConn();
-  if (!conn.host) { showToast('Enter CX IP address', 'warn'); return; }
+  if (!conn.host) { toast('Enter CX IP address', 'warn'); return; }
   $('btn-fetch-installed').disabled = true;
   $('btn-fetch-installed').textContent = '⟳ FETCHING...';
   const res = await window.api.fetchUpdates(conn);
   $('btn-fetch-installed').disabled = false;
   $('btn-fetch-installed').textContent = '⟳ FETCH INSTALLED';
-  if (!res.ok) { showToast('Failed to fetch packages — check connection', 'error'); return; }
+  if (!res.ok) { toast('Failed to fetch packages — check connection', 'error'); return; }
   _installedPkgs = res.packages;
   $('installed-result').style.display = 'block';
   $('installed-count').textContent = `${res.packages.length} TwinCAT package${res.packages.length !== 1 ? 's' : ''} installed`;
@@ -1100,13 +1100,13 @@ $('btn-fetch-installed').addEventListener('click', async () => {
 
 $('btn-fetch-updates').addEventListener('click', async () => {
   const conn = getCxMgmtConn();
-  if (!conn.host) { showToast('Enter CX IP address', 'warn'); return; }
+  if (!conn.host) { toast('Enter CX IP address', 'warn'); return; }
   $('btn-fetch-updates').disabled = true;
   $('btn-fetch-updates').textContent = '⟳ CHECKING...';
   const res = await window.api.fetchUpdates({ ...conn, checkUpdates: true });
   $('btn-fetch-updates').disabled = false;
   $('btn-fetch-updates').textContent = '⟳ CHECK FOR UPDATES';
-  if (!res.ok) { showToast('Failed to check updates', 'error'); return; }
+  if (!res.ok) { toast('Failed to check updates', 'error'); return; }
   // Merge update info into installed list
   const updateMap = {};
   res.updates.forEach(u => { updateMap[u.name] = u.newVer; });
@@ -1118,19 +1118,19 @@ $('btn-fetch-updates').addEventListener('click', async () => {
   const count = res.updates.length;
   $('installed-count').textContent = `${_installedPkgs.length} installed · ${count} update${count !== 1 ? 's' : ''} available`;
   renderInstalledTable();
-  if (count === 0) showToast('All packages up to date', 'ok');
+  if (count === 0) toast('All packages up to date', 'success');
 });
 
 $('btn-upgrade-selected').addEventListener('click', async () => {
   const conn = getCxMgmtConn();
-  if (!conn.host) { showToast('Enter CX IP address', 'warn'); return; }
+  if (!conn.host) { toast('Enter CX IP address', 'warn'); return; }
   const selected = [...document.querySelectorAll('.upd-chk:checked')].map(c => c.dataset.pkg);
-  if (!selected.length) { showToast('No packages selected', 'warn'); return; }
+  if (!selected.length) { toast('No packages selected', 'warn'); return; }
   $('btn-upgrade-selected').disabled = true;
   goToTerminal(null);
   const res = await window.api.runUpgrade({ ...conn, packages: selected });
   $('btn-upgrade-selected').disabled = false;
-  if (!res.ok) showToast('Upgrade failed — see terminal', 'error');
+  if (!res.ok) toast('Upgrade failed — see terminal', 'error');
 });
 
 
