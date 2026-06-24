@@ -1755,3 +1755,176 @@ $('btn-validate-creds').addEventListener('click', async () => {
     else toast('apt update failed — see terminal', 'error');
   });
 })();
+
+//  CONNECTION PROFILES (header dropdown)
+(function initProfiles() {
+  const wrap    = $('profile-wrap');
+  const btn     = $('profile-btn');
+  const menu    = $('profile-menu');
+  const listEl  = $('profile-list');
+  const emptyEl = $('profile-empty');
+  const saveBtn = $('btn-profile-save');
+  if (!wrap || !btn || !menu || !saveBtn) return;
+
+  let profiles = [];
+
+  // Read values from the profile form's own fields
+  function getFormCreds() {
+    return {
+      name:   ($('profile-name-input')  || {}).value?.trim()  || '',
+      ip:     ($('profile-ip-input')    || {}).value?.trim()  || '',
+      pass:   ($('profile-pass-input')  || {}).value          || '',
+      bkUser: ($('profile-bkuser-input')|| {}).value?.trim()  || '',
+      bkPass: ($('profile-bkpass-input')|| {}).value          || '',
+      saveBk: ($('profile-save-bk')     || {}).checked        || false,
+    };
+  }
+
+  // Pre-fill form from whatever is in the main credential fields
+  function prefillForm() {
+    const ip   = $('cx-ip')?.value.trim()   || $('cx-ip2')?.value.trim()   || $('cx-ip3')?.value.trim()  || '';
+    const pass = $('cx-pass')?.value        || $('cx-pass2')?.value        || $('cx-pass3')?.value       || '';
+    const bkUser = $('bk-user')?.value.trim() || '';
+    const bkPass = $('bk-pass')?.value       || '';
+    const ipEl = $('profile-ip-input');
+    const passEl = $('profile-pass-input');
+    const bkUserEl = $('profile-bkuser-input');
+    const bkPassEl = $('profile-bkpass-input');
+    if (ipEl   && !ipEl.value   && ip)     ipEl.value   = ip;
+    if (passEl && !passEl.value && pass)   passEl.value = pass;
+    if (bkUserEl && !bkUserEl.value && bkUser) bkUserEl.value = bkUser;
+    if (bkPassEl && !bkPassEl.value && bkPass) bkPassEl.value = bkPass;
+  }
+
+  // Push loaded profile to all credential fields
+  function applyProfile(p) {
+    ['cx-ip','cx-ip2','cx-ip3'].forEach(id => { if ($(id)) $(id).value = p.ip || ''; });
+    ['cx-pass','cx-pass2','cx-pass3'].forEach(id => { if ($(id)) $(id).value = p.pass || ''; });
+    if (p.bkUser && $('bk-user')) $('bk-user').value = p.bkUser;
+    if (p.bkPass && $('bk-pass')) $('bk-pass').value = p.bkPass;
+    if (typeof propagateCreds === 'function') propagateCreds(p.ip || '', p.pass || '');
+    const pmTarget = $('power-menu-target');
+    if (pmTarget && p.ip) pmTarget.textContent = 'target: ' + p.ip;
+  }
+
+  function clearForm() {
+    ['profile-name-input','profile-ip-input','profile-pass-input','profile-bkuser-input','profile-bkpass-input'].forEach(id => { if ($(id)) $(id).value = ''; });
+    const chk = $('profile-save-bk');
+    if (chk) { chk.checked = false; chk.dispatchEvent(new Event('change')); }
+  }
+
+  async function persist() {
+    await window.api.profilesSave({ profiles }).catch(() => {});
+  }
+
+  function updateBtnLabel() {
+    const labelEl = btn.querySelector('.profile-label');
+    if (labelEl) labelEl.textContent = profiles.length ? `PROFILES (${profiles.length})` : 'PROFILES';
+  }
+
+  function renderList() {
+    listEl.innerHTML = '';
+    const sep = $('profile-sep');
+    if (!profiles.length) {
+      listEl.style.display = 'none';
+      if (sep) sep.style.display = 'none';
+      updateBtnLabel();
+      return;
+    }
+    listEl.style.display = 'block';
+    if (sep) sep.style.display = 'block';
+    profiles.forEach((p, i) => {
+      const row = document.createElement('div');
+      row.className = 'profile-item';
+      row.innerHTML = `
+        <div class="profile-item-info">
+          <div class="profile-item-name">${p.name}</div>
+          <div class="profile-item-sub">${p.ip}${p.bkUser ? '  ·  ' + p.bkUser : ''}</div>
+        </div>
+        <button class="profile-item-del" data-idx="${i}" title="Delete">✕</button>`;
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('.profile-item-del')) return;
+        applyProfile(p);
+        closeMenu();
+        toast('Loaded: ' + p.name, 'success');
+      });
+      row.querySelector('.profile-item-del').addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!confirm(`Delete profile "${p.name}"?`)) return;
+        profiles.splice(i, 1);
+        await persist();
+        renderList();
+      });
+      listEl.appendChild(row);
+    });
+    updateBtnLabel();
+  }
+
+  // MyBeckhoff fields toggle
+  const saveBkChk = $('profile-save-bk');
+  if (saveBkChk) {
+    saveBkChk.addEventListener('change', function () {
+      const show = this.checked;
+      ['profile-bkuser-input','profile-bkpass-input'].forEach(id => {
+        if ($(id)) $(id).style.display = show ? 'block' : 'none';
+      });
+    });
+  }
+
+  function openMenu() {
+    menu.classList.add('open');
+    btn.classList.add('active');
+    btn.setAttribute('aria-expanded', 'true');
+    prefillForm();
+    const nameEl = $('profile-name-input');
+    if (nameEl) nameEl.focus();
+  }
+  function closeMenu() {
+    menu.classList.remove('open');
+    btn.classList.remove('active');
+    btn.setAttribute('aria-expanded', 'false');
+  }
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    menu.classList.contains('open') ? closeMenu() : openMenu();
+  });
+  document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) closeMenu(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); });
+
+  saveBtn.addEventListener('click', async () => {
+    const f = getFormCreds();
+    if (!f.name) { toast('Enter a profile name', 'warn'); return; }
+    if (!f.ip)   { toast('Enter a CX IP address', 'warn'); return; }
+    const profile = {
+      id: Date.now().toString(),
+      name: f.name,
+      ip: f.ip,
+      pass: f.pass,
+      bkUser: f.saveBk ? f.bkUser : '',
+      bkPass: f.saveBk ? f.bkPass : ''
+    };
+    const existingIdx = profiles.findIndex(p => p.name === f.name);
+    if (existingIdx >= 0) {
+      if (!confirm(`A profile named "${f.name}" already exists. Overwrite it?`)) return;
+      profiles[existingIdx] = profile;
+    } else {
+      profiles.push(profile);
+    }
+    await persist();
+    renderList();
+    clearForm();
+    toast('Profile saved: ' + f.name, 'success');
+  });
+
+  const nameEl = $('profile-name-input');
+  if (nameEl) nameEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveBtn.click(); });
+
+  // Load profiles on startup
+  window.api.profilesLoad().then(res => {
+    if (res && res.ok && Array.isArray(res.profiles)) {
+      profiles = res.profiles;
+      renderList();
+    }
+  }).catch(() => {});
+})();

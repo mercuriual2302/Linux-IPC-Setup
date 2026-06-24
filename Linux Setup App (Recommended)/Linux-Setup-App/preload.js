@@ -29,6 +29,8 @@ contextBridge.exposeInMainWorld('api', {
   readAptCreds:     (opts) => ipcRenderer.invoke('cx:read-apt-creds', opts),
   switchFeed:       (opts) => ipcRenderer.invoke('cx:switch-feed', opts),
   updateFeed:       (opts) => ipcRenderer.invoke('cx:update-feed', opts),
+  profilesLoad:     ()     => ipcRenderer.invoke('profiles:load'),
+  profilesSave:     (data) => ipcRenderer.invoke('profiles:save', data),
   tcRuntime:      (opts) => ipcRenderer.invoke('cx:tc-runtime', opts),
   power:          (opts) => ipcRenderer.invoke('cx:power', opts),
   fetchUpdates:   (opts) => ipcRenderer.invoke('cx:fetch-updates', opts),

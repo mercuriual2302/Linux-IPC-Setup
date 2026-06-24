@@ -352,3 +352,28 @@ html:not([data-theme="dark"]) .power-confirm-glyph.danger{background:rgba(204,0,
 .apt-creds-clear{margin-left:auto;background:none;border:none;color:var(--tc-muted);cursor:pointer;font-size:13px;padding:0 .2rem;line-height:1}
 .apt-creds-clear:hover{color:var(--tc-danger)}
 html:not([data-theme="dark"]) .apt-creds-banner{background:rgba(0,120,80,.06);border-color:#008c5a;color:#008c5a}
+/*  Connection Profiles (header)  */
+.profile-wrap{position:relative}
+.profile-btn{display:flex;align-items:center;gap:.4rem;background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.3);border-radius:4px;padding:.35rem .7rem;font-family:var(--tc-mono);font-size:10px;color:rgba(255,255,255,0.9);cursor:pointer;transition:all .15s;letter-spacing:.05em;white-space:nowrap}
+.profile-btn:hover,.profile-btn.active{background:rgba(255,255,255,0.25)}
+.profile-glyph{font-size:12px;line-height:1}
+[data-theme="dark"] .profile-btn{background:var(--tc-surface2);border-color:var(--tc-border);color:var(--tc-muted)}
+[data-theme="dark"] .profile-btn:hover,[data-theme="dark"] .profile-btn.active{border-color:var(--tc-accent);color:var(--tc-accent)}
+.profile-menu{position:absolute;top:calc(100% + .5rem);right:0;min-width:290px;background:var(--tc-surface);border:1px solid var(--tc-border);border-radius:6px;box-shadow:0 8px 28px rgba(0,0,0,.45);padding:.4rem;z-index:1200;opacity:0;visibility:hidden;transform:translateY(-6px);transition:opacity .14s,transform .14s,visibility .14s}
+.profile-menu.open{opacity:1;visibility:visible;transform:translateY(0)}
+.profile-menu-hdr{font-family:var(--tc-mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--tc-muted);padding:.35rem .55rem .5rem;border-bottom:1px solid var(--tc-border);margin-bottom:.35rem}
+.profile-list{max-height:200px;overflow-y:auto;margin-bottom:.35rem}
+.profile-empty{font-family:var(--tc-mono);font-size:10px;color:var(--tc-muted);padding:.5rem .55rem;min-height:24px}
+.profile-item{display:flex;align-items:center;gap:.5rem;width:100%;text-align:left;background:none;border:none;border-radius:4px;padding:.5rem .55rem;cursor:pointer;transition:background .12s}
+.profile-item:hover{background:var(--tc-surface2)}
+.profile-item-info{flex:1;min-width:0}
+.profile-item-name{font-family:var(--tc-mono);font-size:12px;font-weight:600;color:var(--tc-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.profile-item-sub{font-family:var(--tc-mono);font-size:9px;color:var(--tc-muted);margin-top:1px}
+.profile-item-del{flex-shrink:0;background:none;border:none;color:var(--tc-muted);cursor:pointer;font-size:13px;padding:.1rem .3rem;border-radius:3px;line-height:1;transition:all .12s}
+.profile-item-del:hover{color:var(--tc-danger);background:rgba(248,81,73,.12)}
+.profile-form{border-top:1px solid var(--tc-border);padding-top:.5rem;display:flex;flex-direction:column;gap:.35rem}
+.profile-form-title{font-family:var(--tc-mono);font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--tc-muted)}
+.profile-input{background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.4rem .6rem;font-family:var(--tc-mono);font-size:11px;color:var(--tc-text);width:100%;box-sizing:border-box}
+.profile-input:focus{outline:none;border-color:var(--tc-accent)}
+.profile-form-preview{font-family:var(--tc-mono);font-size:10px;color:var(--tc-muted);padding:.3rem .1rem;border-radius:3px;word-break:break-all}
+.profile-form-preview.has-ip{color:var(--tc-accent2)}
