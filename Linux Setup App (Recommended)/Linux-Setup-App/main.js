@@ -1001,10 +1001,10 @@ echo "ARCH|||$(uname -m)"
 echo "UPTIME|||$(awk '{d=int($1/86400);h=int(($1%86400)/3600);m=int(($1%3600)/60); if(d>0) printf d"d "h"h"; else if(h>0) printf h"h "m"m"; else printf m"m"}' /proc/uptime)"
 echo "TC_VER|||$(dpkg-query -W -f='\${Version}' tc31-xar-um 2>/dev/null || echo unknown)"
 echo "FEED|||$(grep -oE 'trixie-[a-z]+' /etc/apt/sources.list.d/bhf.list 2>/dev/null | head -1 || echo unknown)"
-df -BM / | awk 'NR==2{gsub("M","",$2);gsub("M","",$3);gsub("M","",$4); print "DISK_TOTAL|||"$2"\nDISK_USED|||"$3"\nDISK_AVAIL|||"$4"\nDISK_PCT|||"int($3/$2*100)}'
-free -m | awk '/^Mem:/{print "MEM_TOTAL|||"$2"\nMEM_USED|||"$3"\nMEM_AVAIL|||"$7}'
-ip -o addr show | awk '/inet / && !/127.0.0.1/{split($4,a,"/"); print "IFACE|||"$2"|||"a[1]"/"substr($4, index($4,"/")+1)}'
-ip link show | awk '/^[0-9]+: (end|eth|eno)[^:]+:/{match($0,/[0-9]+: ([^:]+):/,n); state=($9=="UP")?"up":"down"; print "IFACE_STATE|||"n[1]"|||"state}'
+df -BM / | awk 'NR==2{t=$2;u=$3;a=$4; gsub("M","",t); gsub("M","",u); gsub("M","",a); gsub("\r","",t); gsub("\r","",u); gsub("\r","",a); pct=int(u/t*100); print "DISK_TOTAL|||"t"\nDISK_USED|||"u"\nDISK_AVAIL|||"a"\nDISK_PCT|||"pct}'
+free -m | awk '/^Mem:/{t=$2;u=$3;av=$7; gsub("\r","",t); gsub("\r","",u); gsub("\r","",av); print "MEM_TOTAL|||"t"\nMEM_USED|||"u"\nMEM_AVAIL|||"av}'
+ip -o addr show | awk '/inet / && !/127.0.0.1/{split($4,a,"/"); gsub("\r","",a[1]); n=$2; gsub("\r","",n); print "IFACE|||"n"|||"a[1]"/"substr($4,index($4,"/")+1)}'
+ip link show | awk '/^[0-9]/{iface=$2; gsub(":","",iface); gsub("\r","",iface)} /state/{for(i=1;i<=NF;i++) if($i=="state"){st=$(i+1); gsub("\r","",st); if(iface~/^(end|eth|eno)/) print "IFACE_STATE|||"iface"|||"(st=="UP"?"up":"down")}}'
 for svc in TcSystemServiceUm TcHmiSrv nftables ssh MDPService; do
   st=$(_sudo systemctl is-active $svc 2>/dev/null || echo inactive)
   echo "SVC|||$svc|||$st"
@@ -1019,7 +1019,7 @@ done
     const svcs = [];
 
     String(result.stdout || '').split(/\r?\n/).forEach(line => {
-      const parts = line.trim().split('|||');
+      const parts = line.trim().replace(/\r/g, '').split('|||');
       if (parts.length < 2) return;
       const [key, v1, v2] = parts;
       switch (key) {
