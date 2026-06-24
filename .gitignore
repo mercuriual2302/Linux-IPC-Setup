@@ -1,3 +1,6 @@
 # Built executables
 *.exe
 dist/
+
+# VS Code editor settings
+.vscode/
