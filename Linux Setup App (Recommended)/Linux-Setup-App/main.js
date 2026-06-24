@@ -1051,3 +1051,122 @@ done
     return { ok: false, error: err.message };
   }
 });
+
+//  APT Feed Manager — read existing MyBeckhoff credentials from CX
+ipcMain.handle('cx:read-apt-creds', async (_evt, opts) => {
+  const { host, password, port } = opts || {};
+  const escPass = String(password || '').replace(/'/g, "'\\''");
+  const cmd = `echo '${escPass}' | sudo -S -p '' cat /etc/apt/auth.conf.d/bhf.conf 2>/dev/null`;
+  const mgr = new SSHManager();
+  try {
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+    const result = await mgr.exec(cmd);
+    mgr.dispose();
+    const raw = String(result.stdout || '').replace(/\r/g, '');
+    // Parse: "machine ...\nlogin <user>\npassword <pass>"
+    const loginMatch  = raw.match(/^login\s+(.+)$/m);
+    const passMatch   = raw.match(/^password\s+(.+)$/m);
+    if (!loginMatch) return { ok: false, error: 'No credentials found on CX' };
+    return {
+      ok: true,
+      username: loginMatch[1].trim(),
+      hasPassword: !!passMatch,
+      // Never return the actual password — just confirm it exists
+    };
+  } catch (err) {
+    mgr.dispose();
+    return { ok: false, error: err.message };
+  }
+});
+
+
+//  APT Feed Manager — switch feed channel (rewrites bhf.list + apt update)
+ipcMain.handle('cx:switch-feed', async (_evt, opts) => {
+  const { host, password, port, feed } = opts || {};
+  const sessionId = `switchfeed-${Date.now()}`;
+  const escPass = String(password || '').replace(/'/g, "'\\''");
+  const channel = feed === 'trixie-unstable' ? 'trixie-unstable' : 'trixie-stable';
+
+  const script = `#!/bin/bash
+set -e
+export TERM=dumb
+export DEBIAN_FRONTEND=noninteractive
+APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Quiet::NoUpdate=true'
+SUDO_PASS='${escPass}'
+_sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
+_sudo -v
+echo "[CX] Switching APT feed to: ${channel}"
+_sudo bash -c 'printf "deb [signed-by=/usr/share/keyrings/bhf.asc] https://deb.beckhoff.com/debian ${channel} main\\n" > /etc/apt/sources.list.d/bhf.list'
+echo "[CX] Feed set to ${channel}. Running apt update..."
+_sudo apt $APT_OPTS update -y
+echo "[CX] Done. Feed is now ${channel}."
+`;
+
+  try {
+    const tmpPath = path.join(os.tmpdir(), `cx-switchfeed-${Date.now()}.sh`);
+    await fs.promises.writeFile(tmpPath, script, { mode: 0o755 });
+    const mgr = new SSHManager();
+    activeSessions.set(sessionId, mgr);
+    sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m Switching feed to ${channel}...\r\n` });
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+    await mgr.putFile(tmpPath, '/tmp/cx_switchfeed.sh');
+    await fs.promises.unlink(tmpPath).catch(() => {});
+    const result = await mgr.execStream('chmod +x /tmp/cx_switchfeed.sh && /tmp/cx_switchfeed.sh', {
+      onStdout: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() }),
+      onStderr: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() })
+    });
+    mgr.dispose();
+    activeSessions.delete(sessionId);
+    const ok = result.code === 0;
+    sendToRenderer('ssh:status', { sessionId, status: ok ? 'complete' : 'failed', message: ok ? `Feed switched to ${channel}` : `Exit ${result.code}` });
+    return { ok, sessionId, channel };
+  } catch (err) {
+    sendToRenderer('ssh:status', { sessionId, status: 'failed', message: err.message });
+    return { ok: false, error: err.message };
+  }
+});
+
+
+//  APT Feed Manager — apt update only (no feed change)
+ipcMain.handle('cx:update-feed', async (_evt, opts) => {
+  const { host, password, port } = opts || {};
+  const sessionId = `updatefeed-${Date.now()}`;
+  const escPass = String(password || '').replace(/'/g, "'\\''");
+
+  const script = `#!/bin/bash
+set -e
+export TERM=dumb
+export DEBIAN_FRONTEND=noninteractive
+APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Quiet::NoUpdate=true'
+SUDO_PASS='${escPass}'
+_sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
+_sudo -v
+FEED=$(grep -oE 'trixie-[a-z]+' /etc/apt/sources.list.d/bhf.list 2>/dev/null | head -1 || echo unknown)
+echo "[CX] Running apt update on feed: $FEED"
+_sudo apt $APT_OPTS update -y
+echo "[CX] apt update complete."
+`;
+
+  try {
+    const tmpPath = path.join(os.tmpdir(), `cx-updatefeed-${Date.now()}.sh`);
+    await fs.promises.writeFile(tmpPath, script, { mode: 0o755 });
+    const mgr = new SSHManager();
+    activeSessions.set(sessionId, mgr);
+    sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m Running apt update...\r\n` });
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+    await mgr.putFile(tmpPath, '/tmp/cx_updatefeed.sh');
+    await fs.promises.unlink(tmpPath).catch(() => {});
+    const result = await mgr.execStream('chmod +x /tmp/cx_updatefeed.sh && /tmp/cx_updatefeed.sh', {
+      onStdout: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() }),
+      onStderr: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() })
+    });
+    mgr.dispose();
+    activeSessions.delete(sessionId);
+    const ok = result.code === 0;
+    sendToRenderer('ssh:status', { sessionId, status: ok ? 'complete' : 'failed', message: ok ? 'apt update complete' : `Exit ${result.code}` });
+    return { ok, sessionId };
+  } catch (err) {
+    sendToRenderer('ssh:status', { sessionId, status: 'failed', message: err.message });
+    return { ok: false, error: err.message };
+  }
+});
