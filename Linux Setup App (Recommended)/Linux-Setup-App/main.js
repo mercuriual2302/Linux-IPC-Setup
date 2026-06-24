@@ -1170,3 +1170,26 @@ echo "[CX] apt update complete."
     return { ok: false, error: err.message };
   }
 });
+
+//  Connection Profiles — load all profiles from userData
+ipcMain.handle('profiles:load', async () => {
+  const profilesPath = path.join(app.getPath('userData'), 'cx-profiles.json');
+  try {
+    const raw = await fs.promises.readFile(profilesPath, 'utf8');
+    return { ok: true, profiles: JSON.parse(raw) };
+  } catch (e) {
+    // File doesn't exist yet — return empty array
+    return { ok: true, profiles: [] };
+  }
+});
+
+//  Connection Profiles — save all profiles to userData
+ipcMain.handle('profiles:save', async (_evt, { profiles }) => {
+  const profilesPath = path.join(app.getPath('userData'), 'cx-profiles.json');
+  try {
+    await fs.promises.writeFile(profilesPath, JSON.stringify(profiles, null, 2), 'utf8');
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
