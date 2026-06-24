@@ -1925,24 +1925,17 @@ $('btn-validate-creds').addEventListener('click', async () => {
   }).catch(() => {});
 })();
 
+
 // Service management
 (function initServiceMgmt() {
-  const grid       = $('svc-grid');
-  const refreshBtn = $('btn-svc-refresh');
+  const grid        = $('svc-grid');
+  const refreshBtn  = $('btn-svc-refresh');
   const reinitBlock = $('tf2000-reinit-block');
-  const reinitBtn  = $('btn-tf2000-reinit');
-  const reinitPass = $('tf2000-reinit-pass');
+  const reinitBtn   = $('btn-tf2000-reinit');
+  const reinitPass  = $('tf2000-reinit-pass');
   if (!grid || !refreshBtn) return;
 
-  const SERVICES = [
-    { id: 'TcSystemServiceUm', label: 'TcSystemServiceUm', desc: 'TwinCAT 3 runtime',     canStop: true,  canReinit: false },
-    { id: 'TcHmiSrv',         label: 'TcHmiSrv',          desc: 'TF2000 HMI Server',      canStop: true,  canReinit: true  },
-    { id: 'nftables',         label: 'nftables',           desc: 'Firewall',               canStop: true,  canReinit: false },
-    { id: 'ssh',              label: 'ssh',                desc: 'SSH daemon (stop blocked)', canStop: false, canReinit: false },
-    { id: 'MDPService',       label: 'MDPService',         desc: 'MDP service',            canStop: true,  canReinit: false },
-  ];
-
-  let states = {};
+  let serviceList = []; // last fetched list from CX
 
   function stateClass(s) {
     if (s === 'active')   return 'svc-state-active';
@@ -1950,27 +1943,47 @@ $('btn-validate-creds').addEventListener('click', async () => {
     return 'svc-state-unknown';
   }
 
-  function renderGrid() {
+  function renderGrid(services) {
     grid.innerHTML = '';
-    SERVICES.forEach(svc => {
-      const state = states[svc.id] || 'unknown';
+    if (!services.length) {
+      grid.innerHTML = '<div class="um-empty">No services found. Connect to the CX and click Refresh Status.</div>';
+      return;
+    }
+
+    // Separator between pinned and discovered
+    let shownDiscovered = false;
+
+    services.forEach(svc => {
+      if (!svc.pinned && !shownDiscovered) {
+        shownDiscovered = true;
+        const sep = document.createElement('div');
+        sep.style.cssText = 'font-family:var(--tc-mono);font-size:9px;color:var(--tc-muted);letter-spacing:.06em;text-transform:uppercase;padding:.4rem 0 .2rem';
+        sep.textContent = 'discovered';
+        grid.appendChild(sep);
+      }
+
       const row = document.createElement('div');
       row.className = 'svc-row';
       row.id = `svc-row-${svc.id}`;
+      const stopBtn = svc.canStop
+        ? `<button class="svc-btn danger" data-svc="${svc.id}" data-action="stop">STOP</button>`
+        : '';
       row.innerHTML = `
         <span class="svc-name">${svc.label}</span>
-        <span class="svc-desc">${svc.desc}</span>
-        <span class="svc-state ${stateClass(state)}" id="svc-state-${svc.id}">${state}</span>
+        ${svc.desc ? `<span class="svc-desc">${svc.desc}</span>` : '<span class="svc-desc"></span>'}
+        <span class="svc-state ${stateClass(svc.state)}" id="svc-state-${svc.id}">${svc.state}</span>
         <div class="svc-actions">
           <button class="svc-btn" data-svc="${svc.id}" data-action="start">START</button>
           <button class="svc-btn" data-svc="${svc.id}" data-action="restart">RESTART</button>
-          ${svc.canStop ? `<button class="svc-btn danger" data-svc="${svc.id}" data-action="stop">STOP</button>` : ''}
+          ${stopBtn}
         </div>`;
       grid.appendChild(row);
     });
 
-    // Show reinit block if TcHmiSrv row is present
-    if (reinitBlock) reinitBlock.style.display = 'block';
+    // Show TF2000 reinit block if TcHmiSrv is in the list
+    if (reinitBlock) {
+      reinitBlock.style.display = services.some(s => s.id === 'TcHmiSrv') ? 'block' : 'none';
+    }
 
     // Wire action buttons
     grid.querySelectorAll('.svc-btn[data-action]').forEach(btn => {
@@ -1981,11 +1994,18 @@ $('btn-validate-creds').addEventListener('click', async () => {
         if (!conn.host) { toast('Enter the CX IP first', 'warn'); return; }
         if (action === 'stop' && !confirm(`Stop ${svc} on the CX?`)) return;
         btn.disabled = true;
-        const res = await window.api.serviceMgmt({ ...conn, action, service: svc }).catch(e => ({ ok: false, error: String(e.message || e) }));
+        const res = await window.api.serviceMgmt({ ...conn, action, service: svc })
+          .catch(e => ({ ok: false, error: String(e.message || e) }));
         btn.disabled = false;
         if (res.ok) {
           toast(`${svc} ${action}ed`, 'success');
-          await refreshStates();
+          // Refresh just that service's state badge
+          const statusRes = await window.api.serviceMgmt({ ...conn, action: 'status', service: svc })
+            .catch(() => null);
+          if (statusRes && statusRes.ok) {
+            const el = $(`svc-state-${svc}`);
+            if (el) { el.textContent = statusRes.state; el.className = `svc-state ${stateClass(statusRes.state)}`; }
+          }
         } else {
           toast(`${action} failed: ${res.error || 'see terminal'}`, 'error');
         }
@@ -1993,56 +2013,51 @@ $('btn-validate-creds').addEventListener('click', async () => {
     });
   }
 
-  async function refreshStates() {
-    const conn = getCxMgmtConn();
-    if (!conn.host) return;
-    refreshBtn.disabled = true;
-    refreshBtn.textContent = '...';
-    await Promise.all(SERVICES.map(async svc => {
-      const res = await window.api.serviceMgmt({ ...conn, action: 'status', service: svc.id }).catch(() => null);
-      if (res && res.ok) {
-        states[svc.id] = res.state;
-        const el = $(`svc-state-${svc.id}`);
-        if (el) { el.textContent = res.state; el.className = `svc-state ${stateClass(res.state)}`; }
-      }
-    }));
-    refreshBtn.disabled = false;
-    refreshBtn.textContent = '⟳ REFRESH STATUS';
-  }
-
-  refreshBtn.addEventListener('click', async () => {
+  async function loadServices() {
     const conn = getCxMgmtConn();
     if (!conn.host) { toast('Enter the CX IP first', 'warn'); return; }
-    renderGrid();
-    await refreshStates();
-  });
+    refreshBtn.disabled = true;
+    refreshBtn.textContent = '...';
+    grid.innerHTML = '<div class="um-empty">Reading services from CX...</div>';
+    const res = await window.api.serviceMgmt({ ...conn, action: 'list' })
+      .catch(e => ({ ok: false, error: String(e.message || e), services: [] }));
+    refreshBtn.disabled = false;
+    refreshBtn.textContent = '⟳ REFRESH STATUS';
+    if (!res.ok) {
+      toast('Could not read services: ' + (res.error || 'unknown error'), 'error');
+      grid.innerHTML = '<div class="um-empty">Could not read services from CX.</div>';
+      return;
+    }
+    serviceList = res.services;
+    renderGrid(serviceList);
+  }
+
+  refreshBtn.addEventListener('click', loadServices);
 
   // TF2000 reinit
   if (reinitBtn) {
     reinitBtn.addEventListener('click', async () => {
       const conn = getCxMgmtConn();
       if (!conn.host) { toast('Enter the CX IP first', 'warn'); return; }
-      const pass = reinitPass ? reinitPass.value : '1';
+      const pass = reinitPass ? reinitPass.value.trim() : '1';
       if (!pass) { toast('Enter a new TF2000 password', 'warn'); return; }
-      if (!confirm('This will wipe the existing TF2000 HMI Server config and reinitialise it. Continue?')) return;
+      if (!confirm('This wipes the existing TF2000 HMI Server config and reinitialises it. Continue?')) return;
       showTab('script'); setView('terminal'); clearTerminal();
       $('prog').classList.add('running'); $('prog').style.width = '8%';
-      const res = await window.api.serviceMgmt({ ...conn, action: 'reinit', service: 'TcHmiSrv', tf2000Pass: pass }).catch(e => ({ ok: false, error: String(e.message || e) }));
+      const res = await window.api.serviceMgmt({ ...conn, action: 'reinit', service: 'TcHmiSrv', tf2000Pass: pass })
+        .catch(e => ({ ok: false, error: String(e.message || e) }));
       $('prog').classList.remove('running'); $('prog').style.width = '100%';
-      if (res.ok) { toast('TF2000 reinitialised', 'success'); await refreshStates(); }
+      if (res.ok) { toast('TF2000 reinitialised', 'success'); await loadServices(); }
       else toast('Reinit failed - see terminal', 'error');
     });
   }
 
-  // Auto-refresh when switching to CX Management tab
+  // Auto-load when switching to CX Management tab
   document.querySelectorAll('.tab').forEach(t => {
     if (t.dataset.tab === 'cxmgmt') {
       t.addEventListener('click', () => {
         const conn = getCxMgmtConn();
-        if (conn.host && grid.children.length === 0) {
-          renderGrid();
-          refreshStates();
-        }
+        if (conn.host && grid.children.length === 0) loadServices();
       });
     }
   });
