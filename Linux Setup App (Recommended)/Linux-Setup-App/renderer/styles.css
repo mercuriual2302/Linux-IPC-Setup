@@ -346,3 +346,9 @@ html:not([data-theme="dark"]) .power-confirm-glyph.danger{background:rgba(204,0,
 .info-badge-ok{color:var(--tc-accent2);border:1px solid var(--tc-accent2)}
 .info-badge-muted{color:var(--tc-muted);border:1px solid var(--tc-border)}
 .info-badge-warn{color:var(--tc-warn);border:1px solid var(--tc-warn)}
+/*  APT Feed Manager + credential banner  */
+.apt-creds-banner{display:flex;align-items:center;gap:.5rem;background:rgba(0,212,170,.08);border:1px solid var(--tc-accent2);border-radius:4px;padding:.4rem .7rem;font-family:var(--tc-mono);font-size:11px;color:var(--tc-accent2);margin-bottom:.5rem;flex-wrap:wrap}
+.apt-creds-icon{flex-shrink:0;font-size:13px}
+.apt-creds-clear{margin-left:auto;background:none;border:none;color:var(--tc-muted);cursor:pointer;font-size:13px;padding:0 .2rem;line-height:1}
+.apt-creds-clear:hover{color:var(--tc-danger)}
+html:not([data-theme="dark"]) .apt-creds-banner{background:rgba(0,120,80,.06);border-color:#008c5a;color:#008c5a}
