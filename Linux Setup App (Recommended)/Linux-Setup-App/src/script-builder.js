@@ -21,9 +21,14 @@ function installLine(name, pkgVersions) {
 }
 
 function feedSedLine(feed) {
-  return feed === 'trixie-stable'
-    ? '# Feed: trixie-stable (default, no change needed)'
-    : "sudo sed -i 's/trixie-stable/trixie-unstable/g' /etc/apt/sources.list.d/bhf.list";
+  // Always write the exact desired feed explicitly rather than using sed.
+  // The sed approach only worked stable→unstable and silently did nothing
+  // when switching back (unstable→stable), because there was no reverse path.
+  // Overwriting the file is idempotent in all four directions and doesn't
+  // depend on what the file currently contains.
+  const channel = feed === 'trixie-stable' ? 'trixie-stable' : 'trixie-unstable';
+  return `_sudo bash -c 'printf "deb [signed-by=/usr/share/keyrings/bhf.asc] https://deb.beckhoff.com/debian ${channel} main\\n" > /etc/apt/sources.list.d/bhf.list'
+echo "[CX] APT feed set to: ${channel}"`;
 }
 
 //INNER: full setup (runs on CX as /tmp/twincat_setup.sh $1 $2 $3)
