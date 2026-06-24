@@ -4,3 +4,6 @@ dist/
 
 # VS Code editor settings
 .vscode/
+
+# macOS metadata
+.DS_Store
