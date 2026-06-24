@@ -7,6 +7,16 @@ const os = require('os');
 const SSHManager = require('./src/ssh-manager');
 const ScriptBuilder = require('./src/script-builder');
 
+// Suppress uncaught ECONNRESET errors — these are expected when the CX drops
+// the SSH connection mid-operation (network reload, reboot, poweroff). The
+// individual handlers already detect and handle connection drops gracefully;
+// without this the raw TCP error bubbles up to Electron and shows a dialog.
+process.on('uncaughtException', (err) => {
+  if (err && (err.code === 'ECONNRESET' || /ECONNRESET|Connection lost|channel close/i.test(err.message))) return;
+  // Re-throw anything else so real bugs still surface
+  throw err;
+});
+
 
 // Single-instance lock — prevents multiple windows
 
