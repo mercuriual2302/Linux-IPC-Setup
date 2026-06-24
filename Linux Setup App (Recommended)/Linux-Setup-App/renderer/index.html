@@ -19,6 +19,27 @@
       <div class="header-sub">Automated provisioning tool</div>
     </div>
     <div class="header-right">
+      <!-- Connection Profiles -->
+      <div class="profile-wrap" id="profile-wrap">
+        <button class="profile-btn" id="profile-btn" title="Connection profiles" aria-haspopup="true" aria-expanded="false">
+          <span class="profile-glyph">⊞</span><span class="profile-label">PROFILES</span>
+        </button>
+        <div class="profile-menu" id="profile-menu" role="menu">
+          <div class="profile-menu-hdr">Connection Profiles</div>
+          <div id="profile-list" class="profile-list" style="display:none"></div>
+          <div class="power-menu-sep" id="profile-sep" style="display:none"></div>
+          <div class="profile-form">
+            <div class="profile-form-title">Save as profile</div>
+            <input type="text"     id="profile-name-input" class="profile-input" placeholder="Profile name (e.g. BTN Office)">
+            <input type="text"     id="profile-ip-input"   class="profile-input" placeholder="CX IP address" autocomplete="off">
+            <input type="password" id="profile-pass-input" class="profile-input" placeholder="Administrator password (default: 1)" autocomplete="new-password">
+            <input type="text"     id="profile-bkuser-input" class="profile-input" placeholder="MyBeckhoff username (optional)" autocomplete="off" style="display:none">
+            <input type="password" id="profile-bkpass-input" class="profile-input" placeholder="MyBeckhoff password (optional)"  autocomplete="new-password" style="display:none">
+            <label class="um-check" style="margin:.1rem 0"><input type="checkbox" id="profile-save-bk"> Save MyBeckhoff credentials</label>
+            <button class="sel-btn" id="btn-profile-save" style="width:100%;margin-top:.25rem">SAVE PROFILE</button>
+          </div>
+        </div>
+      </div>
       <div class="power-wrap" id="power-wrap">
         <button class="power-btn" id="power-btn" title="Power options" aria-haspopup="true" aria-expanded="false">
           <span class="power-glyph">⏻</span><span class="power-label">POWER</span>
