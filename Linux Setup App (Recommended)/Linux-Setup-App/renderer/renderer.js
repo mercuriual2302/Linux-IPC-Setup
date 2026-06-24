@@ -1487,3 +1487,122 @@ $('btn-validate-creds').addEventListener('click', async () => {
     toast(`TF1200 config loaded from ${ip}`, 'success');
   });
 })();
+
+//  CX INFO PANEL
+(function initCxInfo() {
+  const btnInit = $('btn-info-read-init');
+  const btnHeader = $('btn-info-read');
+  if (!btnInit) return;
+
+  function bar(pct) {
+    const cls = pct >= 90 ? 'info-bar-err' : pct >= 70 ? 'info-bar-warn' : 'info-bar-ok';
+    return `<span class="info-bar-wrap"><span class="info-bar-fill ${cls}" style="width:${pct}%"></span></span>`;
+  }
+
+  function badge(state) {
+    if (state === 'active')   return `<span class="info-badge info-badge-ok">active</span>`;
+    if (state === 'inactive') return `<span class="info-badge info-badge-muted">inactive</span>`;
+    return `<span class="info-badge info-badge-warn">${state}</span>`;
+  }
+
+  function dot(state) {
+    const cls = state === 'up' ? 'info-dot-ok' : 'info-dot-muted';
+    return `<span class="info-dot ${cls}"></span>`;
+  }
+
+  function ifaceBadge(state) {
+    if (state === 'up') return `<span class="info-badge info-badge-ok">up</span>`;
+    return `<span class="info-badge info-badge-muted">${state}</span>`;
+  }
+
+  function render(data) {
+    const { info, ifaces, svcs } = data;
+
+    // header
+    $('info-empty').style.display = 'none';
+    $('btn-info-read-init').style.display = 'none';
+    $('info-header').style.display = 'flex';
+    $('info-body').style.display = 'block';
+    $('info-hostname').textContent = info.HOSTNAME || '—';
+    $('info-sub').textContent = [
+      getCxMgmtConn().host,
+      info.OS || ''
+    ].filter(Boolean).join('  ·  ');
+    $('info-ts').textContent = 'read at ' + new Date().toLocaleTimeString();
+
+    // metrics
+    const metrics = [
+      { label: 'uptime',     value: info.UPTIME || '—',    sub: 'since last reboot' },
+      { label: 'kernel',     value: info.KERNEL || '—',    sub: info.ARCH || '' },
+      { label: 'feed',       value: info.FEED   || '—',    sub: 'apt channel' },
+      { label: 'tc runtime', value: info.TC_VER || '—',    sub: 'tc31-xar-um' }
+    ];
+    $('info-metrics').innerHTML = metrics.map(m => `
+      <div class="info-metric">
+        <div class="info-metric-label">${m.label}</div>
+        <div class="info-metric-value">${m.value}</div>
+        <div class="info-metric-sub">${m.sub}</div>
+      </div>`).join('');
+
+    // disk
+    const dp = Number(info.DISK_PCT) || 0;
+    $('info-disk').innerHTML = `
+      <div class="info-row"><span class="info-row-label">used</span><span class="info-row-val">${bar(dp)}${info.DISK_USED || '—'} MB / ${info.DISK_TOTAL || '—'} MB</span></div>
+      <div class="info-row"><span class="info-row-label">available</span><span class="info-row-val">${info.DISK_AVAIL || '—'} MB</span></div>`;
+
+    // memory
+    const mt = Number(info.MEM_TOTAL) || 1;
+    const mu = Number(info.MEM_USED)  || 0;
+    const mp = Math.round(mu / mt * 100);
+    $('info-mem').innerHTML = `
+      <div class="info-row"><span class="info-row-label">used</span><span class="info-row-val">${bar(mp)}${mu} MB / ${mt} MB</span></div>
+      <div class="info-row"><span class="info-row-label">available</span><span class="info-row-val">${info.MEM_AVAIL || '—'} MB</span></div>`;
+
+    // interfaces
+    $('info-ifaces').innerHTML = ifaces.length
+      ? ifaces.map(i => `
+          <div class="info-row">
+            <span class="info-row-label">${dot(i.state)}&nbsp;<code>${i.name}</code>&nbsp;${ifaceBadge(i.state)}</span>
+            <span class="info-row-val">${i.ip}</span>
+          </div>`).join('')
+      : '<div class="um-empty">No interfaces found</div>';
+
+    // services
+    $('info-svcs').innerHTML = svcs.length
+      ? svcs.map(s => `
+          <div class="info-row">
+            <span class="info-row-label"><code>${s.name}</code></span>
+            ${badge(s.state)}
+          </div>`).join('')
+      : '<div class="um-empty">No services found</div>';
+  }
+
+  async function readInfo() {
+    const conn = getCxMgmtConn();
+    if (!conn.host) { toast('Enter the CX IP first', 'warn'); return; }
+    [btnInit, btnHeader].forEach(b => { if (b) { b.disabled = true; b.textContent = '...'; } });
+    let res;
+    try { res = await window.api.cxInfo(conn); }
+    catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
+    [btnInit, btnHeader].forEach(b => { if (b) { b.disabled = false; b.textContent = '⟳ READ FROM CX'; } });
+    if (!res || !res.ok) {
+      toast('Could not read CX info' + (res && res.error ? ': ' + res.error : ''), 'error');
+      return;
+    }
+    render(res);
+    toast('CX info loaded', 'success');
+  }
+
+  btnInit.addEventListener('click', readInfo);
+  btnHeader.addEventListener('click', readInfo);
+
+  // Auto-read when switching to the CX Management tab if IP is set and panel is empty
+  document.querySelectorAll('.tab').forEach(t => {
+    if (t.dataset.tab === 'cxmgmt') {
+      t.addEventListener('click', () => {
+        const conn = getCxMgmtConn();
+        if (conn.host && $('info-body').style.display === 'none') readInfo();
+      });
+    }
+  });
+})();

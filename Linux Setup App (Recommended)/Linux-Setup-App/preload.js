@@ -25,6 +25,7 @@ contextBridge.exposeInMainWorld('api', {
   usersList:      (opts) => ipcRenderer.invoke('cx:users-list', opts),
   userMgmt:       (opts) => ipcRenderer.invoke('cx:user-mgmt', opts),
   readTF1200Config: (opts) => ipcRenderer.invoke('cx:read-tf1200-config', opts),
+  cxInfo:           (opts) => ipcRenderer.invoke('cx:info', opts),
   tcRuntime:      (opts) => ipcRenderer.invoke('cx:tc-runtime', opts),
   power:          (opts) => ipcRenderer.invoke('cx:power', opts),
   fetchUpdates:   (opts) => ipcRenderer.invoke('cx:fetch-updates', opts),

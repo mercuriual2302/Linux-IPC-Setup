@@ -220,7 +220,7 @@
       <span style="margin-left:auto;color:var(--tc-accent)">cx_management</span>
     </div>
 
-    <!-- Connection row for this tab -->
+    <!-- CONNECTION ROW FOR THIS TAB -->
     <div class="section">
       <div class="section-label">connection</div>
       <div class="row-inline" style="margin-bottom:.75rem">
@@ -231,6 +231,52 @@
         <div class="field" style="margin-bottom:0;max-width:180px">
           <label>ADMINISTRATOR PASSWORD</label>
           <input type="password" id="cx-pass3" placeholder="default: 1" value="1" autocomplete="off">
+        </div>
+      </div>
+    </div>
+
+    <!-- CX INFO PANEL -->
+    <div class="section">
+      <div class="section-label">cx information</div>
+      <div class="info-header" id="info-header" style="display:none">
+        <div>
+          <div class="info-hostname" id="info-hostname">—</div>
+          <div class="info-sub" id="info-sub">—</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:.6rem">
+          <span class="info-ts" id="info-ts"></span>
+          <button class="sel-btn" id="btn-info-read">⟳ READ FROM CX</button>
+        </div>
+      </div>
+      <div id="info-empty" class="um-empty" style="margin-bottom:.5rem">Enter the CX IP above and click READ FROM CX to load system information.</div>
+      <button class="btn-run secondary" id="btn-info-read-init" style="margin-bottom:.75rem">⟳ READ FROM CX</button>
+
+      <div id="info-body" style="display:none">
+        <!-- metric row -->
+        <div class="info-metrics" id="info-metrics"></div>
+
+        <!-- two column cards -->
+        <div class="info-cards">
+          <div class="info-card">
+            <div class="info-card-title">storage</div>
+            <div id="info-disk"></div>
+          </div>
+          <div class="info-card">
+            <div class="info-card-title">memory</div>
+            <div id="info-mem"></div>
+          </div>
+        </div>
+
+        <!-- network interfaces -->
+        <div class="info-card" style="margin-bottom:.75rem">
+          <div class="info-card-title">network interfaces</div>
+          <div id="info-ifaces"></div>
+        </div>
+
+        <!-- services -->
+        <div class="info-card">
+          <div class="info-card-title">services</div>
+          <div id="info-svcs"></div>
         </div>
       </div>
     </div>
