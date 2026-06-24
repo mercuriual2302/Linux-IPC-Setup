@@ -1606,3 +1606,152 @@ $('btn-validate-creds').addEventListener('click', async () => {
     }
   });
 })();
+
+//  APT FEED MANAGER + MYBECKHOFF CREDENTIAL AUTO-READ
+
+// ── Credential auto-read (tab 01) ──────────────────────────────────────────
+// After a successful test connection, check if bhf.conf already exists on the
+// CX and pre-fill the username field. Password is never read back — just
+// confirmed as present so the user knows they don't need to retype it.
+(function initAptCredsAutoRead() {
+  const banner  = $('apt-creds-banner');
+  const bannerText = $('apt-creds-text');
+  const clearBtn = $('btn-apt-creds-clear');
+  if (!banner || !clearBtn) return;
+
+  let _credsCached = false;
+
+  async function tryReadCreds() {
+    const ip   = $('cx-ip').value.trim();
+    const pass = $('cx-pass').value || '1';
+    if (!ip || _credsCached) return;
+    const res = await window.api.readAptCreds({ host: ip, password: pass, port: 22 }).catch(() => null);
+    if (!res || !res.ok) return;
+    // Pre-fill username if field is empty
+    const userEl = $('bk-user');
+    const passEl = $('bk-pass');
+    if (userEl && !userEl.value.trim()) userEl.value = res.username;
+    // Show banner
+    bannerText.textContent = `MyBeckhoff credentials found on CX (${res.username}) — password already set`;
+    banner.style.display = 'flex';
+    // If credentials are confirmed on the CX, mark the password field as pre-set
+    // so validation isn't mandatory before running setup
+    if (passEl && !passEl.value) passEl.placeholder = '(set on CX — leave blank to keep)';
+    _credsCached = true;
+  }
+
+  // Hook into the existing test connection button — read creds after success
+  const testBtn = $('btn-test');
+  if (testBtn) {
+    testBtn.addEventListener('click', () => {
+      // Small delay so the test completes before we SSH again
+      setTimeout(tryReadCreds, 2000);
+    });
+  }
+
+  // Clear banner and reset
+  clearBtn.addEventListener('click', () => {
+    banner.style.display = 'none';
+    _credsCached = false;
+    const passEl = $('bk-pass');
+    if (passEl) passEl.placeholder = '••••••••';
+  });
+})();
+
+
+// ── APT Feed Manager (CX Management tab) ───────────────────────────────────
+(function initAptFeedManager() {
+  const readBtn    = $('btn-apt-read-feed');
+  const switchBtn  = $('btn-switch-feed');
+  const updateBtn  = $('btn-update-feed');
+  const currentEl  = $('apt-feed-current');
+  const hintEl     = $('apt-feed-hint');
+  const toggleGrp  = $('apt-feed-toggle');
+  if (!readBtn || !switchBtn || !updateBtn) return;
+
+  let selectedFeed = 'trixie-stable';
+
+  const HINTS = {
+    'trixie-stable':   'Recommended · production-ready packages',
+    'trixie-unstable': 'Pre-release · only use if Beckhoff support instructs you to'
+  };
+
+  // Feed toggle
+  if (toggleGrp) {
+    toggleGrp.querySelectorAll('.toggle-opt').forEach(opt => {
+      opt.addEventListener('click', function () {
+        toggleGrp.querySelectorAll('.toggle-opt').forEach(o => o.classList.remove('active'));
+        this.classList.add('active');
+        selectedFeed = this.dataset.val;
+        if (hintEl) hintEl.textContent = HINTS[selectedFeed] || '';
+      });
+    });
+  }
+
+  // Read current feed from CX
+  readBtn.addEventListener('click', async () => {
+    const conn = getCxMgmtConn();
+    if (!conn.host) { toast('Enter the CX IP first', 'warn'); return; }
+    readBtn.disabled = true; readBtn.textContent = '...';
+    const mgr = new (window._SSHManager || Object)();
+    try {
+      const res = await window.api.cxInfo(conn);
+      if (res && res.ok && res.info && res.info.FEED) {
+        const feed = res.info.FEED;
+        currentEl.textContent = feed;
+        currentEl.style.color = 'var(--tc-text)';
+        // Sync the toggle to match what's on the CX
+        if (toggleGrp) {
+          toggleGrp.querySelectorAll('.toggle-opt').forEach(o => {
+            o.classList.toggle('active', o.dataset.val === feed);
+          });
+          selectedFeed = feed;
+          if (hintEl) hintEl.textContent = HINTS[feed] || '';
+        }
+        toast('Feed read from CX: ' + feed, 'success');
+      } else {
+        currentEl.textContent = 'could not read — see terminal';
+        currentEl.style.color = 'var(--tc-danger)';
+        toast('Could not read feed from CX', 'error');
+      }
+    } catch (e) {
+      toast('Could not read feed from CX', 'error');
+    }
+    readBtn.disabled = false; readBtn.textContent = '⟳ READ';
+  });
+
+  // Switch feed + apt update
+  switchBtn.addEventListener('click', async () => {
+    const conn = getCxMgmtConn();
+    if (!conn.host) { toast('Enter the CX IP first', 'warn'); return; }
+    const current = currentEl.textContent;
+    if (current === selectedFeed) {
+      if (!confirm(`Feed is already set to ${selectedFeed} on the CX. Run apt update anyway?`)) return;
+    } else {
+      if (!confirm(`Switch feed from ${current} to ${selectedFeed} and run apt update?`)) return;
+    }
+    showTab('script'); setView('terminal'); clearTerminal();
+    $('prog').classList.add('running'); $('prog').style.width = '8%';
+    const res = await window.api.switchFeed({ ...conn, feed: selectedFeed });
+    $('prog').classList.remove('running'); $('prog').style.width = '100%';
+    if (res && res.ok) {
+      currentEl.textContent = selectedFeed;
+      currentEl.style.color = 'var(--tc-text)';
+      toast('Feed switched to ' + selectedFeed, 'success');
+    } else {
+      toast('Feed switch failed — see terminal', 'error');
+    }
+  });
+
+  // apt update only
+  updateBtn.addEventListener('click', async () => {
+    const conn = getCxMgmtConn();
+    if (!conn.host) { toast('Enter the CX IP first', 'warn'); return; }
+    showTab('script'); setView('terminal'); clearTerminal();
+    $('prog').classList.add('running'); $('prog').style.width = '8%';
+    const res = await window.api.updateFeed(conn);
+    $('prog').classList.remove('running'); $('prog').style.width = '100%';
+    if (res && res.ok) toast('apt update complete', 'success');
+    else toast('apt update failed — see terminal', 'error');
+  });
+})();

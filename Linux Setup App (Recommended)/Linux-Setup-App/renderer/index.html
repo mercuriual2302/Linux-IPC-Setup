@@ -105,6 +105,11 @@
         <button class="sel-btn" id="btn-validate-creds" style="font-size:11px;padding:.35rem .9rem">✓ VALIDATE MYBECKHOFF CREDENTIALS</button>
         <span id="creds-status" style="font-family:var(--tc-mono);font-size:10px;color:var(--tc-muted)"></span>
       </div>
+      <div id="apt-creds-banner" class="apt-creds-banner" style="display:none">
+        <span class="apt-creds-icon">✓</span>
+        <span id="apt-creds-text">MyBeckhoff credentials found on CX</span>
+        <button class="apt-creds-clear" id="btn-apt-creds-clear" title="Clear and enter new credentials">✕</button>
+      </div>
     </div>
 
     <div class="section">
@@ -396,6 +401,38 @@
       </div>
       <div class="btn-row" style="margin-top:.5rem">
         <button class="btn-run" id="btn-apply-firewall">▶ APPLY FIREWALL CONFIG</button>
+      </div>
+    </div>
+
+    <!-- APT FEED MANAGER -->
+    <div class="section">
+      <div class="section-label">apt feed manager</div>
+      <div class="section-subtitle">Switch the Beckhoff APT feed channel or refresh the package list without running a full setup.</div>
+
+      <div class="field" style="margin-bottom:.6rem">
+        <label>CURRENT FEED (READ FROM CX)</label>
+        <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap">
+          <span id="apt-feed-current" style="font-family:var(--tc-mono);font-size:12px;color:var(--tc-muted)">unknown — connect to read</span>
+          <button class="sel-btn" id="btn-apt-read-feed" style="font-size:10px;padding:.25rem .6rem">⟳ READ</button>
+        </div>
+      </div>
+
+      <div class="field" style="margin-bottom:.75rem">
+        <label>TARGET CHANNEL</label>
+        <div class="toggle-group" id="apt-feed-toggle">
+          <div class="toggle-opt active" data-val="trixie-stable">trixie-stable</div>
+          <div class="toggle-opt" data-val="trixie-unstable">trixie-unstable</div>
+        </div>
+        <div class="hint" id="apt-feed-hint">Recommended · production-ready packages</div>
+      </div>
+
+      <div class="btn-row" style="gap:.5rem">
+        <button class="btn-run" id="btn-switch-feed">⇄ SWITCH FEED + APT UPDATE</button>
+        <button class="btn-run secondary" id="btn-update-feed">↻ APT UPDATE ONLY</button>
+      </div>
+      <div class="hint" style="margin-top:.4rem">
+        <strong>Switch Feed</strong> rewrites bhf.list to the selected channel then runs apt update.&nbsp;
+        <strong>APT Update Only</strong> refreshes the package list on the current feed without changing it.
       </div>
     </div>
 
