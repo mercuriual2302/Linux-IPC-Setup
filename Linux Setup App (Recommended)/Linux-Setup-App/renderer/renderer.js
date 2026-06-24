@@ -97,46 +97,76 @@ function getConnOpts(which = 1) {
 }
 
 // CREDENTIAL SYNC ACROSS TABS 
-function syncCredentials() {
-  const ip = $('cx-ip').value.trim();
-  const pass = $('cx-pass').value;
-  const ip2El = $('cx-ip2');
-  const pass2El = $('cx-pass2');
-  const banner = $('cred-sync-banner');
-  const label = $('sync-ip-label');
-  if (ip) {
-    if (!ip2El.dataset.userEdited) ip2El.value = ip;
-    if (!pass2El.dataset.userEdited) pass2El.value = pass;
-    banner.style.display = 'flex';
-    label.textContent = ip;
-    const hmiEl = $('hmi-url');
-    if (!hmiEl.dataset.userEdited && ipOk(ip)) {
-      hmiEl.value = 'https://' + ip + ':2020';
-      jsonConfig.startUrl.value = hmiEl.value;
-    }
-  } else {
-    banner.style.display = 'none';
+// Bidirectional credential sync.
+// All three IP fields (cx-ip, cx-ip2, cx-ip3) and password fields stay in
+// lockstep. Whichever field was just edited becomes the source of truth and
+// propagates to the other two. If the user types a different IP into a field
+// that already has a value, a warning toast fires once to flag the mismatch
+// (rather than silently overwriting or refusing to sync).
+let _syncLock = false; // prevent re-entrant sync loops
+
+function propagateCreds(srcIp, srcPass) {
+  if (_syncLock) return;
+  _syncLock = true;
+  const ipFields  = ['cx-ip', 'cx-ip2', 'cx-ip3'];
+  const passFields = ['cx-pass', 'cx-pass2', 'cx-pass3'];
+  ipFields.forEach(id => { if ($(id).value.trim() !== srcIp) $(id).value = srcIp; });
+  passFields.forEach(id => { if ($(id).value !== srcPass) $(id).value = srcPass; });
+  // Update HMI URL if it hasn't been manually overridden with a different IP
+  const hmiEl = $('hmi-url');
+  const autoHmi = srcIp ? 'https://' + srcIp + ':2020' : '';
+  if (!hmiEl.dataset.userEdited && ipOk(srcIp)) {
+    hmiEl.value = autoHmi;
+    jsonConfig.startUrl.value = autoHmi;
   }
+  // Update sync banner
+  const banner = $('cred-sync-banner');
+  const label  = $('sync-ip-label');
+  if (srcIp) { banner.style.display = 'flex'; label.textContent = srcIp; }
+  else        { banner.style.display = 'none'; }
   updateConnDots();
+  _syncLock = false;
 }
 
-$('cx-ip').addEventListener('input', syncCredentials);
-$('cx-pass').addEventListener('input', syncCredentials);
-$('cx-ip2').addEventListener('input', function () {
-  this.dataset.userEdited = '1';
-  const ip = this.value.trim();
-  const hmiEl = $('hmi-url');
-  if (!hmiEl.dataset.userEdited && ipOk(ip)) {
-    hmiEl.value = 'https://' + ip + ':2020';
-    jsonConfig.startUrl.value = hmiEl.value;
-    renderJsonEditor();
+function onIpInput(thisEl) {
+  const newIp = thisEl.value.trim();
+  // Check if any other IP field already has a different non-empty value
+  const otherFields = ['cx-ip', 'cx-ip2', 'cx-ip3'].filter(id => id !== thisEl.id);
+  const conflict = otherFields.find(id => {
+    const v = $(id).value.trim();
+    return v && v !== newIp;
+  });
+  if (conflict && ipOk(newIp)) {
+    toast(`IP updated to ${newIp} — all tabs synced`, 'warn');
   }
-  updateConnDots();
+  const pass = $('cx-pass').value || $('cx-pass2').value || $('cx-pass3').value || '';
+  propagateCreds(newIp, pass);
+}
+
+function onPassInput(thisEl) {
+  const newPass = thisEl.value;
+  const ip = $('cx-ip').value.trim() || $('cx-ip2').value.trim() || $('cx-ip3').value.trim() || '';
+  propagateCreds(ip, newPass);
+}
+
+['cx-ip', 'cx-ip2', 'cx-ip3'].forEach(id => {
+  $(id).addEventListener('input', function () { onIpInput(this); });
 });
-$('cx-pass2').addEventListener('input', function () { this.dataset.userEdited = '1'; });
+['cx-pass', 'cx-pass2', 'cx-pass3'].forEach(id => {
+  $(id).addEventListener('input', function () { onPassInput(this); });
+});
+
+// Keep the old name so the tab-switch call at line ~369 still works
+function syncCredentials() {
+  const ip   = $('cx-ip').value.trim() || $('cx-ip2').value.trim() || $('cx-ip3').value.trim() || '';
+  const pass = $('cx-pass').value || $('cx-pass2').value || $('cx-pass3').value || '';
+  propagateCreds(ip, pass);
+}
+
 $('hmi-url').addEventListener('input', function () {
-  this.dataset.userEdited = '1';
+  this.dataset.userEdited = (this.value.trim() !== 'https://' + $('cx-ip').value.trim() + ':2020') ? '1' : '';
   jsonConfig.startUrl.value = this.value.trim();
+  renderJsonEditor();
 });
 
 function updateConnDots() {
@@ -865,15 +895,8 @@ function getCxMgmtConn() {
   };
 }
 
-// Sync IP/pass from tab 01 when switching to tab 03
-document.querySelectorAll('.tab').forEach(t => {
-  if (t.dataset.tab === 'cxmgmt') {
-    t.addEventListener('click', () => {
-      if (!$('cx-ip3').value && $('cx-ip').value) $('cx-ip3').value = $('cx-ip').value;
-      if ($('cx-pass3').value === '1' && $('cx-pass').value) $('cx-pass3').value = $('cx-pass').value;
-    });
-  }
-});
+// Tab 3 credentials are kept in sync by the bidirectional propagateCreds().
+// No extra tab-click handler needed.
 
 function goToTerminal(sessionId) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -1401,5 +1424,66 @@ $('btn-validate-creds').addEventListener('click', async () => {
   if (cxTab) cxTab.addEventListener('click', () => {
     const conn = getCxMgmtConn();
     if (conn.host && !$('um-rows').children.length) refreshUsers();
+  });
+})();
+
+//  TF1200 — READ CONFIG FROM CX button
+(function initReadTF1200() {
+  const btn = $('btn-read-tf1200');
+  const status = $('tf1200-read-status');
+  if (!btn) return;
+
+  btn.addEventListener('click', async () => {
+    const ip   = $('cx-ip2').value.trim() || $('cx-ip').value.trim();
+    const pass = $('cx-pass2').value      || $('cx-pass').value || '1';
+    if (!ip) { toast('Enter the CX IP first', 'warn'); return; }
+
+    btn.disabled = true;
+    btn.textContent = '...';
+    status.textContent = 'Reading from CX...';
+    status.style.color = 'var(--tc-muted)';
+
+    let res;
+    try { res = await window.api.readTF1200Config({ host: ip, password: pass, port: 22 }); }
+    catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
+
+    btn.disabled = false;
+    btn.textContent = '⟳ READ CONFIG FROM CX';
+
+    if (!res || !res.ok) {
+      status.textContent = 'Failed: ' + (res && res.error ? res.error : 'unknown error');
+      status.style.color = 'var(--tc-danger)';
+      toast('Could not read TF1200 config — see status message', 'error');
+      return;
+    }
+
+    // Merge the returned config into jsonConfig, preserving types.
+    // Only update keys that already exist in jsonConfig (don't add unknown keys).
+    const cfg = res.config;
+    let updated = 0;
+    for (const [key, entry] of Object.entries(jsonConfig)) {
+      if (!(key in cfg)) continue;
+      const val = cfg[key];
+      if (entry.type === 'bool')   { entry.value = !!val; updated++; }
+      else if (entry.type === 'num')  { entry.value = Number(val); updated++; }
+      else if (entry.type === 'text') {
+        entry.value = String(val || '');
+        if (key === 'startUrl') {
+          // Sync the HMI URL field too, and mark as user-edited so it isn't
+          // overwritten by the IP auto-fill.
+          $('hmi-url').value = entry.value;
+          $('hmi-url').dataset.userEdited = entry.value !== 'https://' + ip + ':2020' ? '1' : '';
+        }
+        updated++;
+      }
+      else if (entry.type === 'tags') { entry.value = Array.isArray(val) ? val : []; updated++; }
+      else if (key === 'commandLineSwitches') { entry.value = Array.isArray(val) ? val : []; updated++; }
+    }
+
+    renderJsonEditor();
+    const ts = new Date().toLocaleTimeString();
+    status.textContent = `Read ${updated} values from ${ip} at ${ts}`;
+    status.style.color = 'var(--tc-accent2)';
+    toast(`TF1200 config loaded from ${ip}`, 'success');
   });
 })();
