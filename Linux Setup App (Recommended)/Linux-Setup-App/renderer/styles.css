@@ -377,3 +377,19 @@ html:not([data-theme="dark"]) .apt-creds-banner{background:rgba(0,120,80,.06);bo
 .profile-input:focus{outline:none;border-color:var(--tc-accent)}
 .profile-form-preview{font-family:var(--tc-mono);font-size:10px;color:var(--tc-muted);padding:.3rem .1rem;border-radius:3px;word-break:break-all}
 .profile-form-preview.has-ip{color:var(--tc-accent2)}
+/* Service management */
+.svc-grid{display:flex;flex-direction:column;gap:6px;margin-bottom:.5rem}
+.svc-row{display:flex;align-items:center;gap:.6rem;padding:8px 10px;background:var(--tc-surface);border:1px solid var(--tc-border);border-radius:5px;flex-wrap:wrap}
+.svc-name{font-family:var(--tc-mono);font-size:12px;font-weight:600;color:var(--tc-text);min-width:160px}
+.svc-desc{font-family:var(--tc-mono);font-size:10px;color:var(--tc-muted);flex:1}
+.svc-state{font-family:var(--tc-mono);font-size:10px;padding:2px 7px;border-radius:3px;min-width:64px;text-align:center}
+.svc-state-active{color:var(--tc-accent2);border:1px solid var(--tc-accent2)}
+.svc-state-inactive{color:var(--tc-muted);border:1px solid var(--tc-border)}
+.svc-state-unknown{color:var(--tc-warn);border:1px solid var(--tc-warn)}
+.svc-actions{display:flex;gap:4px;margin-left:auto}
+.svc-btn{font-family:var(--tc-mono);font-size:10px;padding:3px 9px;border-radius:3px;border:1px solid var(--tc-border);background:transparent;color:var(--tc-text);cursor:pointer;transition:all .12s}
+.svc-btn:hover{border-color:var(--tc-accent);color:var(--tc-accent)}
+.svc-btn.danger{border-color:var(--tc-border)}
+.svc-btn.danger:hover{border-color:var(--tc-danger);color:var(--tc-danger)}
+.btn-run.danger{background:transparent;border-color:var(--tc-danger);color:var(--tc-danger)}
+.btn-run.danger:hover{background:var(--tc-danger);color:#fff}

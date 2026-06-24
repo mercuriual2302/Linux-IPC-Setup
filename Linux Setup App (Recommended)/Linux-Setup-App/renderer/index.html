@@ -547,12 +547,35 @@
       </div>
     </div>
 
+    <!-- SERVICE MANAGEMENT -->
+    <div class="section">
+      <div class="section-label">service management</div>
+      <div class="section-subtitle">Start, stop, or restart services on the CX. TF2000 reinit wipes the HMI Server state and sets a new password without reinstalling.</div>
+
+      <div class="svc-grid" id="svc-grid">
+        <!-- rows injected by renderer -->
+      </div>
+
+      <div class="field" id="tf2000-reinit-block" style="margin-top:.75rem;display:none">
+        <label>NEW TF2000 HMI SERVER PASSWORD</label>
+        <div style="display:flex;gap:.5rem;align-items:center">
+          <input type="password" id="tf2000-reinit-pass" placeholder="new password" autocomplete="new-password" style="max-width:220px">
+          <button class="btn-run danger" id="btn-tf2000-reinit" style="white-space:nowrap">⟳ REINITIALISE TF2000</button>
+        </div>
+        <div class="hint" style="margin-top:.3rem;color:var(--tc-warn)">This wipes the existing HMI Server config and reinitialises with the new password.</div>
+      </div>
+
+      <div style="margin-top:.6rem">
+        <button class="sel-btn" id="btn-svc-refresh">⟳ REFRESH STATUS</button>
+      </div>
+    </div>
+
   </div>
 
   <!-- PAGE 4: TERMINAL / SCRIPT OUTPUT -->
   <div class="page" id="page-script">
     <div class="section">
-      <div class="section-label">output</div>
+    <!-- OUTPUT -->
       <div class="view-toggle" id="view-toggle">
         <div class="view-opt active" data-view="terminal">LIVE TERMINAL</div>
         <div class="view-opt" data-view="script">SCRIPT PREVIEW</div>
