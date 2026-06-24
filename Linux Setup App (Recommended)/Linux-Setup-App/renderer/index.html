@@ -372,6 +372,73 @@
       </div>
     </div>
 
+    <!-- USER MANAGEMENT -->
+    <div class="section">
+      <div class="section-label">user management</div>
+      <div class="section-subtitle">Manage local accounts on the CX: change passwords, add or remove users, grant or revoke sudo, lock accounts, install SSH keys. <strong>Administrator</strong> and <strong>root</strong> are protected from delete and lock.</div>
+
+      <div class="btn-row" style="margin-bottom:.6rem">
+        <button class="btn-run secondary" id="btn-um-refresh">⟳ REFRESH</button>
+      </div>
+
+      <div id="um-table" class="um-table">
+        <div class="um-head"><span>USER</span><span>UID</span><span>SUDO</span><span>STATUS</span></div>
+        <div id="um-rows"></div>
+        <div id="um-empty" class="um-empty">Connect to a CX and hit REFRESH to list accounts.</div>
+      </div>
+
+      <div class="um-target-row">
+        <label class="um-label">target user</label>
+        <select id="um-user" class="um-input"></select>
+      </div>
+
+      <div class="um-action">
+        <label class="um-label">change password</label>
+        <div class="um-inline">
+          <input type="password" id="um-newpass" class="um-input" placeholder="new password" autocomplete="new-password">
+          <button class="sel-btn" id="btn-um-passwd">SET PASSWORD</button>
+        </div>
+      </div>
+
+      <div class="um-action">
+        <label class="um-label">sudo &amp; account</label>
+        <div class="um-inline">
+          <button class="sel-btn" id="btn-um-sudo-grant">GRANT SUDO</button>
+          <button class="sel-btn" id="btn-um-sudo-revoke">REVOKE SUDO</button>
+          <button class="sel-btn" id="btn-um-lock">LOCK</button>
+          <button class="sel-btn" id="btn-um-unlock">UNLOCK</button>
+          <button class="sel-btn" id="btn-um-forcechpw">FORCE CHANGE AT LOGIN</button>
+        </div>
+      </div>
+
+      <div class="um-action">
+        <label class="um-label">install ssh public key</label>
+        <textarea id="um-sshkey" class="um-input um-textarea" placeholder="ssh-ed25519 AAAA... user@host" rows="2"></textarea>
+        <div class="um-inline" style="margin-top:.4rem">
+          <button class="sel-btn" id="btn-um-sshkey">INSTALL KEY</button>
+          <span class="hint">Appends to the user's ~/.ssh/authorized_keys for passwordless login</span>
+        </div>
+      </div>
+
+      <div class="um-action">
+        <label class="um-label" style="color:var(--tc-danger)">danger zone</label>
+        <div class="um-inline">
+          <label class="um-check"><input type="checkbox" id="um-rmhome"> remove home directory</label>
+          <button class="sel-btn danger" id="btn-um-delete">DELETE USER</button>
+        </div>
+      </div>
+
+      <div class="um-action um-add">
+        <label class="um-label">add new user</label>
+        <div class="um-inline">
+          <input type="text" id="um-add-user" class="um-input" placeholder="username" autocomplete="off">
+          <input type="password" id="um-add-pass" class="um-input" placeholder="password" autocomplete="new-password">
+          <label class="um-check"><input type="checkbox" id="um-add-sudo"> grant sudo</label>
+          <button class="sel-btn" id="btn-um-add">+ ADD USER</button>
+        </div>
+      </div>
+    </div>
+
   </div>
 
   <!-- PAGE 4: TERMINAL / SCRIPT OUTPUT -->

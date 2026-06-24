@@ -1275,3 +1275,131 @@ $('btn-validate-creds').addEventListener('click', async () => {
     else toast(cfg.failMsg, 'error');
   });
 })();
+//  USER MANAGEMENT (CX Management tab)
+(function initUserMgmt() {
+  if (!$('btn-um-refresh')) return;
+
+  function renderUsers(users) {
+    const rows = $('um-rows');
+    const selEl = $('um-user');
+    const empty = $('um-empty');
+    const prev = selEl.value;
+    rows.innerHTML = '';
+    selEl.innerHTML = '';
+    if (!users.length) { empty.style.display = 'block'; return; }
+    empty.style.display = 'none';
+    users.forEach((u) => {
+      const row = document.createElement('div');
+      row.className = 'um-row';
+      const name = document.createElement('span'); name.className = 'um-name'; name.textContent = u.name;
+      const uid = document.createElement('span'); uid.className = 'um-uid'; uid.textContent = u.uid;
+      const sudo = document.createElement('span'); sudo.className = 'um-badge' + (u.sudo ? ' on' : ''); sudo.textContent = u.sudo ? 'sudo' : '—';
+      const st = document.createElement('span'); st.className = 'um-badge ' + (u.locked ? 'lock' : 'ok'); st.textContent = u.locked ? 'locked' : 'active';
+      row.append(name, uid, sudo, st);
+      rows.appendChild(row);
+      const opt = document.createElement('option');
+      opt.value = u.name; opt.textContent = `${u.name} (uid ${u.uid})`;
+      selEl.appendChild(opt);
+    });
+    if (prev && users.some((u) => u.name === prev)) selEl.value = prev;
+  }
+
+  async function refreshUsers() {
+    const conn = getCxMgmtConn();
+    if (!conn.host) { toast('Enter the CX IP first', 'warn'); return; }
+    const btn = $('btn-um-refresh');
+    btn.disabled = true; btn.textContent = '...';
+    try {
+      const res = await window.api.usersList(conn);
+      if (res && res.ok) renderUsers(res.users || []);
+      else toast('Could not load users' + (res && res.error ? ': ' + res.error : ''), 'warn');
+    } catch (e) { toast('Could not load users', 'warn'); }
+    btn.disabled = false; btn.textContent = '⟳ REFRESH';
+  }
+
+  async function runAction(action, extra, okMsg, failMsg) {
+    const conn = getCxMgmtConn();
+    if (!conn.host) { toast('Enter the CX IP first', 'warn'); return null; }
+    showTab('script'); setView('terminal'); clearTerminal();
+    $('prog').classList.add('running'); $('prog').style.width = '8%';
+    let res;
+    try { res = await window.api.userMgmt({ ...conn, action, ...extra }); }
+    catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
+    $('prog').classList.remove('running'); $('prog').style.width = '100%';
+    if (res && res.ok) { toast(okMsg, 'success'); refreshUsers(); }
+    else { toast((failMsg || 'Action failed') + (res && res.error ? ': ' + res.error : '') + ' — see terminal', 'error'); }
+    return res;
+  }
+
+  const sel = () => $('um-user').value;
+  const PROTECTED = ['Administrator', 'root'];
+
+  $('btn-um-refresh').addEventListener('click', refreshUsers);
+
+  $('btn-um-passwd').addEventListener('click', () => {
+    const u = sel(); const pw = $('um-newpass').value;
+    if (!u) { toast('Select a user', 'warn'); return; }
+    if (!pw) { toast('Enter a new password', 'warn'); return; }
+    runAction('passwd', { targetUser: u, newPassword: pw }, `Password changed for ${u}`, 'Password change failed')
+      .then((r) => { if (r && r.ok) $('um-newpass').value = ''; });
+  });
+
+  $('btn-um-sudo-grant').addEventListener('click', () => {
+    const u = sel(); if (!u) { toast('Select a user', 'warn'); return; }
+    runAction('sudo-grant', { targetUser: u }, `${u} granted sudo`, 'Grant sudo failed');
+  });
+  $('btn-um-sudo-revoke').addEventListener('click', () => {
+    const u = sel(); if (!u) { toast('Select a user', 'warn'); return; }
+    runAction('sudo-revoke', { targetUser: u }, `${u} removed from sudo`, 'Revoke sudo failed');
+  });
+
+  $('btn-um-lock').addEventListener('click', () => {
+    const u = sel(); if (!u) { toast('Select a user', 'warn'); return; }
+    if (PROTECTED.includes(u)) { toast(`${u} is protected from locking`, 'warn'); return; }
+    if (!confirm(`Lock account "${u}"? They will not be able to log in until unlocked.`)) return;
+    runAction('lock', { targetUser: u }, `${u} locked`, 'Lock failed');
+  });
+  $('btn-um-unlock').addEventListener('click', () => {
+    const u = sel(); if (!u) { toast('Select a user', 'warn'); return; }
+    runAction('unlock', { targetUser: u }, `${u} unlocked`, 'Unlock failed');
+  });
+  $('btn-um-forcechpw').addEventListener('click', () => {
+    const u = sel(); if (!u) { toast('Select a user', 'warn'); return; }
+    runAction('forcechpw', { targetUser: u }, `${u} must change password at next login`, 'Force-change failed');
+  });
+
+  $('btn-um-sshkey').addEventListener('click', () => {
+    const u = sel(); const key = $('um-sshkey').value.trim();
+    if (!u) { toast('Select a user', 'warn'); return; }
+    if (!key || !key.startsWith('ssh-')) { toast('Paste a valid public key (starts with "ssh-")', 'warn'); return; }
+    runAction('sshkey', { targetUser: u, sshKey: key }, `SSH key installed for ${u}`, 'SSH key install failed')
+      .then((r) => { if (r && r.ok) $('um-sshkey').value = ''; });
+  });
+
+  $('btn-um-delete').addEventListener('click', () => {
+    const u = sel(); if (!u) { toast('Select a user', 'warn'); return; }
+    if (PROTECTED.includes(u)) { toast(`${u} is protected from deletion`, 'warn'); return; }
+    const rmHome = $('um-rmhome').checked;
+    if (!confirm(`Delete user "${u}"${rmHome ? ' AND remove their home directory' : ''}? This cannot be undone.`)) return;
+    runAction('delete', { targetUser: u, removeHome: rmHome }, `${u} deleted`, 'Delete failed')
+      .then((r) => { if (r && r.ok) $('um-rmhome').checked = false; });
+  });
+
+  $('btn-um-add').addEventListener('click', () => {
+    const u = $('um-add-user').value.trim();
+    const pw = $('um-add-pass').value;
+    const addSudo = $('um-add-sudo').checked;
+    if (!u) { toast('Enter a username', 'warn'); return; }
+    if (!/^[a-z_][a-z0-9_-]*$/.test(u)) { toast('Invalid username (lowercase letter/_ first, then letters, digits, _ or -)', 'warn'); return; }
+    if (!pw) { toast('Enter a password for the new user', 'warn'); return; }
+    runAction('add', { targetUser: u, newPassword: pw, addSudo }, `User ${u} created`, 'Add user failed')
+      .then((r) => { if (r && r.ok) { $('um-add-user').value = ''; $('um-add-pass').value = ''; $('um-add-sudo').checked = false; } });
+  });
+
+  // Lazy-load the account list the first time the CX Management tab is opened
+  const cxTab = document.querySelector('.tab[data-tab="cxmgmt"]');
+  if (cxTab) cxTab.addEventListener('click', () => {
+    const conn = getCxMgmtConn();
+    if (conn.host && !$('um-rows').children.length) refreshUsers();
+  });
+})();
