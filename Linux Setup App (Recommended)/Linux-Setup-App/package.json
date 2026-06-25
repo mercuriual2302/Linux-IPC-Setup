@@ -1,6 +1,6 @@
 {
-  "name": "linux-ipc0-setup-console",
-  "productName": "Linux  Setup Console",
+  "name": "linux-ipc-setup-console",
+  "productName": "Linux Setup Console",
   "version": "1.0.0",
   "description": "Automated provisioning tool for Linux IPCs",
   "main": "main.js",
@@ -26,7 +26,8 @@
   "build": {
     "appId": "com.twincat.setup-console",
     "productName": "Linux Setup Console",
-    "copyright": "Copyright © 2025",
+    "copyright": "Copyright © 2026",
+    "npmRebuild": false,
     "directories": {
       "output": "dist",
       "buildResources": "build"
