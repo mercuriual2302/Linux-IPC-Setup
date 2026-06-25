@@ -498,6 +498,7 @@ _sudo nft add rule inet filter input iif lo accept
 _sudo nft add rule inet filter input tcp dport 22 accept
 ${openRules}
 _sudo systemctl enable nftables
+_sudo systemctl start nftables
 _sudo nft list ruleset | _sudo tee /etc/nftables.conf
 echo "[CX] Firewall enabled with selected ports open."` :
 `echo "[CX] Disabling nftables firewall..."
@@ -1253,8 +1254,8 @@ ipcMain.handle('cx:service-mgmt', async (_evt, opts) => {
       const mgr2 = new SSHManager();
       await mgr2.connect({ host, username: 'Administrator', password, port: port || 22 });
       const pinnedWithStates = await Promise.all(Object.entries(PINNED).map(async ([id, meta]) => {
-        const r = await mgr2.exec(`systemctl is-active ${id} 2>/dev/null || echo inactive`);
-        const state = String(r.stdout || 'unknown').replace(/\r?\n/g, '').trim();
+        const r = await mgr2.exec(`systemctl is-active ${id} 2>/dev/null; true`);
+        const state = String(r.stdout || '').replace(/\r/g, '').split('\n')[0].trim() || 'unknown';
         return { id, ...meta, state, pinned: true, canStop: meta.canStop && !NO_STOP.has(id) };
       }));
       mgr2.dispose();
