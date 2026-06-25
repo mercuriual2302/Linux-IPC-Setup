@@ -20,7 +20,7 @@
     "node-ssh": "^13.2.0"
   },
   "devDependencies": {
-    "electron": "^31.0.0",
+    "electron": "^39.8.5",
     "electron-builder": "^24.13.3"
   },
   "build": {
