@@ -1193,3 +1193,180 @@ ipcMain.handle('profiles:save', async (_evt, { profiles }) => {
     return { ok: false, error: e.message };
   }
 });
+
+
+// Service management - list, status, start, stop, restart, TF2000 reinit
+ipcMain.handle('cx:service-mgmt', async (_evt, opts) => {
+  const { host, password, port, action, service, tf2000Pass } = opts || {};
+  const sessionId = `svcmgmt-${Date.now()}`;
+  const escPass = String(password || '').replace(/'/g, "'\\''");
+
+  // Pinned services - always shown first with friendly labels
+  const PINNED = {
+    TcSystemServiceUm: { label: 'TcSystemServiceUm', desc: 'TwinCAT 3 runtime',      canStop: true  },
+    TcHmiSrv:          { label: 'TcHmiSrv',          desc: 'TF2000 HMI Server',       canStop: true  },
+    nftables:          { label: 'nftables',           desc: 'Firewall',                canStop: true  },
+    ssh:               { label: 'ssh',                desc: 'SSH daemon',              canStop: false },
+    MDPService:        { label: 'MDPService',         desc: 'MDP service',             canStop: true  },
+  };
+
+  // Services that never get a stop button regardless of how they were discovered
+  const NO_STOP = new Set(['ssh', 'systemd-networkd', 'dbus', 'dbus-broker', 'NetworkManager']);
+
+  // Patterns that match relevant discovered services
+  const RELEVANT = /^(Tc|tf|te|mdp|ads|bhf|beckhoff)/i;
+
+  // Patterns to exclude from discovery entirely
+  const EXCLUDE = /^(systemd-|getty|serial-|console-|keyboard-|plymouth|udev|kmod|apparmor|blk-|dev-|proc-|sys-|run-|-.+\.mount|-.+\.scope|-.+\.slice|-.+\.socket|-.+\.path|-.+\.timer|-.+\.device)/;
+
+  // List all relevant services from the CX
+  if (action === 'list') {
+    const mgr = new SSHManager();
+    try {
+      await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+      // List all service units, get name and active state
+      const result = await mgr.exec(
+        `systemctl list-units --type=service --all --no-pager --no-legend 2>/dev/null | awk '{print $1, $3, $4}'`
+      );
+      mgr.dispose();
+
+      const discovered = [];
+      String(result.stdout || '').replace(/\r/g, '').split('\n').forEach(line => {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length < 2) return;
+        let name = parts[0].replace(/\.service$/, '');
+        const state = parts[2] || parts[1] || 'unknown';
+        if (PINNED[name]) return; // handled separately
+        if (EXCLUDE.test(name)) return;
+        if (!RELEVANT.test(name)) return;
+        discovered.push({ id: name, label: name, desc: '', state, canStop: !NO_STOP.has(name), pinned: false });
+      });
+
+      // Get states for pinned services
+      const pinnedList = await Promise.all(Object.entries(PINNED).map(async ([id, meta]) => {
+        const r = await mgr.exec(`systemctl is-active ${id} 2>/dev/null || echo inactive`).catch(() => ({ stdout: 'unknown' }));
+        const state = String(r && r.stdout || 'unknown').replace(/\r?\n/g, '').trim();
+        return { id, ...meta, state, pinned: true };
+      }));
+
+      // mgr was disposed above so re-connect for pinned states
+      const mgr2 = new SSHManager();
+      await mgr2.connect({ host, username: 'Administrator', password, port: port || 22 });
+      const pinnedWithStates = await Promise.all(Object.entries(PINNED).map(async ([id, meta]) => {
+        const r = await mgr2.exec(`systemctl is-active ${id} 2>/dev/null || echo inactive`);
+        const state = String(r.stdout || 'unknown').replace(/\r?\n/g, '').trim();
+        return { id, ...meta, state, pinned: true, canStop: meta.canStop && !NO_STOP.has(id) };
+      }));
+      mgr2.dispose();
+
+      return { ok: true, services: [...pinnedWithStates, ...discovered] };
+    } catch (err) {
+      mgr.dispose();
+      return { ok: false, error: err.message, services: [] };
+    }
+  }
+
+  // Status of a single service
+  if (action === 'status') {
+    const mgr = new SSHManager();
+    try {
+      await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+      const result = await mgr.exec(`systemctl is-active ${service} 2>/dev/null || echo inactive`);
+      mgr.dispose();
+      const state = String(result.stdout || '').replace(/\r?\n/g, '').trim();
+      return { ok: true, service, state };
+    } catch (err) {
+      mgr.dispose();
+      return { ok: false, error: err.message };
+    }
+  }
+
+  // TF2000 reinitialise
+  if (action === 'reinit') {
+    const escTf2000Pass = String(tf2000Pass || '1').replace(/'/g, "'\\''");
+    const script = `#!/bin/bash
+set -e
+export TERM=dumb
+SUDO_PASS='${escPass}'
+_sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
+_sudo -v
+echo "[CX] Stopping TcHmiSrv..."
+_sudo systemctl stop TcHmiSrv || true
+echo "[CX] Removing HMI Server init state..."
+_sudo rm -rf /var/lib/tchmisrv/* 2>/dev/null || true
+_sudo rm -f /etc/TwinCAT/Functions/TF2000-HMI-Server/TcHmiSrv.cfg 2>/dev/null || true
+echo "[CX] Reinitialising TF2000 HMI Server..."
+_sudo TcHmiSrv --initialize --password='${escTf2000Pass}'
+echo "[CX] Enabling and starting TcHmiSrv..."
+_sudo systemctl enable TcHmiSrv
+_sudo systemctl start TcHmiSrv
+sleep 2
+STATE=$(_sudo systemctl is-active TcHmiSrv 2>/dev/null || echo unknown)
+echo "[CX] TcHmiSrv is now: $STATE"
+`;
+    try {
+      const tmpPath = path.join(os.tmpdir(), `cx-reinit-${Date.now()}.sh`);
+      await fs.promises.writeFile(tmpPath, script, { mode: 0o755 });
+      const mgr = new SSHManager();
+      activeSessions.set(sessionId, mgr);
+      sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m Reinitialising TF2000 HMI Server...\r\n` });
+      await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+      await mgr.putFile(tmpPath, '/tmp/cx_reinit.sh');
+      await fs.promises.unlink(tmpPath).catch(() => {});
+      const result = await mgr.execStream('chmod +x /tmp/cx_reinit.sh && /tmp/cx_reinit.sh', {
+        onStdout: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() }),
+        onStderr: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() })
+      });
+      mgr.dispose();
+      activeSessions.delete(sessionId);
+      const ok = result.code === 0;
+      sendToRenderer('ssh:status', { sessionId, status: ok ? 'complete' : 'failed', message: ok ? 'TF2000 reinitialised' : `Exit ${result.code}` });
+      return { ok, sessionId };
+    } catch (err) {
+      sendToRenderer('ssh:status', { sessionId, status: 'failed', message: err.message });
+      return { ok: false, error: err.message };
+    }
+  }
+
+  // start / stop / restart
+  const VALID_ACTIONS = ['start', 'stop', 'restart'];
+  if (!VALID_ACTIONS.includes(action)) return { ok: false, error: `Unknown action: ${action}` };
+  if (action === 'stop' && NO_STOP.has(service)) {
+    return { ok: false, error: `Stopping ${service} is blocked - it would disconnect you or crash the system.` };
+  }
+
+  const script = `#!/bin/bash
+set -e
+SUDO_PASS='${escPass}'
+_sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
+_sudo -v
+echo "[CX] systemctl ${action} ${service}"
+_sudo systemctl ${action} ${service}
+sleep 1
+STATE=$(_sudo systemctl is-active ${service} 2>/dev/null || echo unknown)
+echo "[CX] ${service} is now: $STATE"
+`;
+
+  try {
+    const tmpPath = path.join(os.tmpdir(), `cx-svc-${Date.now()}.sh`);
+    await fs.promises.writeFile(tmpPath, script, { mode: 0o755 });
+    const mgr = new SSHManager();
+    activeSessions.set(sessionId, mgr);
+    sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m ${action} ${service}...\r\n` });
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+    await mgr.putFile(tmpPath, '/tmp/cx_svc.sh');
+    await fs.promises.unlink(tmpPath).catch(() => {});
+    const result = await mgr.execStream('chmod +x /tmp/cx_svc.sh && /tmp/cx_svc.sh', {
+      onStdout: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() }),
+      onStderr: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() })
+    });
+    mgr.dispose();
+    activeSessions.delete(sessionId);
+    const ok = result.code === 0;
+    sendToRenderer('ssh:status', { sessionId, status: ok ? 'complete' : 'failed', message: ok ? `${service} ${action}ed` : `Exit ${result.code}` });
+    return { ok, sessionId };
+  } catch (err) {
+    sendToRenderer('ssh:status', { sessionId, status: 'failed', message: err.message });
+    return { ok: false, error: err.message };
+  }
+});
