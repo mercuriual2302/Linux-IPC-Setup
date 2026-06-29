@@ -135,8 +135,64 @@ async function scanDirectLink(adapter) {
       mac: macDisplay(r.mac),
       fe80: r.fe80,
       zone: adapter.scopeid !== undefined ? adapter.scopeid : adapter.name,
-      iface: adapter.name
+      iface: adapter.name,
+      laptopIp: adapter.address
     }));
+}
+
+// ping the 169.254 broadcast to prime ARP, then read the table by MAC.
+// falls back to a parallel SSH sweep of the whole /16 if the broadcast ping
+// doesn't produce an ARP entry (CX blocks ICMP).
+async function resolveDirectLinkIp(mac, laptopIp) {
+  const norm = (m) => String(m || '').replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+  const target = norm(mac);
+
+  const pingCmd = process.platform === 'win32'
+    ? `ping 169.254.255.255 -S ${laptopIp} -n 3 -w 1000`
+    : `ping -c 3 -W 1 -b 169.254.255.255`;
+  await execP(pingCmd);
+  await new Promise(r => setTimeout(r, 400));
+
+  let arp = await readArp();
+  let hit = arp.find(e => norm(e.mac) === target);
+  if (hit) return hit.ip;
+
+  // broadcast ping didn't prime ARP - fall back to SSH sweep
+  return scanLinkLocalForSSH(target);
+}
+
+// scan 169.254.1.1-254.254 for port 22 with high concurrency.
+// on a direct link the CX responds in <10ms so this finds it fast.
+async function scanLinkLocalForSSH(targetMac) {
+  const norm = (m) => String(m || '').replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+  const hosts = [];
+  for (let a = 1; a < 255; a++) for (let b = 1; b < 255; b++) hosts.push(`169.254.${a}.${b}`);
+  // shuffle so average-case performance is O(N/2) regardless of where the CX landed
+  for (let i = hosts.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [hosts[i], hosts[j]] = [hosts[j], hosts[i]];
+  }
+
+  return new Promise((resolve) => {
+    let found = null;
+    let completed = 0;
+    let idx = 0;
+    const total = hosts.length;
+    const CONC = 1500;
+
+    function next() {
+      if (found || idx >= total) return;
+      const host = hosts[idx++];
+      tcpProbe(host, 22, 150).then(open => {
+        completed++;
+        if (open && !found) { found = host; resolve(host); return; }
+        if (!found) next();
+        if (completed >= total && !found) resolve(null);
+      });
+    }
+
+    for (let k = 0; k < Math.min(CONC, total); k++) next();
+  });
 }
 
 async function discoverAll() {
@@ -164,4 +220,4 @@ async function discoverAll() {
   return { devices: deduped, capped };
 }
 
-module.exports = { classifyAdapters, scanNetwork, scanDirectLink, discoverAll };
+module.exports = { classifyAdapters, scanNetwork, scanDirectLink, discoverAll, resolveDirectLinkIp };

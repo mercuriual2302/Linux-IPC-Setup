@@ -1383,23 +1383,17 @@ ipcMain.handle('cx:discover', async () => {
   }
 });
 
-// SSH to a direct-link device's fe80 link-local to read its 169.254 IPv4.
-// if this throws on the address (not auth), the v6 zone literal is the cause.
+// resolve a direct-link device's IPv4 without touching IPv6 SSH.
+// ping the 169.254 broadcast to prime the OS ARP cache, then read it by MAC.
+// if the CX blocks ICMP, falls back to a parallel SSH sweep of 169.254.0.0/16.
 ipcMain.handle('cx:resolve-direct', async (_evt, opts) => {
-  const { fe80, zone, password, port } = opts || {};
-  if (!fe80 || zone === undefined || zone === null) return { ok: false, error: 'Missing fe80 address or zone' };
-  const host = `${fe80}%${zone}`;
-  const mgr = new SSHManager();
+  const { mac, laptopIp } = opts || {};
+  if (!mac || !laptopIp) return { ok: false, error: 'Missing MAC or laptop IP' };
   try {
-    await mgr.connect({ host, username: 'Administrator', password, port: port || 22, readyTimeout: 20000 });
-    const result = await mgr.exec('ip -4 -o addr show');
-    mgr.dispose();
-    const raw = String(result.stdout || '').replace(/\r/g, '');
-    const m = raw.match(/\b(169\.254\.\d{1,3}\.\d{1,3})\b/);
-    if (!m) return { ok: false, error: 'No 169.254 IPv4 found on the CX' };
-    return { ok: true, ip: m[1] };
+    const ip = await discovery.resolveDirectLinkIp(mac, laptopIp);
+    if (!ip) return { ok: false, error: 'Could not find device. Check the cable is connected and try IDENTIFY again.' };
+    return { ok: true, ip };
   } catch (err) {
-    mgr.dispose();
     return { ok: false, error: err.message || String(err) };
   }
 });

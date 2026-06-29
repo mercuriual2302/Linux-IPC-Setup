@@ -2141,7 +2141,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
     btn.disabled = true;
     btn.textContent = '...';
     let r;
-    try { r = await window.api.resolveDirectLink({ fe80: d.fe80, zone: d.zone, password: pass() }); }
+    try { r = await window.api.resolveDirectLink({ mac: d.mac, laptopIp: d.laptopIp }); }
     catch (err) { r = { ok: false, error: String(err.message || err) }; }
     if (r && r.ok) {
       propagateCreds(r.ip, pass());
