@@ -2062,3 +2062,100 @@ $('btn-validate-creds').addEventListener('click', async () => {
     }
   });
 })();
+
+// device discovery (find CX on network or direct cable)
+(() => {
+  const overlay = $('scan-overlay');
+  if (!overlay) return;
+  const listEl = $('scan-list');
+  const subEl = $('scan-sub');
+  const btnScan = $('btn-scan');
+  const btnClose = $('scan-close');
+  const btnRescan = $('scan-rescan');
+  let busy = false;
+  let devices = [];
+
+  const pass = () => $('cx-pass').value || '1';
+  const open = () => { overlay.classList.add('open'); run(); };
+  const close = () => { overlay.classList.remove('open'); };
+
+  function deviceRow(d, idx) {
+    const isDirect = d.type === 'direct';
+    const where = isDirect ? `direct link · ${d.iface}` : d.iface;
+    const ipLine = isDirect
+      ? `<span class="scan-ip muted">IPv4 not known yet</span>`
+      : `<span class="scan-ip">${d.ip}</span>`;
+    const sshBadge = (!isDirect && d.ssh) ? `<span class="scan-badge ok">SSH</span>` : '';
+    const btn = isDirect
+      ? `<button class="scan-use" data-act="identify" data-idx="${idx}">IDENTIFY</button>`
+      : `<button class="scan-use" data-act="use" data-idx="${idx}">USE</button>`;
+    return `
+      <div class="scan-card">
+        <div class="scan-card-main">
+          <div class="scan-card-top">${ipLine}${sshBadge}<span class="scan-oui">BECKHOFF</span></div>
+          <div class="scan-card-sub">${d.mac} · ${where}</div>
+        </div>
+        ${btn}
+      </div>`;
+  }
+
+  async function run() {
+    if (busy) return;
+    busy = true;
+    devices = [];
+    listEl.innerHTML = '';
+    subEl.textContent = 'Scanning for Beckhoff devices...';
+    btnRescan.disabled = true;
+    let res;
+    try { res = await window.api.discoverDevices(); }
+    catch (e) { res = { ok: false, error: String(e.message || e) }; }
+    busy = false;
+    btnRescan.disabled = false;
+    if (!res || !res.ok) {
+      subEl.textContent = 'Scan failed: ' + ((res && res.error) || 'unknown');
+      return;
+    }
+    devices = res.devices || [];
+    if (!devices.length) {
+      subEl.textContent = 'No Beckhoff devices found. Check the cable, or that the laptop adapter is set to automatic.';
+      return;
+    }
+    const cap = res.capped ? ' (large subnet, scan was capped)' : '';
+    subEl.textContent = `Found ${devices.length} Beckhoff device${devices.length > 1 ? 's' : ''}${cap}`;
+    listEl.innerHTML = devices.map((d, i) => deviceRow(d, i)).join('');
+  }
+
+  listEl.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.scan-use');
+    if (!btn) return;
+    const d = devices[parseInt(btn.dataset.idx, 10)];
+    if (!d) return;
+
+    if (btn.dataset.act === 'use') {
+      propagateCreds(d.ip, pass());
+      toast(`IP set to ${d.ip}`, 'success');
+      close();
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = '...';
+    let r;
+    try { r = await window.api.resolveDirectLink({ fe80: d.fe80, zone: d.zone, password: pass() }); }
+    catch (err) { r = { ok: false, error: String(err.message || err) }; }
+    if (r && r.ok) {
+      propagateCreds(r.ip, pass());
+      toast(`Direct-link CX found at ${r.ip}`, 'success');
+      close();
+    } else {
+      btn.disabled = false;
+      btn.textContent = 'IDENTIFY';
+      toast('Could not read IP: ' + ((r && r.error) || 'unknown'), 'error');
+    }
+  });
+
+  if (btnScan) btnScan.addEventListener('click', open);
+  if (btnClose) btnClose.addEventListener('click', close);
+  if (btnRescan) btnRescan.addEventListener('click', run);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+})();

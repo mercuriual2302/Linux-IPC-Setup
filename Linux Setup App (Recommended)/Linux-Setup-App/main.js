@@ -6,6 +6,7 @@ const os = require('os');
 
 const SSHManager = require('./src/ssh-manager');
 const ScriptBuilder = require('./src/script-builder');
+const discovery = require('./src/discovery');
 
 // Suppress uncaught ECONNRESET errors - these are expected when the CX drops
 // the SSH connection mid-operation (network reload, reboot, poweroff). The
@@ -1369,5 +1370,36 @@ echo "[CX] ${service} is now: $STATE"
   } catch (err) {
     sendToRenderer('ssh:status', { sessionId, status: 'failed', message: err.message });
     return { ok: false, error: err.message };
+  }
+});
+
+// find CXs on the network or wired direct to this laptop
+ipcMain.handle('cx:discover', async () => {
+  try {
+    const result = await discovery.discoverAll();
+    return { ok: true, devices: result.devices, capped: result.capped };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err), devices: [] };
+  }
+});
+
+// SSH to a direct-link device's fe80 link-local to read its 169.254 IPv4.
+// if this throws on the address (not auth), the v6 zone literal is the cause.
+ipcMain.handle('cx:resolve-direct', async (_evt, opts) => {
+  const { fe80, zone, password, port } = opts || {};
+  if (!fe80 || zone === undefined || zone === null) return { ok: false, error: 'Missing fe80 address or zone' };
+  const host = `${fe80}%${zone}`;
+  const mgr = new SSHManager();
+  try {
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22, readyTimeout: 20000 });
+    const result = await mgr.exec('ip -4 -o addr show');
+    mgr.dispose();
+    const raw = String(result.stdout || '').replace(/\r/g, '');
+    const m = raw.match(/\b(169\.254\.\d{1,3}\.\d{1,3})\b/);
+    if (!m) return { ok: false, error: 'No 169.254 IPv4 found on the CX' };
+    return { ok: true, ip: m[1] };
+  } catch (err) {
+    mgr.dispose();
+    return { ok: false, error: err.message || String(err) };
   }
 });
