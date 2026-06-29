@@ -141,14 +141,17 @@ async function scanDirectLink(adapter) {
 }
 
 // ping the 169.254 broadcast to prime ARP, then read the table by MAC.
-// falls back to a parallel SSH sweep of the whole /16 if the broadcast ping
-// doesn't produce an ARP entry (CX blocks ICMP).
+// if that doesn't work, run an SSH sweep of the whole /16.
+// the sweep's TCP probes trigger OS ARP requests for each host as a side effect.
+// even when individual probes time out, those ARP entries persist in the OS cache.
+// we check ARP one final time after the sweep - this is what catches the CX on first press.
 async function resolveDirectLinkIp(mac, laptopIp) {
   const norm = (m) => String(m || '').replace(/[^0-9a-fA-F]/g, '').toLowerCase();
   const target = norm(mac);
 
+  // no -S flag: let Windows route to 169.254.255.255 via the correct adapter
   const pingCmd = process.platform === 'win32'
-    ? `ping 169.254.255.255 -S ${laptopIp} -n 3 -w 1000`
+    ? `ping 169.254.255.255 -n 3 -w 1000`
     : `ping -c 3 -W 1 -b 169.254.255.255`;
   await execP(pingCmd);
   await new Promise(r => setTimeout(r, 400));
@@ -157,8 +160,17 @@ async function resolveDirectLinkIp(mac, laptopIp) {
   let hit = arp.find(e => norm(e.mac) === target);
   if (hit) return hit.ip;
 
-  // broadcast ping didn't prime ARP - fall back to SSH sweep
-  return scanLinkLocalForSSH(target);
+  // broadcast ping alone did not prime ARP (Windows does not always update the ARP
+  // cache from unsolicited ICMP broadcast replies). run the sweep, which sends ARP
+  // requests for every address it probes. the CX will respond to its own ARP request;
+  // that response is cached by the OS even if the TCP connect times out first.
+  await scanLinkLocalForSSH(target);
+
+  // this final check is the one that works on first press:
+  // the sweep has probed the CX's address, triggering an ARP that is now cached.
+  arp = await readArp();
+  hit = arp.find(e => norm(e.mac) === target);
+  return hit ? hit.ip : null;
 }
 
 // scan 169.254.1.1-254.254 for port 22 with high concurrency.
