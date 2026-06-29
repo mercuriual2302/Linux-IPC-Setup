@@ -426,3 +426,52 @@ html:not([data-theme="dark"]) .apt-creds-banner{background:rgba(0,120,80,.06);bo
 .scan-filter:hover{opacity:.85}
 .scan-badge.os-linux{border-color:#22c55e;color:#22c55e}
 .scan-badge.os-win{border-color:var(--tc-warn);color:var(--tc-warn)}
+/* ===== shell redesign: connection bar + sidebar + terminal drawer ===== */
+/* layout only - reuses the existing --tc-* theme so light and dark both work. */
+.connbar{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;padding:.6rem 1rem;background:var(--tc-header-bg);border-bottom:1px solid var(--tc-header-bg);flex-shrink:0}
+.connbar-left{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+.connbar-right{display:flex;align-items:center;gap:.6rem;margin-left:auto}
+.connbar-label{font-family:var(--tc-mono);font-size:10px;letter-spacing:.12em;color:var(--tc-header-sub)}
+.connbar-ip,.connbar-pass{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.28);border-radius:4px;padding:.45rem .7rem;font-family:var(--tc-mono);font-size:13px;color:var(--tc-header-text);outline:none}
+.connbar-ip{width:170px}
+.connbar-pass{width:120px}
+.connbar-ip::placeholder,.connbar-pass::placeholder{color:rgba(255,255,255,.5)}
+.connbar-ip:focus,.connbar-pass:focus{border-color:rgba(255,255,255,.6)}
+.connbar .test-btn{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.32);color:var(--tc-header-text)}
+.connbar .test-btn:hover{background:rgba(255,255,255,.22);color:var(--tc-header-text)}
+
+.app-body{flex:1;display:flex;min-height:0;overflow:hidden}
+.sidebar{width:190px;flex-shrink:0;background:var(--tc-surface);border-right:1px solid var(--tc-border);display:flex;flex-direction:column;overflow-y:auto;padding-bottom:.5rem}
+.sidebar-brand{display:flex;align-items:center;gap:.6rem;padding:.85rem .9rem;border-bottom:1px solid var(--tc-border);margin-bottom:.4rem}
+.sidebar-wm b{display:block;font-family:var(--tc-mono);font-size:12px;font-weight:700;letter-spacing:.05em;color:var(--tc-text)}
+.sidebar-wm span{display:block;font-family:var(--tc-mono);font-size:9px;letter-spacing:.12em;color:var(--tc-muted)}
+.nav-group{font-family:var(--tc-mono);font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--tc-muted);opacity:.7;padding:.7rem .95rem .25rem}
+.sidebar .nav-item{display:flex;align-items:center;gap:.6rem;padding:.5rem .95rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-muted);cursor:pointer;border:0;border-left:2px solid transparent;letter-spacing:.02em;transition:all .12s;user-select:none}
+.sidebar .nav-item:hover{color:var(--tc-text);background:var(--tc-surface2)}
+.sidebar .nav-item.active{color:var(--tc-accent);border-left-color:var(--tc-accent);background:var(--tc-surface2)}
+.nav-ic{width:16px;text-align:center;font-size:13px;flex-shrink:0}
+.sidebar-foot{margin-top:auto;padding:.5rem .7rem 0;border-top:1px solid var(--tc-border)}
+.sidebar-term{display:flex;align-items:center;gap:.6rem;width:100%;padding:.5rem .25rem;background:transparent;border:0;font-family:var(--tc-mono);font-size:12px;color:var(--tc-muted);cursor:pointer;transition:color .12s}
+.sidebar-term:hover{color:var(--tc-accent)}
+
+.app-main{flex:1;min-width:0;overflow-y:auto}
+.view-title{font-family:var(--tc-sans);font-size:18px;font-weight:600;color:var(--tc-text);padding:1.25rem 1.5rem .25rem}
+.view-title .view-sub{font-family:var(--tc-mono);font-size:11px;font-weight:400;color:var(--tc-muted);letter-spacing:.03em;margin-left:.5rem}
+.app-main .page{padding:.5rem 1.5rem 1.5rem}
+
+.term-drawer{flex-shrink:0;background:var(--tc-surface);border-top:1px solid var(--tc-border)}
+.term-bar{display:flex;align-items:center;gap:.6rem;padding:.55rem 1rem;cursor:pointer;font-family:var(--tc-mono);font-size:11px;letter-spacing:.05em;color:var(--tc-muted);user-select:none}
+.term-bar .term-title{color:var(--tc-text);font-weight:700}
+.term-substatus{color:var(--tc-muted)}
+.term-chevron{margin-left:auto;font-size:12px;color:var(--tc-muted)}
+.term-body{display:none;padding:.4rem 1rem 1rem;border-top:1px solid var(--tc-border)}
+.term-drawer.open .term-body{display:block}
+.term-drawer .output-panel{height:240px;min-height:0}
+.term-drawer #term-dot{background:var(--tc-muted)}
+
+/* narrow window: let the connection bar wrap cleanly */
+@media (max-width:860px){
+  .connbar-ip{width:130px}
+  .connbar-pass{width:90px}
+  .sidebar{width:168px}
+}

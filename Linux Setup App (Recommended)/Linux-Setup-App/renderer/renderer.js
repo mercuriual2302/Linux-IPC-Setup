@@ -1,10 +1,5 @@
 // why is javascript so hard? 
 // renderer/renderer.js - UI logic for the Electron app.
-// Adapted from the inline <script> in twincat_setup_gui_v4.html, plus:
-//   • Test Connection button  → main.invoke('ssh:test')
-//   • Fetch From CX button    → main.invoke('ssh:fetch-packages')
-//   • Run Setup / Apply Config → main.invoke('ssh:run-setup' | 'ssh:run-tf1200') + streaming
-//   • View toggle (terminal vs script preview)
 
 
 // Curated package list. Extras from apt-cache search get appended as discovered.
@@ -386,7 +381,7 @@ function renderVersionList() {
 
 // Tabs
 const tabs = document.querySelectorAll('.tab');
-const pages = { setup:'page-setup', tf1200:'page-tf1200', cxmgmt:'page-cxmgmt', script:'page-script' };
+const pages = { dashboard:'page-dashboard', setup:'page-setup', services:'page-services', network:'page-network', firewall:'page-firewall', users:'page-users', packages:'page-packages', tf1200:'page-tf1200' };
 tabs.forEach(t => t.addEventListener('click', () => {
   tabs.forEach(x => x.classList.remove('active'));
   t.classList.add('active');
@@ -670,7 +665,7 @@ function showScriptPreview(script, name) {
     setTimeout(addLine, 3);
   }
   addLine();
-  showTab('script');
+  openTerminal();
   setView('script');
 }
 
@@ -692,7 +687,7 @@ $('btn-run-setup').addEventListener('click', async () => {
   )) return;
 
   // Switch to terminal view
-  showTab('script');
+  openTerminal();
   setView('terminal');
   clearTerminal();
   $('prog').classList.add('running');
@@ -733,7 +728,7 @@ $('btn-run-tf1200').addEventListener('click', async () => {
 
   if (!confirm(`Apply TF1200 config to ${ip}?\n\nstartUrl: ${hmiUrl}\n\nThis writes /home/TF1200/.config/TF1200-UI-Client/config.json and REBOOTS the CX.`)) return;
 
-  showTab('script');
+  openTerminal();
   setView('terminal');
   clearTerminal();
   $('prog').classList.add('running');
@@ -894,13 +889,26 @@ function getCxMgmtConn() {
 // Tab 3 credentials are kept in sync by the bidirectional propagateCreds().
 // No extra tab-click handler needed.
 
+function openTerminal() {
+  const d = $('term-drawer');
+  if (!d) return;
+  d.classList.add('open');
+  const c = $('term-chevron'); if (c) c.textContent = '▾';
+}
 function goToTerminal(sessionId) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.querySelector('[data-tab="script"]').classList.add('active');
-  $('page-script').classList.add('active');
+  openTerminal();
   if (sessionId) $('session-status').textContent = `session: ${sessionId}`;
 }
+(function initTermDrawer() {
+  const bar = $('term-bar');
+  if (bar) bar.addEventListener('click', () => {
+    const d = $('term-drawer');
+    d.classList.toggle('open');
+    const c = $('term-chevron'); if (c) c.textContent = d.classList.contains('open') ? '▾' : '▸';
+  });
+  const openBtn = $('btn-open-term');
+  if (openBtn) openBtn.addEventListener('click', openTerminal);
+})();
 
 // Network configurator
 toggleGroupInit('net-iface-toggle');
@@ -1262,7 +1270,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
     if (!conn.host) { toast('Enter the CX IP first', 'warn'); return; }
 
     // Switch to the live terminal and prime the progress bar (mirrors RUN SETUP).
-    showTab('script');
+    openTerminal();
     setView('terminal');
     clearTerminal();
     $('prog').classList.add('running');
@@ -1339,7 +1347,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
   async function runAction(action, extra, okMsg, failMsg) {
     const conn = getCxMgmtConn();
     if (!conn.host) { toast('Enter the CX IP first', 'warn'); return null; }
-    showTab('script'); setView('terminal'); clearTerminal();
+    openTerminal(); setView('terminal'); clearTerminal();
     $('prog').classList.add('running'); $('prog').style.width = '8%';
     let res;
     try { res = await window.api.userMgmt({ ...conn, action, ...extra }); }
@@ -1416,7 +1424,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
   });
 
   // Lazy-load the account list the first time the CX Management tab is opened
-  const cxTab = document.querySelector('.tab[data-tab="cxmgmt"]');
+  const cxTab = document.querySelector(`.tab[data-tab="users"]`);
   if (cxTab) cxTab.addEventListener('click', () => {
     const conn = getCxMgmtConn();
     if (conn.host && !$('um-rows').children.length) refreshUsers();
@@ -1592,9 +1600,9 @@ $('btn-validate-creds').addEventListener('click', async () => {
   btnInit.addEventListener('click', readInfo);
   btnHeader.addEventListener('click', readInfo);
 
-  // Auto-read when switching to the CX Management tab if IP is set and panel is empty
+  // Auto-read when switching to the Dashboard if IP is set and panel is empty
   document.querySelectorAll('.tab').forEach(t => {
-    if (t.dataset.tab === 'cxmgmt') {
+    if (t.dataset.tab === 'dashboard') {
       t.addEventListener('click', () => {
         const conn = getCxMgmtConn();
         if (conn.host && $('info-body').style.display === 'none') readInfo();
@@ -1726,7 +1734,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
     } else {
       if (!confirm(`Switch feed from ${current} to ${selectedFeed} and run apt update?`)) return;
     }
-    showTab('script'); setView('terminal'); clearTerminal();
+    openTerminal(); setView('terminal'); clearTerminal();
     $('prog').classList.add('running'); $('prog').style.width = '8%';
     const res = await window.api.switchFeed({ ...conn, feed: selectedFeed });
     $('prog').classList.remove('running'); $('prog').style.width = '100%';
@@ -1743,7 +1751,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
   updateBtn.addEventListener('click', async () => {
     const conn = getCxMgmtConn();
     if (!conn.host) { toast('Enter the CX IP first', 'warn'); return; }
-    showTab('script'); setView('terminal'); clearTerminal();
+    openTerminal(); setView('terminal'); clearTerminal();
     $('prog').classList.add('running'); $('prog').style.width = '8%';
     const res = await window.api.updateFeed(conn);
     $('prog').classList.remove('running'); $('prog').style.width = '100%';
@@ -2042,7 +2050,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
       const pass = reinitPass ? reinitPass.value.trim() : '1';
       if (!pass) { toast('Enter a new TF2000 password', 'warn'); return; }
       if (!confirm('This wipes the existing TF2000 HMI Server config and reinitialises it. Continue?')) return;
-      showTab('script'); setView('terminal'); clearTerminal();
+      openTerminal(); setView('terminal'); clearTerminal();
       $('prog').classList.add('running'); $('prog').style.width = '8%';
       const res = await window.api.serviceMgmt({ ...conn, action: 'reinit', service: 'TcHmiSrv', tf2000Pass: pass })
         .catch(e => ({ ok: false, error: String(e.message || e) }));
@@ -2054,7 +2062,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
 
   // Auto-load when switching to CX Management tab
   document.querySelectorAll('.tab').forEach(t => {
-    if (t.dataset.tab === 'cxmgmt') {
+    if (t.dataset.tab === 'services') {
       t.addEventListener('click', () => {
         const conn = getCxMgmtConn();
         if (conn.host && grid.children.length === 0) loadServices();
