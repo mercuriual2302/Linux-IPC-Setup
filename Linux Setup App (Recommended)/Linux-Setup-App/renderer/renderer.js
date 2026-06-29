@@ -2062,3 +2062,123 @@ $('btn-validate-creds').addEventListener('click', async () => {
     }
   });
 })();
+
+// device discovery (find CX on network or direct cable)
+(() => {
+  const overlay = $('scan-overlay');
+  if (!overlay) return;
+  const listEl = $('scan-list');
+  const subEl = $('scan-sub');
+  const btnScan = $('btn-scan');
+  const btnClose = $('scan-close');
+  const btnRescan = $('scan-rescan');
+  let busy = false;
+  let devices = [];
+  let linuxOnly = true;
+
+  const pass = () => $('cx-pass').value || '1';
+  const open = () => { overlay.classList.add('open'); run(); };
+  const close = () => { overlay.classList.remove('open'); };
+
+  const btnFilter = $('scan-filter');
+
+  function applyFilter() {
+    const visible = linuxOnly
+      ? devices.filter(d => d.type === 'direct' || d.os === 'linux')
+      : devices;
+    if (btnFilter) {
+      btnFilter.textContent = linuxOnly ? 'LINUX ONLY' : 'ALL DEVICES';
+      btnFilter.classList.toggle('active', linuxOnly);
+    }
+    if (!visible.length && devices.length) {
+      listEl.innerHTML = `<div style="font-family:var(--tc-mono);font-size:11px;color:var(--tc-muted);padding:.5rem 0">No Linux IPCs found. Toggle to show all Beckhoff devices.</div>`;
+    } else {
+      listEl.innerHTML = visible.map((d) => deviceRow(d, devices.indexOf(d))).join('');
+    }
+    const cap = (window._scanCapped) ? ' (large subnet, scan was capped)' : '';
+    if (devices.length) subEl.textContent = `Found ${visible.length} of ${devices.length} Beckhoff device${devices.length > 1 ? 's' : ''}${cap}`;
+  }
+
+  function deviceRow(d, idx) {
+    const isDirect = d.type === 'direct';
+    const where = isDirect ? `direct link · ${d.iface}` : d.iface;
+    const ipLine = isDirect
+      ? `<span class="scan-ip muted">IPv4 not known yet</span>`
+      : `<span class="scan-ip">${d.ip}</span>`;
+    const sshBadge = (!isDirect && d.ssh) ? `<span class="scan-badge ok">SSH</span>` : '';
+    const osBadge = d.os === 'linux'   ? `<span class="scan-badge os-linux">LINUX</span>`
+                  : d.os === 'windows' ? `<span class="scan-badge os-win">WINDOWS</span>`
+                  : '';
+    const btn = isDirect
+      ? `<button class="scan-use" data-act="identify" data-idx="${idx}">IDENTIFY</button>`
+      : `<button class="scan-use" data-act="use" data-idx="${idx}">USE</button>`;
+    return `
+      <div class="scan-card">
+        <div class="scan-card-main">
+          <div class="scan-card-top">${ipLine}${sshBadge}${osBadge}<span class="scan-oui">BECKHOFF</span></div>
+          <div class="scan-card-sub">${d.mac} · ${where}</div>
+        </div>
+        ${btn}
+      </div>`;
+  }
+
+  async function run() {
+    if (busy) return;
+    busy = true;
+    devices = [];
+    listEl.innerHTML = '';
+    subEl.textContent = 'Scanning for Beckhoff devices...';
+    btnRescan.disabled = true;
+    let res;
+    try { res = await window.api.discoverDevices(); }
+    catch (e) { res = { ok: false, error: String(e.message || e) }; }
+    busy = false;
+    btnRescan.disabled = false;
+    if (!res || !res.ok) {
+      subEl.textContent = 'Scan failed: ' + ((res && res.error) || 'unknown');
+      return;
+    }
+    devices = res.devices || [];
+    window._scanCapped = res.capped;
+    if (!devices.length) {
+      subEl.textContent = 'No Beckhoff devices found. Check the cable, or that the laptop adapter is set to automatic.';
+      return;
+    }
+    applyFilter();
+  }
+
+  listEl.addEventListener('click', async (e) => {
+    const btn = e.target.closest('.scan-use');
+    if (!btn) return;
+    const d = devices[parseInt(btn.dataset.idx, 10)];
+    if (!d) return;
+
+    if (btn.dataset.act === 'use') {
+      propagateCreds(d.ip, pass());
+      toast(`IP set to ${d.ip}`, 'success');
+      close();
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = '...';
+    let r;
+    try { r = await window.api.resolveDirectLink({ mac: d.mac, laptopIp: d.laptopIp }); }
+    catch (err) { r = { ok: false, error: String(err.message || err) }; }
+    if (r && r.ok) {
+      propagateCreds(r.ip, pass());
+      toast(`Direct-link CX found at ${r.ip}`, 'success');
+      close();
+    } else {
+      btn.disabled = false;
+      btn.textContent = 'IDENTIFY';
+      toast('Could not read IP: ' + ((r && r.error) || 'unknown'), 'error');
+    }
+  });
+
+  if (btnScan)   btnScan.addEventListener('click', open);
+  if (btnClose)  btnClose.addEventListener('click', close);
+  if (btnRescan) btnRescan.addEventListener('click', run);
+  if (btnFilter) btnFilter.addEventListener('click', () => { linuxOnly = !linuxOnly; applyFilter(); });
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+})();

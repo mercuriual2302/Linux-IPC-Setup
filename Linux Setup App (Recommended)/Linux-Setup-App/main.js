@@ -6,6 +6,7 @@ const os = require('os');
 
 const SSHManager = require('./src/ssh-manager');
 const ScriptBuilder = require('./src/script-builder');
+const discovery = require('./src/discovery');
 
 // Suppress uncaught ECONNRESET errors - these are expected when the CX drops
 // the SSH connection mid-operation (network reload, reboot, poweroff). The
@@ -1369,5 +1370,30 @@ echo "[CX] ${service} is now: $STATE"
   } catch (err) {
     sendToRenderer('ssh:status', { sessionId, status: 'failed', message: err.message });
     return { ok: false, error: err.message };
+  }
+});
+
+// find CXs on the network or wired direct to this laptop
+ipcMain.handle('cx:discover', async () => {
+  try {
+    const result = await discovery.discoverAll();
+    return { ok: true, devices: result.devices, capped: result.capped };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err), devices: [] };
+  }
+});
+
+// resolve a direct-link device's IPv4 without touching IPv6 SSH.
+// ping the 169.254 broadcast to prime the OS ARP cache, then read it by MAC.
+// if the CX blocks ICMP, falls back to a parallel SSH sweep of 169.254.0.0/16.
+ipcMain.handle('cx:resolve-direct', async (_evt, opts) => {
+  const { mac, laptopIp } = opts || {};
+  if (!mac || !laptopIp) return { ok: false, error: 'Missing MAC or laptop IP' };
+  try {
+    const ip = await discovery.resolveDirectLinkIp(mac, laptopIp);
+    if (!ip) return { ok: false, error: 'Could not find device. Check the cable is connected and try IDENTIFY again.' };
+    return { ok: true, ip };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
   }
 });

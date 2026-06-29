@@ -104,6 +104,7 @@
           <input type="text" id="cx-ip" placeholder="e.g. 192.168.1.100" autocomplete="off">
         </div>
         <button class="test-btn" id="btn-test">TEST CONNECTION</button>
+        <button class="test-btn scan-btn" id="btn-scan" title="Find CXs on the network or wired to this laptop">⌖ SCAN</button>
       </div>
       <div class="row">
         <div class="field">
@@ -644,6 +645,22 @@
     <div class="power-confirm-actions">
       <button class="power-confirm-btn" id="power-confirm-cancel">CANCEL</button>
       <button class="power-confirm-btn go" id="power-confirm-go">SHUT DOWN</button>
+    </div>
+  </div>
+</div>
+
+<!-- device discovery -->
+<div id="scan-overlay" class="scan-overlay">
+  <div class="scan-modal">
+    <div class="scan-head">
+      <div class="scan-title">FIND CX</div>
+      <button class="scan-close" id="scan-close" title="Close">✕</button>
+    </div>
+    <div class="scan-sub" id="scan-sub">Scanning for Beckhoff devices...</div>
+    <div class="scan-list" id="scan-list"></div>
+    <div class="scan-actions">
+      <button class="scan-filter active" id="scan-filter">LINUX ONLY</button>
+      <button class="scan-rescan" id="scan-rescan">RESCAN</button>
     </div>
   </div>
 </div>

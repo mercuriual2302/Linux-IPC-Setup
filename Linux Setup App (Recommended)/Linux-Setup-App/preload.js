@@ -37,6 +37,8 @@ contextBridge.exposeInMainWorld('api', {
   fetchUpdates:   (opts) => ipcRenderer.invoke('cx:fetch-updates', opts),
   runUpgrade:     (opts) => ipcRenderer.invoke('cx:upgrade', opts),
   runVerify:      (opts) => ipcRenderer.invoke('cx:verify', opts),
+  discoverDevices:   ()     => ipcRenderer.invoke('cx:discover'),
+  resolveDirectLink: (opts) => ipcRenderer.invoke('cx:resolve-direct', opts),
 
   // streaming events
   on: (channel, cb) => {
