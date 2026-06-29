@@ -2074,10 +2074,30 @@ $('btn-validate-creds').addEventListener('click', async () => {
   const btnRescan = $('scan-rescan');
   let busy = false;
   let devices = [];
+  let linuxOnly = true;
 
   const pass = () => $('cx-pass').value || '1';
   const open = () => { overlay.classList.add('open'); run(); };
   const close = () => { overlay.classList.remove('open'); };
+
+  const btnFilter = $('scan-filter');
+
+  function applyFilter() {
+    const visible = linuxOnly
+      ? devices.filter(d => d.type === 'direct' || d.os === 'linux')
+      : devices;
+    if (btnFilter) {
+      btnFilter.textContent = linuxOnly ? 'LINUX ONLY' : 'ALL DEVICES';
+      btnFilter.classList.toggle('active', linuxOnly);
+    }
+    if (!visible.length && devices.length) {
+      listEl.innerHTML = `<div style="font-family:var(--tc-mono);font-size:11px;color:var(--tc-muted);padding:.5rem 0">No Linux IPCs found. Toggle to show all Beckhoff devices.</div>`;
+    } else {
+      listEl.innerHTML = visible.map((d) => deviceRow(d, devices.indexOf(d))).join('');
+    }
+    const cap = (window._scanCapped) ? ' (large subnet, scan was capped)' : '';
+    if (devices.length) subEl.textContent = `Found ${visible.length} of ${devices.length} Beckhoff device${devices.length > 1 ? 's' : ''}${cap}`;
+  }
 
   function deviceRow(d, idx) {
     const isDirect = d.type === 'direct';
@@ -2086,13 +2106,16 @@ $('btn-validate-creds').addEventListener('click', async () => {
       ? `<span class="scan-ip muted">IPv4 not known yet</span>`
       : `<span class="scan-ip">${d.ip}</span>`;
     const sshBadge = (!isDirect && d.ssh) ? `<span class="scan-badge ok">SSH</span>` : '';
+    const osBadge = d.os === 'linux'   ? `<span class="scan-badge os-linux">LINUX</span>`
+                  : d.os === 'windows' ? `<span class="scan-badge os-win">WINDOWS</span>`
+                  : '';
     const btn = isDirect
       ? `<button class="scan-use" data-act="identify" data-idx="${idx}">IDENTIFY</button>`
       : `<button class="scan-use" data-act="use" data-idx="${idx}">USE</button>`;
     return `
       <div class="scan-card">
         <div class="scan-card-main">
-          <div class="scan-card-top">${ipLine}${sshBadge}<span class="scan-oui">BECKHOFF</span></div>
+          <div class="scan-card-top">${ipLine}${sshBadge}${osBadge}<span class="scan-oui">BECKHOFF</span></div>
           <div class="scan-card-sub">${d.mac} · ${where}</div>
         </div>
         ${btn}
@@ -2116,13 +2139,12 @@ $('btn-validate-creds').addEventListener('click', async () => {
       return;
     }
     devices = res.devices || [];
+    window._scanCapped = res.capped;
     if (!devices.length) {
       subEl.textContent = 'No Beckhoff devices found. Check the cable, or that the laptop adapter is set to automatic.';
       return;
     }
-    const cap = res.capped ? ' (large subnet, scan was capped)' : '';
-    subEl.textContent = `Found ${devices.length} Beckhoff device${devices.length > 1 ? 's' : ''}${cap}`;
-    listEl.innerHTML = devices.map((d, i) => deviceRow(d, i)).join('');
+    applyFilter();
   }
 
   listEl.addEventListener('click', async (e) => {
@@ -2154,8 +2176,9 @@ $('btn-validate-creds').addEventListener('click', async () => {
     }
   });
 
-  if (btnScan) btnScan.addEventListener('click', open);
-  if (btnClose) btnClose.addEventListener('click', close);
+  if (btnScan)   btnScan.addEventListener('click', open);
+  if (btnClose)  btnClose.addEventListener('click', close);
   if (btnRescan) btnRescan.addEventListener('click', run);
+  if (btnFilter) btnFilter.addEventListener('click', () => { linuxOnly = !linuxOnly; applyFilter(); });
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
 })();

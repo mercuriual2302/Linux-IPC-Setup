@@ -421,3 +421,8 @@ html:not([data-theme="dark"]) .apt-creds-banner{background:rgba(0,120,80,.06);bo
 .scan-rescan{background:var(--tc-surface2);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem 1rem;font-family:var(--tc-mono);font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--tc-muted);cursor:pointer;transition:all .15s}
 .scan-rescan:hover{border-color:var(--tc-accent2);color:var(--tc-accent2)}
 .scan-rescan:disabled{opacity:.5;cursor:not-allowed}
+.scan-filter{background:var(--tc-surface2);border:1px solid var(--tc-accent2);border-radius:4px;padding:.5rem 1rem;font-family:var(--tc-mono);font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--tc-accent2);cursor:pointer;transition:all .15s}
+.scan-filter.active{background:var(--tc-accent2);color:#000}
+.scan-filter:hover{opacity:.85}
+.scan-badge.os-linux{border-color:#22c55e;color:#22c55e}
+.scan-badge.os-win{border-color:var(--tc-warn);color:var(--tc-warn)}

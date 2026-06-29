@@ -38,6 +38,39 @@ function tcpProbe(host, port, timeoutMs) {
   });
 }
 
+// connect to port 22 and read the SSH banner to determine OS.
+// the server sends its banner immediately on connect so no handshake needed.
+// for Beckhoff OUI devices: banner containing no "Windows" string = Linux RT image.
+function sshBannerProbe(host, timeoutMs) {
+  return new Promise(resolve => {
+    const sock = new net.Socket();
+    let done = false;
+    let dataTimer = null;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      if (dataTimer) clearTimeout(dataTimer);
+      try { sock.destroy(); } catch (_) {}
+      resolve(result);
+    };
+    sock.setTimeout(timeoutMs);
+    sock.once('timeout', () => finish({ open: false, os: null }));
+    sock.once('error',   () => finish({ open: false, os: null }));
+    sock.once('connect', () => {
+      // if banner doesn't arrive within 400ms, call it open but unknown OS
+      dataTimer = setTimeout(() => finish({ open: true, os: 'unknown' }), 400);
+      sock.once('data', (chunk) => {
+        const banner = chunk.toString('ascii', 0, 128).replace(/[\r\n]+/g, '');
+        let os = 'unknown';
+        if (/windows/i.test(banner)) os = 'windows';
+        else if (banner.startsWith('SSH-')) os = 'linux';
+        finish({ open: true, os });
+      });
+    });
+    sock.connect(22, host);
+  });
+}
+
 async function pool(items, size, worker) {
   const results = new Array(items.length);
   let i = 0;
@@ -112,8 +145,8 @@ async function scanNetwork(adapter) {
   if (hosts.length > 1022) { hosts = hosts.slice(0, 1022); capped = true; }
   hosts = hosts.filter(h => h !== adapter.address);
 
-  const open = {};
-  await pool(hosts, 64, async (h) => { open[h] = await tcpProbe(h, 22, 800); });
+  const probes = {};
+  await pool(hosts, 64, async (h) => { probes[h] = await sshBannerProbe(h, 800); });
 
   const arp = await readArp();
   const inSubnet = (ip) => (((ipToInt(ip) & maskInt) >>> 0) === network);
@@ -121,7 +154,8 @@ async function scanNetwork(adapter) {
   const devices = [];
   arp.forEach(({ ip, mac }) => {
     if (!isBeckhoff(mac) || !inSubnet(ip)) return;
-    devices.push({ type: 'network', ip, mac: macDisplay(mac), iface: adapter.name, ssh: !!open[ip] });
+    const probe = probes[ip] || { open: false, os: null };
+    devices.push({ type: 'network', ip, mac: macDisplay(mac), iface: adapter.name, ssh: probe.open, os: probe.os });
   });
   return { devices, capped };
 }
