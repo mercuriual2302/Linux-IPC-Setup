@@ -543,3 +543,8 @@ html:not([data-theme="dark"]) .apt-creds-banner{background:rgba(0,120,80,.06);bo
 .preview-head{display:flex;align-items:center;justify-content:space-between;padding:1rem 1.25rem;border-bottom:1px solid var(--tc-border)}
 .preview-title{font-family:var(--tc-mono);font-size:12px;font-weight:700;letter-spacing:.05em;color:var(--tc-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .preview-body{margin:0;padding:1rem 1.25rem;overflow:auto;font-family:var(--tc-mono);font-size:11px;line-height:1.5;color:var(--tc-text);white-space:pre-wrap;word-break:break-word;background:var(--tc-bg)}
+
+/* proxy-offer modal - wider than power-confirm, buttons stacked since the labels are longer */
+.proxy-offer-modal{background:var(--tc-surface);border:1px solid var(--tc-border);border-radius:8px;width:min(460px,92vw);padding:1.75rem;display:flex;flex-direction:column;align-items:center;text-align:center;gap:.85rem}
+.proxy-offer-actions{display:flex;flex-direction:column;gap:.5rem;width:100%;margin-top:.4rem}
+.proxy-offer-actions .power-confirm-btn{width:100%}

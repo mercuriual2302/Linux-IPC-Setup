@@ -3,11 +3,13 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const net = require('net');
 
 const SSHManager = require('./src/ssh-manager');
 const ScriptBuilder = require('./src/script-builder');
 const discovery = require('./src/discovery');
 const sftpManager = require('./src/sftp-manager');
+const socksProxy = require('./src/socks-proxy');
 
 // Suppress uncaught ECONNRESET errors - these are expected when the CX drops
 // the SSH connection mid-operation (network reload, reboot, poweroff). The
@@ -38,6 +40,7 @@ let mainWindow = null;
 const activeSessions = new Map(); // sessionId → SSHManager
 const shellSessions = new Map(); // sessionId → { mgr, stream } - live PTY sessions for the Shell view
 const sftpSessions = new Map(); // sessionId → { mgr, sftp } - persistent SFTP connections for the Files view
+let activeProxy = null; // { server, port } - the laptop-as-proxy SOCKS5 server, one at a time, lives only for a Setup run
 
 
 // Window creation
@@ -90,6 +93,11 @@ function createWindow() {
       try { mgr.dispose(); } catch (_) {}
     }
     sftpSessions.clear();
+    // Tear down the laptop-as-proxy SOCKS5 server if one is running
+    if (activeProxy) {
+      try { activeProxy.server.close(); } catch (_) {}
+      activeProxy = null;
+    }
   });
 }
 
@@ -175,7 +183,7 @@ ipcMain.handle('ssh:run-setup', async (_evt, opts) => {
     host, username, password, port,
     beckhoffUser, beckhoffPass,
     feed, packages, pkgVersions,
-    tf2000Pass
+    tf2000Pass, proxyHost, proxyPort
   } = opts;
 
   const sessionId = `setup-${Date.now()}`;
@@ -193,7 +201,9 @@ ipcMain.handle('ssh:run-setup', async (_evt, opts) => {
       feed,
       packages,
       pkgVersions,
-      tf2000Pass: tf2000Pass || '1'
+      tf2000Pass: tf2000Pass || '1',
+      proxyHost,
+      proxyPort
     });
 
     // Write locally, upload via SFTP, then exec
@@ -582,6 +592,57 @@ ipcMain.handle('fs:join', (_evt, { base, name }) => ({ ok: true, path: path.join
 ipcMain.handle('fs:dirname', (_evt, { p }) => ({ ok: true, path: path.dirname(p) }));
 
 
+// Internet-access check before a Setup run - bash's /dev/tcp pseudo-device
+// needs no extra tools on the CX (no curl/wget dependency), just bash itself.
+ipcMain.handle('cx:check-internet', async (_evt, { host, username, password, port }) => {
+  const mgr = new SSHManager();
+  try {
+    await mgr.connect({ host, username: username || 'Administrator', password, port: port || 22 });
+    const result = await mgr.exec(`timeout 5 bash -c 'cat < /dev/null > /dev/tcp/deb.beckhoff.com/443' && echo REACHABLE || echo UNREACHABLE`);
+    mgr.dispose();
+    return { ok: true, reachable: /REACHABLE/.test(result.stdout) && !/UNREACHABLE/.test(result.stdout) };
+  } catch (err) {
+    mgr.dispose();
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+// Start the laptop-as-proxy SOCKS5 server for one Setup run. Determines which
+// of this laptop's addresses is actually reachable by the CX with a throwaway
+// TCP probe to its SSH port - lets the OS routing table answer that instead of
+// us guessing which adapter is the right one.
+ipcMain.handle('proxy:start', async (_evt, { host, port }) => {
+  try {
+    // which of this laptop's addresses the CX can actually reach - redone every
+    // call since a different target CX may sit on a different adapter/subnet,
+    // even though the SOCKS server itself is a singleton reused across targets.
+    const localAddress = await new Promise((resolve, reject) => {
+      const probe = net.connect(port || 22, host, () => {
+        const addr = probe.localAddress;
+        probe.destroy();
+        resolve(addr);
+      });
+      probe.on('error', reject);
+    });
+    if (!activeProxy) {
+      const { server, port: proxyPort } = await socksProxy.startSocksServer();
+      activeProxy = { server, port: proxyPort };
+    }
+    return { ok: true, proxyHost: localAddress, proxyPort: activeProxy.port };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+ipcMain.handle('proxy:stop', async () => {
+  if (activeProxy) {
+    await socksProxy.stopSocksServer(activeProxy.server);
+    activeProxy = null;
+  }
+  return { ok: true };
+});
+
+
 // IPC: save generated script to disk (replaces the in-browser download)
 ipcMain.handle('script:save', async (_evt, { content, defaultName }) => {
   const res = await dialog.showSaveDialog(mainWindow, {
@@ -638,10 +699,11 @@ async function sshStream(sessionId, opts, cmd) {
 // MyBeckhoff credential validator
 // Uses curl on the CX to check credentials against the Beckhoff APT repo.
 // Returns in under 3 seconds - no apt update needed.
-ipcMain.handle('cx:validate-creds', async (_evt, { host, password, port, beckhoffUser, beckhoffPass }) => {
+ipcMain.handle('cx:validate-creds', async (_evt, { host, password, port, beckhoffUser, beckhoffPass, proxyHost, proxyPort }) => {
   const esc = (s) => (s || '').replace(/'/g, "'\''");
+  const proxyFlag = (proxyHost && proxyPort) ? `-x socks5h://${proxyHost}:${proxyPort} ` : '';
   // curl a known Beckhoff InRelease file with basic auth - 200 = valid, 401 = bad creds
-  const cmd = `curl -s -o /dev/null -w "%{http_code}" --max-time 10 ` +
+  const cmd = `curl -s -o /dev/null -w "%{http_code}" --max-time 10 ${proxyFlag}` +
     `--user '${esc(beckhoffUser)}:${esc(beckhoffPass)}' ` +
     `https://deb.beckhoff.com/debian/dists/trixie-stable/InRelease`;
   try {

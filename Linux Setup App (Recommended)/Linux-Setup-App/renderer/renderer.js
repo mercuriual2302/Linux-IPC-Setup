@@ -674,6 +674,74 @@ function showScriptPreview(script, name) {
 }
 
 // Run setup live
+// shows the proxy-offer modal, resolves to which button was pressed
+function askProxyChoice() {
+  return new Promise((resolve) => {
+    const overlay = $('proxy-offer-overlay');
+    const btnUse = $('proxy-offer-use');
+    const btnSkip = $('proxy-offer-skip');
+    const btnCancel = $('proxy-offer-cancel');
+    function finish(choice) {
+      overlay.classList.remove('open');
+      btnUse.removeEventListener('click', onUse);
+      btnSkip.removeEventListener('click', onSkip);
+      btnCancel.removeEventListener('click', onCancel);
+      resolve(choice);
+    }
+    function onUse() { finish('use'); }
+    function onSkip() { finish('skip'); }
+    function onCancel() { finish('cancel'); }
+    btnUse.addEventListener('click', onUse);
+    btnSkip.addEventListener('click', onSkip);
+    btnCancel.addEventListener('click', onCancel);
+    overlay.classList.add('open');
+  });
+}
+
+// Shared across every feature that needs internet from the CX (Validate
+// Credentials, Run Setup, ...). Scoped per target IP, not globally - commissioning
+// a different CX later should get its own fresh check, not inherit a stale answer
+// from whatever unit was plugged in before. Once decided for a given IP (whichever
+// way), nothing asks again for that same IP - that's the "only ask once" contract.
+// Cancel is the one exception: it means "not right now", so it's askable again.
+let proxyState = { forIp: null, decided: false, host: null, port: null };
+
+async function ensureProxyDecision(ip, cxPass) {
+  if (proxyState.forIp !== ip) {
+    proxyState = { forIp: ip, decided: false, host: null, port: null };
+  }
+  if (proxyState.decided) {
+    return { proxyHost: proxyState.host, proxyPort: proxyState.port };
+  }
+
+  const netCheck = await window.api.checkInternet({ host: ip, password: cxPass, port: 22 });
+  if (!(netCheck.ok && netCheck.reachable === false)) {
+    // reachable, or the check itself failed - either way let the real action
+    // surface its own error rather than guessing further here
+    proxyState.decided = true;
+    return { proxyHost: null, proxyPort: null };
+  }
+
+  const choice = await askProxyChoice();
+  if (choice === 'cancel') {
+    return { proxyHost: null, proxyPort: null, cancelled: true };
+  }
+  if (choice === 'use') {
+    const proxyRes = await window.api.startProxy({ host: ip, port: 22 });
+    if (!proxyRes.ok) {
+      toast('Could not start the proxy: ' + (proxyRes.error || 'unknown') + ' - continuing without it.', 'error');
+      proxyState.decided = true;
+      return { proxyHost: null, proxyPort: null };
+    }
+    proxyState = { forIp: ip, decided: true, host: proxyRes.proxyHost, port: proxyRes.proxyPort };
+    toast(`Proxying through ${proxyRes.proxyHost}:${proxyRes.proxyPort} for this CX`, 'success');
+    return { proxyHost: proxyRes.proxyHost, proxyPort: proxyRes.proxyPort };
+  }
+  // choice === 'skip'
+  proxyState.decided = true;
+  return { proxyHost: null, proxyPort: null };
+}
+
 $('btn-run-setup').addEventListener('click', async () => {
   const ip = $('cx-ip').value.trim();
   const cxPass = $('cx-pass').value;
@@ -682,6 +750,16 @@ $('btn-run-setup').addEventListener('click', async () => {
   if (!ipOk(ip)) { toast('Enter a valid CX IP first', 'warn'); showTab('setup'); return; }
   if (!bkUser) { toast('MyBeckhoff username required', 'warn'); showTab('setup'); return; }
   if (!bkPass && !credsConfirmedOnCx) { toast('MyBeckhoff password required', 'warn'); showTab('setup'); return; }
+
+  const runBtn = $('btn-run-setup');
+  const prevLabel = runBtn.textContent;
+  runBtn.disabled = true;
+  runBtn.textContent = 'CHECKING INTERNET...';
+  const proxyDecision = await ensureProxyDecision(ip, cxPass);
+  runBtn.textContent = prevLabel;
+  runBtn.disabled = false;
+  if (proxyDecision.cancelled) return;
+  const { proxyHost, proxyPort } = proxyDecision;
 
   const pkgs = [...selectedPkgs];
   if (!confirm(
@@ -706,7 +784,8 @@ $('btn-run-setup').addEventListener('click', async () => {
     host: ip, username: 'Administrator', password: cxPass, port: 22,
     beckhoffUser: bkUser, beckhoffPass: bkPass,
     feed: selectedFeed, packages: pkgs, pkgVersions,
-    tf2000Pass: getTf2000Pass()
+    tf2000Pass: getTf2000Pass(),
+    proxyHost, proxyPort
   });
 
   $('prog').classList.remove('running');
@@ -1155,7 +1234,16 @@ $('btn-validate-creds').addEventListener('click', async () => {
   status.textContent = 'Validating...';
   status.style.color = 'var(--tc-muted)';
   $('btn-validate-creds').disabled = true;
-  const res = await window.api.validateCreds({ host: ip, password: cxPass, port: 22, beckhoffUser: bkUser, beckhoffPass: bkPass });
+  const proxyDecision = await ensureProxyDecision(ip, cxPass);
+  if (proxyDecision.cancelled) {
+    status.textContent = '';
+    $('btn-validate-creds').disabled = false;
+    return;
+  }
+  const res = await window.api.validateCreds({
+    host: ip, password: cxPass, port: 22, beckhoffUser: bkUser, beckhoffPass: bkPass,
+    proxyHost: proxyDecision.proxyHost, proxyPort: proxyDecision.proxyPort
+  });
   $('btn-validate-creds').disabled = false;
   if (res.ok) {
     status.textContent = '✓ Credentials valid';

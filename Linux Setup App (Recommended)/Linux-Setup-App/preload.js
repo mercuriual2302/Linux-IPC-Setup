@@ -66,6 +66,11 @@ contextBridge.exposeInMainWorld('api', {
   fsJoin:           (base, name) => ipcRenderer.invoke('fs:join', { base, name }),
   fsDirname:        (p) => ipcRenderer.invoke('fs:dirname', { p }),
 
+  // Laptop-as-proxy (SOCKS5) for a CX with no internet of its own
+  checkInternet: (opts) => ipcRenderer.invoke('cx:check-internet', opts),
+  startProxy:    (opts) => ipcRenderer.invoke('proxy:start', opts),
+  stopProxy:     ()     => ipcRenderer.invoke('proxy:stop'),
+
   // streaming events
   on: (channel, cb) => {
     if (!VALID_EVENTS.includes(channel)) {

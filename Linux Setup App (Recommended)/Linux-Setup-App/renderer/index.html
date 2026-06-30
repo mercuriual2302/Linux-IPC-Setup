@@ -684,6 +684,20 @@
   </div>
 </div>
 
+<!-- offered when the CX has no internet route of its own before a Setup run -->
+<div id="proxy-offer-overlay" class="power-confirm-overlay">
+  <div class="proxy-offer-modal">
+    <div class="power-confirm-glyph">⇄</div>
+    <div class="power-confirm-title">No internet access on the CX</div>
+    <div class="power-confirm-body" id="proxy-offer-body">This CX can't reach the Beckhoff package feed directly. Your laptop can act as a proxy for this run instead - nothing is written permanently to the CX, and the proxy only exists while this app is open.</div>
+    <div class="proxy-offer-actions">
+      <button class="power-confirm-btn go" id="proxy-offer-use">USE MY LAPTOP'S INTERNET</button>
+      <button class="power-confirm-btn" id="proxy-offer-skip">CONTINUE WITHOUT (LIKELY TO FAIL)</button>
+      <button class="power-confirm-btn" id="proxy-offer-cancel">CANCEL</button>
+    </div>
+  </div>
+</div>
+
 <!-- device discovery -->
 <div id="scan-overlay" class="scan-overlay">
   <div class="scan-modal">
