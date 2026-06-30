@@ -2111,8 +2111,9 @@ $('btn-validate-creds').addEventListener('click', async () => {
       ? devices.filter(d => d.type === 'direct' || d.os === 'linux')
       : devices;
     if (btnFilter) {
-      btnFilter.textContent = linuxOnly ? 'LINUX ONLY' : 'ALL DEVICES';
+      btnFilter.textContent = (linuxOnly ? '✓ ' : '') + 'LINUX ONLY';
       btnFilter.classList.toggle('active', linuxOnly);
+      btnFilter.title = linuxOnly ? 'Showing Linux devices only - click to show all' : 'Showing all devices - click to filter to Linux only';
     }
     if (!visible.length && devices.length) {
       listEl.innerHTML = `<div style="font-family:var(--tc-mono);font-size:11px;color:var(--tc-muted);padding:.5rem 0">No Linux IPCs found. Toggle to show all Beckhoff devices.</div>`;
