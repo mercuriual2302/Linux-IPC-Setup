@@ -32,8 +32,16 @@ echo "[CX] APT feed set to: ${channel}"`;
 }
 
 //INNER: full setup (runs on CX as /tmp/twincat_setup.sh $1 $2 $3)
-function buildInnerSetupScript({ feed = 'trixie-stable', packages = [], pkgVersions = {}, tf2000Pass = '1' } = {}) {
+function buildInnerSetupScript({ feed = 'trixie-stable', packages = [], pkgVersions = {}, tf2000Pass = '1', proxyHost = null, proxyPort = null } = {}) {
   const pkgs = Array.isArray(packages) ? packages : [];
+  // If a SOCKS5 proxy was offered and accepted (CX has no internet route of its
+  // own), thread it into APT_OPTS once - every apt call below already goes
+  // through $APT_OPTS, so this single line covers update/install/upgrade alike.
+  // socks5h (not socks5) so hostname resolution happens at the proxy (laptop
+  // side), since that's the whole point - the CX can't resolve it itself.
+  const proxyOpts = (proxyHost && proxyPort)
+    ? ` -o Acquire::http::Proxy=socks5h://${proxyHost}:${proxyPort}/ -o Acquire::https::Proxy=socks5h://${proxyHost}:${proxyPort}/`
+    : '';
   // Swap all "sudo " → "_sudo " in package install / feed / helper lines so
   // every elevated command goes through the password-feeding wrapper.
   const sudofy = (s) => s.replace(/(^|\s|\|)sudo /g, '$1_sudo ');
@@ -100,7 +108,7 @@ fi
 export TERM=dumb
 export DEBIAN_FRONTEND=noninteractive
 export DEBCONF_NONINTERACTIVE_SEEN=true
-APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Quiet::NoUpdate=true'
+APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Quiet::NoUpdate=true${proxyOpts}'
 
 # ── sudo wrapper: feed password on stdin (-S), keep credentials cached (-v) ──
 _sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }

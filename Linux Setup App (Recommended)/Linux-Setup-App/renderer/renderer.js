@@ -674,6 +674,30 @@ function showScriptPreview(script, name) {
 }
 
 // Run setup live
+// shows the proxy-offer modal, resolves to which button was pressed
+function askProxyChoice() {
+  return new Promise((resolve) => {
+    const overlay = $('proxy-offer-overlay');
+    const btnUse = $('proxy-offer-use');
+    const btnSkip = $('proxy-offer-skip');
+    const btnCancel = $('proxy-offer-cancel');
+    function finish(choice) {
+      overlay.classList.remove('open');
+      btnUse.removeEventListener('click', onUse);
+      btnSkip.removeEventListener('click', onSkip);
+      btnCancel.removeEventListener('click', onCancel);
+      resolve(choice);
+    }
+    function onUse() { finish('use'); }
+    function onSkip() { finish('skip'); }
+    function onCancel() { finish('cancel'); }
+    btnUse.addEventListener('click', onUse);
+    btnSkip.addEventListener('click', onSkip);
+    btnCancel.addEventListener('click', onCancel);
+    overlay.classList.add('open');
+  });
+}
+
 $('btn-run-setup').addEventListener('click', async () => {
   const ip = $('cx-ip').value.trim();
   const cxPass = $('cx-pass').value;
@@ -683,13 +707,45 @@ $('btn-run-setup').addEventListener('click', async () => {
   if (!bkUser) { toast('MyBeckhoff username required', 'warn'); showTab('setup'); return; }
   if (!bkPass && !credsConfirmedOnCx) { toast('MyBeckhoff password required', 'warn'); showTab('setup'); return; }
 
+  // Quick connectivity check before committing to a 10-15 min run - if the CX
+  // can't reach the feed, offer the laptop-as-proxy option up front rather
+  // than letting the run fail partway through on `apt update`.
+  let proxyHost = null, proxyPort = null, proxyStarted = false;
+  const runBtn = $('btn-run-setup');
+  const prevLabel = runBtn.textContent;
+  runBtn.disabled = true;
+  runBtn.textContent = 'CHECKING INTERNET...';
+  const netCheck = await window.api.checkInternet({ host: ip, password: cxPass, port: 22 });
+  runBtn.textContent = prevLabel;
+  runBtn.disabled = false;
+
+  if (netCheck.ok && netCheck.reachable === false) {
+    const choice = await askProxyChoice();
+    if (choice === 'cancel') return;
+    if (choice === 'use') {
+      const proxyRes = await window.api.startProxy({ host: ip, port: 22 });
+      if (!proxyRes.ok) {
+        toast('Could not start the proxy: ' + (proxyRes.error || 'unknown') + ' - continuing without it.', 'error');
+      } else {
+        proxyHost = proxyRes.proxyHost;
+        proxyPort = proxyRes.proxyPort;
+        proxyStarted = true;
+        toast(`Proxying through ${proxyHost}:${proxyPort} for this run`, 'success');
+      }
+    }
+    // choice === 'skip' falls through with no proxy, same as today's behaviour
+  }
+
   const pkgs = [...selectedPkgs];
   if (!confirm(
     `Ready to run full setup on ${ip}?\n\n` +
     `Feed: ${selectedFeed}\n` +
     `Packages: tc31-xar-um, console-setup${pkgs.length ? ', ' + pkgs.join(', ') : ''}\n\n` +
     `This will take 10–15 min and will REBOOT the CX.`
-  )) return;
+  )) {
+    if (proxyStarted) await window.api.stopProxy();
+    return;
+  }
 
   // Switch to terminal view
   openTerminal();
@@ -706,8 +762,11 @@ $('btn-run-setup').addEventListener('click', async () => {
     host: ip, username: 'Administrator', password: cxPass, port: 22,
     beckhoffUser: bkUser, beckhoffPass: bkPass,
     feed: selectedFeed, packages: pkgs, pkgVersions,
-    tf2000Pass: getTf2000Pass()
+    tf2000Pass: getTf2000Pass(),
+    proxyHost, proxyPort
   });
+
+  if (proxyStarted) await window.api.stopProxy();
 
   $('prog').classList.remove('running');
   $('prog').style.width = res.ok ? '100%' : '100%';
