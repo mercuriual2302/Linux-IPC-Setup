@@ -65,6 +65,7 @@ let selectedFeed = 'trixie-stable';
 let activeSessionId = null;
 let lastScript = '', lastFilename = 'setup.sh';
 let terminalBuffer = '';
+let credsConfirmedOnCx = false; // set true when MyBeckhoff creds are already found on the CX
 
 
 const $ = (id) => document.getElementById(id);
@@ -197,6 +198,7 @@ $('btn-test').addEventListener('click', async () => {
   if (res.ok) {
     setGlobalConn('ok', 'CONNECTED · ' + opts.host);
     toast('SSH OK - ' + (res.output.split('\n')[0] || 'connected'), 'success');
+    if (window._maybeAutoReadInfo) window._maybeAutoReadInfo();
   } else {
     setGlobalConn('err', 'FAILED');
     toast('SSH failed: ' + res.error, 'error');
@@ -676,7 +678,8 @@ $('btn-run-setup').addEventListener('click', async () => {
   const bkUser = $('bk-user').value.trim();
   const bkPass = $('bk-pass').value.trim();
   if (!ipOk(ip)) { toast('Enter a valid CX IP first', 'warn'); showTab('setup'); return; }
-  if (!bkUser || !bkPass) { toast('MyBeckhoff username and password required', 'warn'); showTab('setup'); return; }
+  if (!bkUser) { toast('MyBeckhoff username required', 'warn'); showTab('setup'); return; }
+  if (!bkPass && !credsConfirmedOnCx) { toast('MyBeckhoff password required', 'warn'); showTab('setup'); return; }
 
   const pkgs = [...selectedPkgs];
   if (!confirm(
@@ -1600,13 +1603,17 @@ $('btn-validate-creds').addEventListener('click', async () => {
   btnInit.addEventListener('click', readInfo);
   btnHeader.addEventListener('click', readInfo);
 
-  // Auto-read when switching to the Dashboard if IP is set and panel is empty
+  // Auto-read whenever the CX is connected and the panel hasn't been loaded yet -
+  // called both when switching to the Dashboard and right after TEST CONNECTION succeeds
+  function maybeAutoReadInfo() {
+    const conn = getCxMgmtConn();
+    if (conn.host && $('info-body').style.display === 'none') readInfo();
+  }
+  window._maybeAutoReadInfo = maybeAutoReadInfo;
+
   document.querySelectorAll('.tab').forEach(t => {
     if (t.dataset.tab === 'dashboard') {
-      t.addEventListener('click', () => {
-        const conn = getCxMgmtConn();
-        if (conn.host && $('info-body').style.display === 'none') readInfo();
-      });
+      t.addEventListener('click', maybeAutoReadInfo);
     }
   });
 })();
@@ -1641,8 +1648,16 @@ $('btn-validate-creds').addEventListener('click', async () => {
     // If credentials are confirmed on the CX, mark the password field as pre-set
     // so validation isn't mandatory before running setup
     if (passEl && !passEl.value) passEl.placeholder = '(set on CX - leave blank to keep)';
+    credsConfirmedOnCx = true;
     _credsCached = true;
   }
+
+  // If the user starts typing their own password, they're overriding the
+  // on-CX creds - require the normal validation again
+  const passField = $('bk-pass');
+  if (passField) passField.addEventListener('input', () => {
+    if (passField.value) credsConfirmedOnCx = false;
+  });
 
   // Hook into the existing test connection button - read creds after success
   const testBtn = $('btn-test');
@@ -1657,6 +1672,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
   clearBtn.addEventListener('click', () => {
     banner.style.display = 'none';
     _credsCached = false;
+    credsConfirmedOnCx = false;
     const passEl = $('bk-pass');
     if (passEl) passEl.placeholder = '••••••••';
   });
