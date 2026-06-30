@@ -104,6 +104,7 @@
 
       <div class="nav-group">Tools</div>
       <div class="nav-item tab" data-tab="shell"><span class="nav-ic">❯_</span>Shell</div>
+      <div class="nav-item tab" data-tab="sftp"><span class="nav-ic">⇵</span>Files</div>
 
       <div class="sidebar-foot">
         <button class="sidebar-term" id="btn-open-term"><span class="nav-ic">▸_</span>Terminal</button>
@@ -554,6 +555,41 @@
         </div>
       </div>
 
+      <!-- VIEW: FILES (SFTP browser, dual pane) -->
+      <div class="page" id="page-sftp">
+        <div class="view-title">Files <span class="view-sub">SFTP browser</span></div>
+        <div class="sftp-toolbar">
+          <button class="btn-run secondary" id="btn-sftp-connect" style="flex:none">▶ CONNECT</button>
+          <button class="btn-run danger" id="btn-sftp-disconnect" style="flex:none;display:none">■ DISCONNECT</button>
+          <span id="sftp-status" class="hint">not connected</span>
+        </div>
+
+        <div class="sftp-panes">
+          <div class="sftp-pane">
+            <div class="sftp-pane-head">
+              <span class="sftp-pane-title">LOCAL (this PC)</span>
+              <button class="sftp-icon-btn" id="btn-local-browse" title="Choose folder">…</button>
+              <button class="sftp-icon-btn" id="btn-local-mkdir" title="New folder">+</button>
+              <button class="sftp-icon-btn" id="btn-local-refresh" title="Refresh">⟳</button>
+            </div>
+            <input type="text" id="local-path" class="sftp-path-input" placeholder="local path" autocomplete="off">
+            <div class="sftp-list" id="local-list"></div>
+          </div>
+
+          <div class="sftp-pane">
+            <div class="sftp-pane-head">
+              <span class="sftp-pane-title">CX (remote)</span>
+              <button class="sftp-icon-btn" id="btn-remote-mkdir" title="New folder">+</button>
+              <button class="sftp-icon-btn" id="btn-remote-refresh" title="Refresh">⟳</button>
+            </div>
+            <input type="text" id="remote-path" class="sftp-path-input" placeholder="remote path" autocomplete="off">
+            <div class="sftp-list" id="remote-list"></div>
+          </div>
+        </div>
+
+        <div class="sftp-transfers" id="sftp-transfers"></div>
+      </div>
+
     </div><!-- /.app-main -->
   </div><!-- /.app-body -->
 
@@ -679,6 +715,17 @@
       </label>
       <button class="scan-rescan" id="scan-rescan">RESCAN</button>
     </div>
+  </div>
+</div>
+
+<!-- file preview (text only, size-capped) -->
+<div id="preview-overlay" class="preview-overlay">
+  <div class="preview-modal">
+    <div class="preview-head">
+      <div class="preview-title" id="preview-title">FILE PREVIEW</div>
+      <button class="scan-close" id="preview-close" title="Close">✕</button>
+    </div>
+    <pre class="preview-body" id="preview-body"></pre>
   </div>
 </div>
 

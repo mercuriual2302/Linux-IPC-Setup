@@ -7,6 +7,7 @@ const os = require('os');
 const SSHManager = require('./src/ssh-manager');
 const ScriptBuilder = require('./src/script-builder');
 const discovery = require('./src/discovery');
+const sftpManager = require('./src/sftp-manager');
 
 // Suppress uncaught ECONNRESET errors - these are expected when the CX drops
 // the SSH connection mid-operation (network reload, reboot, poweroff). The
@@ -36,6 +37,7 @@ if (!gotLock) {
 let mainWindow = null;
 const activeSessions = new Map(); // sessionId → SSHManager
 const shellSessions = new Map(); // sessionId → { mgr, stream } - live PTY sessions for the Shell view
+const sftpSessions = new Map(); // sessionId → { mgr, sftp } - persistent SFTP connections for the Files view
 
 
 // Window creation
@@ -83,6 +85,11 @@ function createWindow() {
       try { mgr.dispose(); } catch (_) {}
     }
     shellSessions.clear();
+    // Tear down any open SFTP sessions
+    for (const { mgr } of sftpSessions.values()) {
+      try { mgr.dispose(); } catch (_) {}
+    }
+    sftpSessions.clear();
   });
 }
 
@@ -376,6 +383,203 @@ ipcMain.handle('shell:close', async (_evt, { sessionId }) => {
   shellSessions.delete(sessionId);
   return { ok: true };
 });
+
+
+// Files (SFTP) - one explicit connect opens both the SSH connection and the
+// SFTP subsystem on top of it; every list/transfer call for that session
+// reuses the same subsystem rather than re-handshaking SFTP per click.
+ipcMain.handle('sftp:connect', async (_evt, { host, username, password, port }) => {
+  const sessionId = `sftp-${Date.now()}`;
+  const mgr = new SSHManager();
+  try {
+    sendToRenderer('sftp:connect-stage', { stage: 'ssh' });
+    await Promise.race([
+      mgr.connect({ host, username: username || 'Administrator', password, port: port || 22 }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('SSH connection did not complete within 15s.')), 15000))
+    ]);
+    sendToRenderer('sftp:connect-stage', { stage: 'sftp' });
+    // node-ssh's requestSFTP() has no internal timeout - if this hangs here even
+    // though a plain `sftp` CLI client connects fine, the bug is in ssh2's SFTP
+    // handshake handling specifically, not the CX's sshd config.
+    const sftp = await Promise.race([
+      mgr.requestSFTP(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error(
+        'SFTP subsystem did not respond within 10s.'
+      )), 10000))
+    ]);
+    sendToRenderer('sftp:connect-stage', { stage: 'realpath' });
+    const startPath = await sftpManager.realpath(sftp, '.');
+    sftpSessions.set(sessionId, { mgr, sftp });
+    return { ok: true, sessionId, startPath };
+  } catch (err) {
+    mgr.dispose();
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+ipcMain.handle('sftp:disconnect', async (_evt, { sessionId }) => {
+  const s = sftpSessions.get(sessionId);
+  if (!s) return { ok: false, error: 'no such session' };
+  s.mgr.dispose();
+  sftpSessions.delete(sessionId);
+  return { ok: true };
+});
+
+ipcMain.handle('sftp:list', async (_evt, { sessionId, remotePath }) => {
+  const s = sftpSessions.get(sessionId);
+  if (!s) return { ok: false, error: 'not connected' };
+  try {
+    const entries = await sftpManager.listDir(s.sftp, remotePath);
+    return { ok: true, entries, path: remotePath };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+ipcMain.handle('sftp:mkdir', async (_evt, { sessionId, remotePath }) => {
+  const s = sftpSessions.get(sessionId);
+  if (!s) return { ok: false, error: 'not connected' };
+  try { await sftpManager.mkdir(s.sftp, remotePath); return { ok: true }; }
+  catch (err) { return { ok: false, error: err.message || String(err) }; }
+});
+
+ipcMain.handle('sftp:delete', async (_evt, { sessionId, remotePath, isDir }) => {
+  const s = sftpSessions.get(sessionId);
+  if (!s) return { ok: false, error: 'not connected' };
+  try {
+    if (isDir) await sftpManager.rmdir(s.sftp, remotePath);
+    else await sftpManager.unlink(s.sftp, remotePath);
+    return { ok: true };
+  } catch (err) { return { ok: false, error: err.message || String(err) }; }
+});
+
+ipcMain.handle('sftp:stat', async (_evt, { sessionId, remotePath }) => {
+  const s = sftpSessions.get(sessionId);
+  if (!s) return { ok: false, exists: false };
+  const stats = await sftpManager.stat(s.sftp, remotePath);
+  return { ok: true, exists: !!stats };
+});
+
+ipcMain.handle('sftp:download', async (_evt, { sessionId, remotePath, localPath, transferId }) => {
+  const s = sftpSessions.get(sessionId);
+  if (!s) return { ok: false, error: 'not connected' };
+  try {
+    await s.mgr.sftpDownload(remotePath, localPath, s.sftp, (transferred, total) => {
+      sendToRenderer('sftp:progress', { transferId, transferred, total });
+    });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+ipcMain.handle('sftp:upload', async (_evt, { sessionId, localPath, remotePath, transferId }) => {
+  const s = sftpSessions.get(sessionId);
+  if (!s) return { ok: false, error: 'not connected' };
+  try {
+    await s.mgr.sftpUpload(localPath, remotePath, s.sftp, (transferred, total) => {
+      sendToRenderer('sftp:progress', { transferId, transferred, total });
+    });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+// Local side of the file browser - plain Node fs in the main process, no SSH involved
+ipcMain.handle('sftp:home-local', async () => {
+  return { ok: true, path: os.homedir() };
+});
+
+ipcMain.handle('sftp:list-local', async (_evt, { localPath }) => {
+  try {
+    const target = localPath || os.homedir();
+    const names = await fs.promises.readdir(target, { withFileTypes: true });
+    const entries = await Promise.all(names.map(async (d) => {
+      let size = 0, mtime = 0;
+      try {
+        const st = await fs.promises.stat(path.join(target, d.name));
+        size = st.size; mtime = st.mtimeMs;
+      } catch (_) { /* broken symlink or permission denied - list it anyway, zeroed out */ }
+      return { name: d.name, type: d.isDirectory() ? 'dir' : d.isSymbolicLink() ? 'link' : 'file', size, mtime };
+    }));
+    return { ok: true, entries, path: target };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+ipcMain.handle('sftp:mkdir-local', async (_evt, { localPath }) => {
+  try { await fs.promises.mkdir(localPath); return { ok: true }; }
+  catch (err) { return { ok: false, error: err.message || String(err) }; }
+});
+
+ipcMain.handle('sftp:delete-local', async (_evt, { localPath, isDir }) => {
+  try {
+    if (isDir) await fs.promises.rmdir(localPath);
+    else await fs.promises.unlink(localPath);
+    return { ok: true };
+  } catch (err) { return { ok: false, error: err.message || String(err) }; }
+});
+
+ipcMain.handle('sftp:stat-local', async (_evt, { localPath }) => {
+  try { await fs.promises.stat(localPath); return { ok: true, exists: true }; }
+  catch (_) { return { ok: true, exists: false }; }
+});
+
+// File preview - text only, size-capped so a huge log or binary doesn't choke the renderer
+const MAX_PREVIEW_BYTES = 512 * 1024;
+function looksBinary(buf) {
+  const len = Math.min(buf.length, 8000);
+  for (let i = 0; i < len; i++) { if (buf[i] === 0) return true; }
+  return false;
+}
+
+ipcMain.handle('sftp:preview-local', async (_evt, { localPath }) => {
+  try {
+    const st = await fs.promises.stat(localPath);
+    if (st.size > MAX_PREVIEW_BYTES) {
+      return { ok: false, error: `File is ${(st.size / 1024).toFixed(0)} KB - too large to preview (limit 512 KB). Download it instead.` };
+    }
+    const buf = await fs.promises.readFile(localPath);
+    if (looksBinary(buf)) return { ok: false, error: "This looks like a binary file and can't be shown as text." };
+    return { ok: true, content: buf.toString('utf8') };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+ipcMain.handle('sftp:preview-remote', async (_evt, { sessionId, remotePath }) => {
+  const s = sftpSessions.get(sessionId);
+  if (!s) return { ok: false, error: 'not connected' };
+  try {
+    const stats = await sftpManager.stat(s.sftp, remotePath);
+    if (stats && stats.size > MAX_PREVIEW_BYTES) {
+      return { ok: false, error: `File is ${(stats.size / 1024).toFixed(0)} KB - too large to preview (limit 512 KB). Download it instead.` };
+    }
+    // reuse the same proven SFTP download path into a scratch temp file, then read it back -
+    // avoids writing a second, separately-tested way of pulling bytes off the CX
+    const tmpPath = path.join(os.tmpdir(), `lic-preview-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    await s.mgr.sftpDownload(remotePath, tmpPath, s.sftp, () => {});
+    const buf = await fs.promises.readFile(tmpPath);
+    fs.promises.unlink(tmpPath).catch(() => {});
+    if (looksBinary(buf)) return { ok: false, error: "This looks like a binary file and can't be shown as text." };
+    return { ok: true, content: buf.toString('utf8') };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+ipcMain.handle('sftp:pick-local-dir', async () => {
+  const res = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] });
+  if (res.canceled || !res.filePaths.length) return { ok: false, cancelled: true };
+  return { ok: true, path: res.filePaths[0] };
+});
+
+// Generic path helpers so the renderer never has to guess Windows vs POSIX
+// separators for the local pane - Node's path module always gets it right.
+ipcMain.handle('fs:join', (_evt, { base, name }) => ({ ok: true, path: path.join(base, name) }));
+ipcMain.handle('fs:dirname', (_evt, { p }) => ({ ok: true, path: path.dirname(p) }));
 
 
 // IPC: save generated script to disk (replaces the in-browser download)
