@@ -392,19 +392,22 @@ ipcMain.handle('sftp:connect', async (_evt, { host, username, password, port }) 
   const sessionId = `sftp-${Date.now()}`;
   const mgr = new SSHManager();
   try {
-    await mgr.connect({ host, username: username || 'Administrator', password, port: port || 22 });
-    // node-ssh's requestSFTP() has no internal timeout - if the CX's sshd never
-    // responds to the SFTP subsystem request (missing Subsystem line, missing
-    // sftp-server binary, etc.) this would otherwise hang the UI forever with
-    // no error. Race it against a clear timeout instead.
+    sendToRenderer('sftp:connect-stage', { stage: 'ssh' });
+    await Promise.race([
+      mgr.connect({ host, username: username || 'Administrator', password, port: port || 22 }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('SSH connection did not complete within 15s.')), 15000))
+    ]);
+    sendToRenderer('sftp:connect-stage', { stage: 'sftp' });
+    // node-ssh's requestSFTP() has no internal timeout - if this hangs here even
+    // though a plain `sftp` CLI client connects fine, the bug is in ssh2's SFTP
+    // handshake handling specifically, not the CX's sshd config.
     const sftp = await Promise.race([
       mgr.requestSFTP(),
       new Promise((_, reject) => setTimeout(() => reject(new Error(
-        'SFTP subsystem did not respond within 10s. The CX likely does not have ' +
-        'SFTP configured - check /etc/ssh/sshd_config for a "Subsystem sftp ..." ' +
-        'line and that the sftp-server binary it points to actually exists.'
+        'SFTP subsystem did not respond within 10s.'
       )), 10000))
     ]);
+    sendToRenderer('sftp:connect-stage', { stage: 'realpath' });
     const startPath = await sftpManager.realpath(sftp, '.');
     sftpSessions.set(sessionId, { mgr, sftp });
     return { ok: true, sessionId, startPath };

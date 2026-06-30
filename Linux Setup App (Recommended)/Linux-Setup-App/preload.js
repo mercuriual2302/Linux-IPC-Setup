@@ -4,7 +4,7 @@
 // preload.js runs in isolated context, bridges renderer ↔ main
 const { contextBridge, ipcRenderer } = require('electron');
 
-const VALID_EVENTS = ['ssh:output', 'ssh:status', 'shell:data', 'shell:exit'];
+const VALID_EVENTS = ['ssh:output', 'ssh:status', 'shell:data', 'shell:exit', 'sftp:progress', 'sftp:connect-stage'];
 
 contextBridge.exposeInMainWorld('api', {
   // one-shot invokes - existing
@@ -45,6 +45,24 @@ contextBridge.exposeInMainWorld('api', {
   sendShellInput: (sessionId, data) => ipcRenderer.send('shell:input', { sessionId, data }),
   resizeShell:    (sessionId, cols, rows) => ipcRenderer.send('shell:resize', { sessionId, cols, rows }),
   closeShell:     (sessionId) => ipcRenderer.invoke('shell:close', { sessionId }),
+
+  // Files (SFTP browser)
+  sftpConnect:      (opts) => ipcRenderer.invoke('sftp:connect', opts),
+  sftpDisconnect:   (sessionId) => ipcRenderer.invoke('sftp:disconnect', { sessionId }),
+  sftpList:         (sessionId, remotePath) => ipcRenderer.invoke('sftp:list', { sessionId, remotePath }),
+  sftpMkdir:        (sessionId, remotePath) => ipcRenderer.invoke('sftp:mkdir', { sessionId, remotePath }),
+  sftpDelete:       (sessionId, remotePath, isDir) => ipcRenderer.invoke('sftp:delete', { sessionId, remotePath, isDir }),
+  sftpStat:         (sessionId, remotePath) => ipcRenderer.invoke('sftp:stat', { sessionId, remotePath }),
+  sftpDownload:     (sessionId, remotePath, localPath, transferId) => ipcRenderer.invoke('sftp:download', { sessionId, remotePath, localPath, transferId }),
+  sftpUpload:       (sessionId, localPath, remotePath, transferId) => ipcRenderer.invoke('sftp:upload', { sessionId, localPath, remotePath, transferId }),
+  sftpHomeLocal:    () => ipcRenderer.invoke('sftp:home-local'),
+  sftpListLocal:    (localPath) => ipcRenderer.invoke('sftp:list-local', { localPath }),
+  sftpMkdirLocal:   (localPath) => ipcRenderer.invoke('sftp:mkdir-local', { localPath }),
+  sftpDeleteLocal:  (localPath, isDir) => ipcRenderer.invoke('sftp:delete-local', { localPath, isDir }),
+  sftpStatLocal:    (localPath) => ipcRenderer.invoke('sftp:stat-local', { localPath }),
+  sftpPickLocalDir: () => ipcRenderer.invoke('sftp:pick-local-dir'),
+  fsJoin:           (base, name) => ipcRenderer.invoke('fs:join', { base, name }),
+  fsDirname:        (p) => ipcRenderer.invoke('fs:dirname', { p }),
 
   // streaming events
   on: (channel, cb) => {

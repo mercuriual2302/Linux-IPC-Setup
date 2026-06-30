@@ -2622,7 +2622,13 @@ $('btn-validate-creds').addEventListener('click', async () => {
     if (!conn.host) { toast('Enter the CX IP first', 'warn'); return; }
     btnConnect.disabled = true;
     statusEl.textContent = 'connecting...';
+    const offStage = window.api.on('sftp:connect-stage', ({ stage }) => {
+      if (stage === 'ssh') statusEl.textContent = 'connecting (ssh)...';
+      else if (stage === 'sftp') statusEl.textContent = 'opening sftp subsystem...';
+      else if (stage === 'realpath') statusEl.textContent = 'reading home directory...';
+    });
     const res = await window.api.sftpConnect({ host: conn.host, password: conn.password, port: 22 });
+    offStage();
     btnConnect.disabled = false;
     if (!res.ok) {
       statusEl.textContent = 'failed: ' + (res.error || 'unknown');
