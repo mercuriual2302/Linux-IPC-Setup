@@ -175,11 +175,13 @@ function updateConnDots() {
 function setGlobalConn(state, text) {
   const badge = $('global-conn');
   const dot = $('global-dot');
+  const sidebar = $('sidebar');
   badge.classList.remove('ok', 'err');
   dot.classList.remove('ok', 'err', 'warn', 'pulse');
   if (state === 'ok') { badge.classList.add('ok'); dot.classList.add('ok'); }
   else if (state === 'err') { badge.classList.add('err'); dot.classList.add('err'); }
   else if (state === 'busy') { dot.classList.add('warn', 'pulse'); }
+  if (sidebar) sidebar.classList.toggle('connected', state === 'ok');
   $('global-conn-text').textContent = text;
 }
 
@@ -2099,29 +2101,70 @@ $('btn-validate-creds').addEventListener('click', async () => {
   let busy = false;
   let devices = [];
   let linuxOnly = true;
+  let pendingDevice = null; // { ip, mac, type, iface } currently shown in the connect panel
 
-  const scanPassEl = $('scan-pass');
-  const pass = () => (scanPassEl && scanPassEl.value) || $('cx-pass').value || '1';
-  const open = () => {
-    overlay.classList.add('open');
-    if (scanPassEl) scanPassEl.value = $('cx-pass').value || '';
-    run();
-  };
   const close = () => { overlay.classList.remove('open'); };
 
   const btnFilter = $('scan-filter');
+
+  // contextual password prompt - only appears once a device has been picked
+  const connectPanel = $('scan-connect');
+  const connectIp    = $('scan-connect-ip');
+  const connectMac   = $('scan-connect-mac');
+  const connectPass  = $('scan-connect-pass');
+  const connectGo    = $('scan-connect-go');
+  const connectBack  = $('scan-connect-back');
+  const actionsRow   = $('scan-actions');
+
+  function showConnectPrompt(d, ip) {
+    pendingDevice = { ip, mac: d.mac, type: d.type, iface: d.iface };
+    connectIp.textContent = ip;
+    connectMac.textContent = d.mac + (d.type === 'direct' ? ' · direct link' : ' · ' + d.iface);
+    connectPass.value = $('cx-pass').value || '';
+    listEl.style.display = 'none';
+    if (actionsRow) actionsRow.style.display = 'none';
+    connectPanel.style.display = 'flex';
+    subEl.textContent = 'Enter the Administrator password to connect';
+    connectPass.focus();
+  }
+
+  function hideConnectPrompt() {
+    connectPanel.style.display = 'none';
+    listEl.style.display = '';
+    if (actionsRow) actionsRow.style.display = '';
+    pendingDevice = null;
+    applyFilter();
+  }
+
+  function confirmConnect() {
+    if (!pendingDevice) return;
+    const password = connectPass.value || '1';
+    propagateCreds(pendingDevice.ip, password);
+    toast(`IP set to ${pendingDevice.ip}`, 'success');
+    close();
+    $('btn-test').click();
+  }
+
+  if (connectBack) connectBack.addEventListener('click', hideConnectPrompt);
+  if (connectGo)   connectGo.addEventListener('click', confirmConnect);
+  if (connectPass) connectPass.addEventListener('keydown', (e) => { if (e.key === 'Enter') confirmConnect(); });
+
+  const open = () => {
+    overlay.classList.add('open');
+    hideConnectPrompt();
+    run();
+  };
 
   function applyFilter() {
     const visible = linuxOnly
       ? devices.filter(d => d.type === 'direct' || d.os === 'linux')
       : devices;
     if (btnFilter) {
-      btnFilter.textContent = (linuxOnly ? '✓ ' : '') + 'LINUX ONLY';
-      btnFilter.classList.toggle('active', linuxOnly);
-      btnFilter.title = linuxOnly ? 'Showing Linux devices only - click to show all' : 'Showing all devices - click to filter to Linux only';
+      btnFilter.checked = linuxOnly;
+      btnFilter.title = linuxOnly ? 'Showing Linux devices only - untick to show all' : 'Showing all devices - tick to filter to Linux only';
     }
     if (!visible.length && devices.length) {
-      listEl.innerHTML = `<div style="font-family:var(--tc-mono);font-size:11px;color:var(--tc-muted);padding:.5rem 0">No Linux IPCs found. Toggle to show all Beckhoff devices.</div>`;
+      listEl.innerHTML = `<div style="font-family:var(--tc-mono);font-size:11px;color:var(--tc-muted);padding:.5rem 0">No Linux IPCs found. Untick "Linux only" to show all Beckhoff devices.</div>`;
     } else {
       listEl.innerHTML = visible.map((d) => deviceRow(d, devices.indexOf(d))).join('');
     }
@@ -2184,10 +2227,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
     if (!d) return;
 
     if (btn.dataset.act === 'use') {
-      propagateCreds(d.ip, pass());
-      toast(`IP set to ${d.ip}`, 'success');
-      close();
-      $('btn-test').click();
+      showConnectPrompt(d, d.ip);
       return;
     }
 
@@ -2197,10 +2237,9 @@ $('btn-validate-creds').addEventListener('click', async () => {
     try { r = await window.api.resolveDirectLink({ mac: d.mac, laptopIp: d.laptopIp }); }
     catch (err) { r = { ok: false, error: String(err.message || err) }; }
     if (r && r.ok) {
-      propagateCreds(r.ip, pass());
-      toast(`Direct-link CX found at ${r.ip}`, 'success');
-      close();
-      $('btn-test').click();
+      btn.disabled = false;
+      btn.textContent = 'IDENTIFY';
+      showConnectPrompt(d, r.ip);
     } else {
       btn.disabled = false;
       btn.textContent = 'IDENTIFY';
@@ -2211,6 +2250,6 @@ $('btn-validate-creds').addEventListener('click', async () => {
   if (btnScan)   btnScan.addEventListener('click', open);
   if (btnClose)  btnClose.addEventListener('click', close);
   if (btnRescan) btnRescan.addEventListener('click', run);
-  if (btnFilter) btnFilter.addEventListener('click', () => { linuxOnly = !linuxOnly; applyFilter(); });
+  if (btnFilter) btnFilter.addEventListener('change', () => { linuxOnly = btnFilter.checked; applyFilter(); });
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
 })();

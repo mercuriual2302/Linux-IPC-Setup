@@ -15,7 +15,7 @@
       <span class="connbar-label">TARGET</span>
       <input type="text" id="cx-ip" class="connbar-ip" placeholder="e.g. 192.168.1.100" autocomplete="off">
       <input type="password" id="cx-pass" class="connbar-pass" placeholder="password" value="1" autocomplete="off" title="Administrator password">
-      <button class="test-btn scan-btn" id="btn-scan" title="Find CXs on the network or wired to this laptop">⌖ SCAN</button>
+      <button class="test-btn scan-btn" id="btn-scan" title="Find CXs on the network or wired to this laptop"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:5px"><circle cx="11" cy="11" r="7"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>SCAN</button>
       <button class="test-btn" id="btn-test">TEST CONNECTION</button>
       <div class="global-conn-badge" id="global-conn">
         <span class="status-dot" id="global-dot"></span>
@@ -80,7 +80,7 @@
   <div class="app-body">
 
     <!-- SIDEBAR -->
-    <nav class="sidebar" aria-label="Sections">
+    <nav class="sidebar" id="sidebar" aria-label="Sections">
       <div class="sidebar-brand">
         <img src="Tux.svg" height="30" alt="Tux" style="display:block;flex-shrink:0">
         <div class="sidebar-wm"><b>LINUX IPC</b><span>SETUP CONSOLE</span></div>
@@ -640,14 +640,27 @@
       <button class="scan-close" id="scan-close" title="Close">✕</button>
     </div>
     <div class="scan-sub" id="scan-sub">Scanning for Beckhoff devices...</div>
-    <div class="scan-passrow">
-      <label for="scan-pass">ADMINISTRATOR PASSWORD</label>
-      <input type="password" id="scan-pass" placeholder="default: 1" autocomplete="off">
-      <span class="hint">Used to test the connection when you pick a device below</span>
-    </div>
     <div class="scan-list" id="scan-list"></div>
-    <div class="scan-actions">
-      <button class="scan-filter active" id="scan-filter">LINUX ONLY</button>
+
+    <!-- shown only after a device is picked - asks for the password to connect with -->
+    <div class="scan-connect" id="scan-connect" style="display:none">
+      <div class="scan-connect-device">
+        <span class="scan-connect-ip" id="scan-connect-ip">-</span>
+        <span class="scan-connect-mac" id="scan-connect-mac"></span>
+      </div>
+      <label for="scan-connect-pass">ADMINISTRATOR PASSWORD</label>
+      <input type="password" id="scan-connect-pass" placeholder="default: 1" autocomplete="off">
+      <div class="scan-connect-actions">
+        <button class="scan-rescan" id="scan-connect-back">BACK</button>
+        <button class="scan-use" id="scan-connect-go">CONNECT</button>
+      </div>
+    </div>
+
+    <div class="scan-actions" id="scan-actions">
+      <label class="scan-filter-toggle" for="scan-filter">
+        <input type="checkbox" id="scan-filter" checked>
+        <span>Linux only</span>
+      </label>
       <button class="scan-rescan" id="scan-rescan">RESCAN</button>
     </div>
   </div>
