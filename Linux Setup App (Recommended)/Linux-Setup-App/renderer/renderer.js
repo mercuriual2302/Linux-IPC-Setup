@@ -2182,6 +2182,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
       propagateCreds(d.ip, pass());
       toast(`IP set to ${d.ip}`, 'success');
       close();
+      $('btn-test').click();
       return;
     }
 
@@ -2194,6 +2195,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
       propagateCreds(r.ip, pass());
       toast(`Direct-link CX found at ${r.ip}`, 'success');
       close();
+      $('btn-test').click();
     } else {
       btn.disabled = false;
       btn.textContent = 'IDENTIFY';
