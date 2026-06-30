@@ -393,7 +393,18 @@ ipcMain.handle('sftp:connect', async (_evt, { host, username, password, port }) 
   const mgr = new SSHManager();
   try {
     await mgr.connect({ host, username: username || 'Administrator', password, port: port || 22 });
-    const sftp = await mgr.requestSFTP();
+    // node-ssh's requestSFTP() has no internal timeout - if the CX's sshd never
+    // responds to the SFTP subsystem request (missing Subsystem line, missing
+    // sftp-server binary, etc.) this would otherwise hang the UI forever with
+    // no error. Race it against a clear timeout instead.
+    const sftp = await Promise.race([
+      mgr.requestSFTP(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error(
+        'SFTP subsystem did not respond within 10s. The CX likely does not have ' +
+        'SFTP configured - check /etc/ssh/sshd_config for a "Subsystem sftp ..." ' +
+        'line and that the sftp-server binary it points to actually exists.'
+      )), 10000))
+    ]);
     const startPath = await sftpManager.realpath(sftp, '.');
     sftpSessions.set(sessionId, { mgr, sftp });
     return { ok: true, sessionId, startPath };
