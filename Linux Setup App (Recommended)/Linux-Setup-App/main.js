@@ -613,6 +613,9 @@ ipcMain.handle('cx:check-internet', async (_evt, { host, username, password, por
 // us guessing which adapter is the right one.
 ipcMain.handle('proxy:start', async (_evt, { host, port }) => {
   try {
+    // which of this laptop's addresses the CX can actually reach - redone every
+    // call since a different target CX may sit on a different adapter/subnet,
+    // even though the SOCKS server itself is a singleton reused across targets.
     const localAddress = await new Promise((resolve, reject) => {
       const probe = net.connect(port || 22, host, () => {
         const addr = probe.localAddress;
@@ -621,10 +624,11 @@ ipcMain.handle('proxy:start', async (_evt, { host, port }) => {
       });
       probe.on('error', reject);
     });
-    if (activeProxy) { try { activeProxy.server.close(); } catch (_) {} activeProxy = null; }
-    const { server, port: proxyPort } = await socksProxy.startSocksServer();
-    activeProxy = { server, port: proxyPort };
-    return { ok: true, proxyHost: localAddress, proxyPort };
+    if (!activeProxy) {
+      const { server, port: proxyPort } = await socksProxy.startSocksServer();
+      activeProxy = { server, port: proxyPort };
+    }
+    return { ok: true, proxyHost: localAddress, proxyPort: activeProxy.port };
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
   }
@@ -695,10 +699,11 @@ async function sshStream(sessionId, opts, cmd) {
 // MyBeckhoff credential validator
 // Uses curl on the CX to check credentials against the Beckhoff APT repo.
 // Returns in under 3 seconds - no apt update needed.
-ipcMain.handle('cx:validate-creds', async (_evt, { host, password, port, beckhoffUser, beckhoffPass }) => {
+ipcMain.handle('cx:validate-creds', async (_evt, { host, password, port, beckhoffUser, beckhoffPass, proxyHost, proxyPort }) => {
   const esc = (s) => (s || '').replace(/'/g, "'\''");
+  const proxyFlag = (proxyHost && proxyPort) ? `-x socks5h://${proxyHost}:${proxyPort} ` : '';
   // curl a known Beckhoff InRelease file with basic auth - 200 = valid, 401 = bad creds
-  const cmd = `curl -s -o /dev/null -w "%{http_code}" --max-time 10 ` +
+  const cmd = `curl -s -o /dev/null -w "%{http_code}" --max-time 10 ${proxyFlag}` +
     `--user '${esc(beckhoffUser)}:${esc(beckhoffPass)}' ` +
     `https://deb.beckhoff.com/debian/dists/trixie-stable/InRelease`;
   try {
