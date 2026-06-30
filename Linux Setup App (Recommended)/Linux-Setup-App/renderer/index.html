@@ -104,6 +104,7 @@
 
       <div class="nav-group">Tools</div>
       <div class="nav-item tab" data-tab="shell"><span class="nav-ic">❯_</span>Shell</div>
+      <div class="nav-item tab" data-tab="sftp"><span class="nav-ic">⇵</span>Files</div>
 
       <div class="sidebar-foot">
         <button class="sidebar-term" id="btn-open-term"><span class="nav-ic">▸_</span>Terminal</button>
@@ -552,6 +553,41 @@
         <div class="shell-term-wrap">
           <div id="shell-term"></div>
         </div>
+      </div>
+
+      <!-- VIEW: FILES (SFTP browser, dual pane) -->
+      <div class="page" id="page-sftp">
+        <div class="view-title">Files <span class="view-sub">SFTP browser</span></div>
+        <div class="sftp-toolbar">
+          <button class="btn-run secondary" id="btn-sftp-connect" style="flex:none">▶ CONNECT</button>
+          <button class="btn-run danger" id="btn-sftp-disconnect" style="flex:none;display:none">■ DISCONNECT</button>
+          <span id="sftp-status" class="hint">not connected</span>
+        </div>
+
+        <div class="sftp-panes">
+          <div class="sftp-pane">
+            <div class="sftp-pane-head">
+              <span class="sftp-pane-title">LOCAL (this PC)</span>
+              <button class="sftp-icon-btn" id="btn-local-browse" title="Choose folder">…</button>
+              <button class="sftp-icon-btn" id="btn-local-mkdir" title="New folder">+</button>
+              <button class="sftp-icon-btn" id="btn-local-refresh" title="Refresh">⟳</button>
+            </div>
+            <input type="text" id="local-path" class="sftp-path-input" placeholder="local path" autocomplete="off">
+            <div class="sftp-list" id="local-list"></div>
+          </div>
+
+          <div class="sftp-pane">
+            <div class="sftp-pane-head">
+              <span class="sftp-pane-title">CX (remote)</span>
+              <button class="sftp-icon-btn" id="btn-remote-mkdir" title="New folder">+</button>
+              <button class="sftp-icon-btn" id="btn-remote-refresh" title="Refresh">⟳</button>
+            </div>
+            <input type="text" id="remote-path" class="sftp-path-input" placeholder="remote path" autocomplete="off">
+            <div class="sftp-list" id="remote-list"></div>
+          </div>
+        </div>
+
+        <div class="sftp-transfers" id="sftp-transfers"></div>
       </div>
 
     </div><!-- /.app-main -->

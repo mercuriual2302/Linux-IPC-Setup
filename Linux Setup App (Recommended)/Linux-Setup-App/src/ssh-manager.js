@@ -124,6 +124,36 @@ class SSHManager {
   }
 
   /**
+   * Open the SFTP subsystem on the existing connection. Returns the raw
+   * ssh2 SFTPWrapper - reused across every list/transfer call for a session
+   * rather than re-opening per operation. Used by the Files (SFTP) view.
+   */
+  async requestSFTP() {
+    if (this._disposed) throw new Error("SSH manager disposed");
+    return this.ssh.requestSFTP();
+  }
+
+  /**
+   * Download a remote file to a local path with progress callbacks.
+   * sftp is the handle from requestSFTP() - reused so this doesn't open
+   * a fresh SFTP subsystem on every transfer.
+   */
+  async sftpDownload(remotePath, localPath, sftp, onProgress) {
+    if (this._disposed) throw new Error("SSH manager disposed");
+    await this.ssh.getFile(localPath, remotePath, sftp, {
+      step: (transferred, _chunk, total) => { if (onProgress) onProgress(transferred, total); }
+    });
+  }
+
+  /** Upload a local file to a remote path with progress callbacks. See sftpDownload. */
+  async sftpUpload(localPath, remotePath, sftp, onProgress) {
+    if (this._disposed) throw new Error("SSH manager disposed");
+    await this.ssh.putFile(localPath, remotePath, sftp, {
+      step: (transferred, _chunk, total) => { if (onProgress) onProgress(transferred, total); }
+    });
+  }
+
+  /**
    * Open an interactive PTY shell channel on the existing connection.
    * Returns the raw ssh2 stream - duplex, write() sends keystrokes,
    * 'data' events are the terminal's raw output bytes. Used by the

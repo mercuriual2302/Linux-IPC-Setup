@@ -385,7 +385,7 @@ function renderVersionList() {
 
 // Tabs
 const tabs = document.querySelectorAll('.tab');
-const pages = { dashboard:'page-dashboard', setup:'page-setup', services:'page-services', network:'page-network', firewall:'page-firewall', users:'page-users', packages:'page-packages', tf1200:'page-tf1200', shell:'page-shell' };
+const pages = { dashboard:'page-dashboard', setup:'page-setup', services:'page-services', network:'page-network', firewall:'page-firewall', users:'page-users', packages:'page-packages', tf1200:'page-tf1200', shell:'page-shell', sftp:'page-sftp' };
 tabs.forEach(t => t.addEventListener('click', () => {
   tabs.forEach(x => x.classList.remove('active'));
   t.classList.add('active');
@@ -2353,4 +2353,303 @@ $('btn-validate-creds').addEventListener('click', async () => {
       t.addEventListener('click', () => { if (fitAddon) fitAddon.fit(); });
     }
   });
+})();
+
+// Files (SFTP browser) - dual pane: local filesystem on the left, CX on the right.
+// One persistent SFTP session per Connect, reused for every list/transfer call.
+(function initSftpBrowser() {
+  const btnConnect = $('btn-sftp-connect');
+  const btnDisconnect = $('btn-sftp-disconnect');
+  const statusEl = $('sftp-status');
+  if (!btnConnect) return;
+
+  let sessionId = null;
+  let offProgress = null;
+
+  const panes = {
+    local:  { path: '', entries: [], pathInput: $('local-path'),  listEl: $('local-list') },
+    remote: { path: '', entries: [], pathInput: $('remote-path'), listEl: $('remote-list') }
+  };
+
+  function fmtSize(n) {
+    if (!n) return '0 B';
+    if (n < 1024) return n + ' B';
+    const units = ['KB', 'MB', 'GB', 'TB'];
+    let v = n, i = -1;
+    do { v /= 1024; i++; } while (v >= 1024 && i < units.length - 1);
+    return v.toFixed(1) + ' ' + units[i];
+  }
+  function fmtDate(ms) {
+    if (!ms) return '-';
+    const d = new Date(ms);
+    return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }
+  function sortEntries(entries) {
+    return [...entries].sort((a, b) => {
+      if (a.type === 'dir' && b.type !== 'dir') return -1;
+      if (a.type !== 'dir' && b.type === 'dir') return 1;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    });
+  }
+  // remote is always the Linux CX regardless of which OS this app runs on,
+  // so remote path math is plain POSIX string handling, no IPC round trip needed.
+  function remoteParent(p) {
+    if (!p || p === '/') return '/';
+    const trimmed = p.replace(/\/+$/, '');
+    const idx = trimmed.lastIndexOf('/');
+    return idx <= 0 ? '/' : trimmed.slice(0, idx);
+  }
+  function remoteJoin(base, name) {
+    return (base === '/' ? '' : base.replace(/\/+$/, '')) + '/' + name;
+  }
+
+  function rowHtml(side, entry, idx) {
+    const isDir = entry.type === 'dir';
+    const icon = isDir ? '▣' : '▫';
+    const sizeStr = isDir ? '' : fmtSize(entry.size);
+    const dateStr = isDir ? '' : fmtDate(entry.mtime);
+    const xferBtn = isDir ? '' : (side === 'local'
+      ? `<button class="sftp-xfer-btn" data-act="upload" data-idx="${idx}" title="Upload to CX">→</button>`
+      : `<button class="sftp-xfer-btn" data-act="download" data-idx="${idx}" title="Download to local">←</button>`);
+    return `
+      <div class="sftp-row" data-idx="${idx}" data-type="${entry.type}">
+        <span class="sftp-row-name" title="${escapeHtml(entry.name)}">${icon} ${escapeHtml(entry.name)}</span>
+        <span class="sftp-row-size">${sizeStr}</span>
+        <span class="sftp-row-date">${dateStr}</span>
+        <span class="sftp-row-actions">${xferBtn}<button class="sftp-del-btn" data-act="delete" data-idx="${idx}" title="Delete">✕</button></span>
+      </div>`;
+  }
+  function upRowHtml() {
+    return `<div class="sftp-row sftp-row-up" data-idx="-1" data-type="up">
+      <span class="sftp-row-name">⬆ ..</span><span class="sftp-row-size"></span><span class="sftp-row-date"></span><span class="sftp-row-actions"></span>
+    </div>`;
+  }
+
+  function render(side) {
+    const p = panes[side];
+    p.pathInput.value = p.path;
+    const sorted = sortEntries(p.entries);
+    const rows = sorted.map((entry) => rowHtml(side, entry, p.entries.indexOf(entry))).join('');
+    p.listEl.innerHTML = upRowHtml() + (rows || `<div class="sftp-empty">empty folder</div>`);
+  }
+
+  async function loadLocal(targetPath) {
+    const res = await window.api.sftpListLocal(targetPath);
+    if (!res.ok) { toast('Could not list local folder: ' + (res.error || 'unknown'), 'error'); return; }
+    panes.local.path = res.path;
+    panes.local.entries = res.entries;
+    render('local');
+  }
+
+  async function loadRemote(targetPath) {
+    if (!sessionId) return;
+    const res = await window.api.sftpList(sessionId, targetPath);
+    if (!res.ok) { toast('Could not list remote folder: ' + (res.error || 'unknown'), 'error'); return; }
+    panes.remote.path = res.path;
+    panes.remote.entries = res.entries;
+    render('remote');
+  }
+
+  async function goUp(side) {
+    if (side === 'local') {
+      const res = await window.api.fsDirname(panes.local.path);
+      if (res.ok && res.path !== panes.local.path) loadLocal(res.path);
+    } else {
+      const parent = remoteParent(panes.remote.path);
+      if (parent !== panes.remote.path) loadRemote(parent);
+    }
+  }
+
+  async function openDir(side, entry) {
+    if (side === 'local') {
+      const res = await window.api.fsJoin(panes.local.path, entry.name);
+      if (res.ok) loadLocal(res.path);
+    } else {
+      loadRemote(remoteJoin(panes.remote.path, entry.name));
+    }
+  }
+
+  function addTransferRow(label) {
+    const id = 'xfer-' + Date.now() + '-' + Math.floor(Math.random() * 1e6);
+    const wrap = $('sftp-transfers');
+    const row = document.createElement('div');
+    row.className = 'sftp-xfer-row';
+    row.id = id;
+    row.innerHTML = `<span class="sftp-xfer-label">${escapeHtml(label)}</span><div class="sftp-xfer-bar-wrap"><div class="sftp-xfer-bar" style="width:0%"></div></div><span class="sftp-xfer-pct">0%</span>`;
+    wrap.appendChild(row);
+    return id;
+  }
+  function updateTransferRow(id, pct) {
+    const row = $(id);
+    if (!row) return;
+    row.querySelector('.sftp-xfer-bar').style.width = pct + '%';
+    row.querySelector('.sftp-xfer-pct').textContent = pct + '%';
+  }
+  function finishTransferRow(id, ok, errMsg) {
+    const row = $(id);
+    if (!row) return;
+    if (ok) {
+      row.querySelector('.sftp-xfer-bar').style.width = '100%';
+      row.querySelector('.sftp-xfer-pct').textContent = 'done';
+      setTimeout(() => row.remove(), 4000);
+    } else {
+      row.classList.add('err');
+      row.querySelector('.sftp-xfer-pct').textContent = 'failed';
+      row.title = errMsg || '';
+    }
+  }
+
+  function wireProgress() {
+    offProgress = window.api.on('sftp:progress', ({ transferId, transferred, total }) => {
+      const pct = total ? Math.round((transferred / total) * 100) : 0;
+      updateTransferRow(transferId, pct);
+    });
+  }
+
+  // side = the pane the file currently lives in; transfer always goes to the OTHER pane's current path
+  async function transfer(side, entry) {
+    if (!sessionId) { toast('Connect first', 'warn'); return; }
+    if (side === 'local') {
+      const localFull = (await window.api.fsJoin(panes.local.path, entry.name)).path;
+      const remoteFull = remoteJoin(panes.remote.path, entry.name);
+      const existing = await window.api.sftpStat(sessionId, remoteFull);
+      if (existing.exists && !confirm(`${entry.name} already exists on the CX at this location. Overwrite?`)) return;
+      const xferId = addTransferRow(`${entry.name} → CX`);
+      const res = await window.api.sftpUpload(sessionId, localFull, remoteFull, xferId);
+      finishTransferRow(xferId, res.ok, res.error);
+      if (res.ok) { toast(`Uploaded ${entry.name}`, 'success'); loadRemote(panes.remote.path); }
+      else toast('Upload failed: ' + (res.error || 'unknown'), 'error');
+    } else {
+      const remoteFull = remoteJoin(panes.remote.path, entry.name);
+      const localFull = (await window.api.fsJoin(panes.local.path, entry.name)).path;
+      const existing = await window.api.sftpStatLocal(localFull);
+      if (existing.exists && !confirm(`${entry.name} already exists locally at this location. Overwrite?`)) return;
+      const xferId = addTransferRow(`CX → ${entry.name}`);
+      const res = await window.api.sftpDownload(sessionId, remoteFull, localFull, xferId);
+      finishTransferRow(xferId, res.ok, res.error);
+      if (res.ok) { toast(`Downloaded ${entry.name}`, 'success'); loadLocal(panes.local.path); }
+      else toast('Download failed: ' + (res.error || 'unknown'), 'error');
+    }
+  }
+
+  async function deleteEntry(side, entry) {
+    const label = entry.type === 'dir' ? 'folder' : 'file';
+    if (!confirm(`Delete ${label} "${entry.name}"? This cannot be undone.`)) return;
+    if (side === 'local') {
+      const full = (await window.api.fsJoin(panes.local.path, entry.name)).path;
+      const res = await window.api.sftpDeleteLocal(full, entry.type === 'dir');
+      if (res.ok) { toast(`Deleted ${entry.name}`, 'success'); loadLocal(panes.local.path); }
+      else toast('Delete failed: ' + (res.error || 'unknown') + (entry.type === 'dir' ? ' (folder must be empty)' : ''), 'error');
+    } else {
+      if (!sessionId) return;
+      const full = remoteJoin(panes.remote.path, entry.name);
+      const res = await window.api.sftpDelete(sessionId, full, entry.type === 'dir');
+      if (res.ok) { toast(`Deleted ${entry.name}`, 'success'); loadRemote(panes.remote.path); }
+      else toast('Delete failed: ' + (res.error || 'unknown') + (entry.type === 'dir' ? ' (folder must be empty)' : ''), 'error');
+    }
+  }
+
+  async function mkdir(side) {
+    const name = prompt('New folder name:');
+    if (!name) return;
+    if (side === 'local') {
+      const full = (await window.api.fsJoin(panes.local.path, name)).path;
+      const res = await window.api.sftpMkdirLocal(full);
+      if (res.ok) loadLocal(panes.local.path);
+      else toast('Could not create folder: ' + (res.error || 'unknown'), 'error');
+    } else {
+      if (!sessionId) { toast('Connect first', 'warn'); return; }
+      const full = remoteJoin(panes.remote.path, name);
+      const res = await window.api.sftpMkdir(sessionId, full);
+      if (res.ok) loadRemote(panes.remote.path);
+      else toast('Could not create folder: ' + (res.error || 'unknown'), 'error');
+    }
+  }
+
+  function wirePane(side) {
+    const p = panes[side];
+    p.listEl.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-act]');
+      if (btn) {
+        const idx = parseInt(btn.dataset.idx, 10);
+        const entry = p.entries[idx];
+        if (!entry) return;
+        if (btn.dataset.act === 'upload') transfer('local', entry);
+        else if (btn.dataset.act === 'download') transfer('remote', entry);
+        else if (btn.dataset.act === 'delete') deleteEntry(side, entry);
+        return;
+      }
+      const row = e.target.closest('.sftp-row');
+      if (!row) return;
+      if (row.dataset.type === 'up') { goUp(side); return; }
+      if (row.dataset.type === 'dir') {
+        const idx = parseInt(row.dataset.idx, 10);
+        openDir(side, p.entries[idx]);
+        return;
+      }
+      p.listEl.querySelectorAll('.sftp-row.selected').forEach(r => r.classList.remove('selected'));
+      row.classList.add('selected');
+    });
+    p.listEl.addEventListener('dblclick', (e) => {
+      const row = e.target.closest('.sftp-row');
+      if (!row || row.dataset.type === 'dir' || row.dataset.type === 'up') return;
+      const idx = parseInt(row.dataset.idx, 10);
+      const entry = p.entries[idx];
+      if (entry) transfer(side, entry);
+    });
+    p.pathInput.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      const val = p.pathInput.value.trim();
+      if (!val) return;
+      if (side === 'local') loadLocal(val); else loadRemote(val);
+    });
+  }
+
+  wirePane('local');
+  wirePane('remote');
+
+  $('btn-local-refresh').addEventListener('click', () => loadLocal(panes.local.path));
+  $('btn-remote-refresh').addEventListener('click', () => loadRemote(panes.remote.path));
+  $('btn-local-mkdir').addEventListener('click', () => mkdir('local'));
+  $('btn-remote-mkdir').addEventListener('click', () => mkdir('remote'));
+  $('btn-local-browse').addEventListener('click', async () => {
+    const res = await window.api.sftpPickLocalDir();
+    if (res.ok) loadLocal(res.path);
+  });
+
+  async function connect() {
+    const conn = getCxMgmtConn();
+    if (!conn.host) { toast('Enter the CX IP first', 'warn'); return; }
+    btnConnect.disabled = true;
+    statusEl.textContent = 'connecting...';
+    const res = await window.api.sftpConnect({ host: conn.host, password: conn.password, port: 22 });
+    btnConnect.disabled = false;
+    if (!res.ok) {
+      statusEl.textContent = 'failed: ' + (res.error || 'unknown');
+      toast('SFTP connect failed: ' + (res.error || 'unknown'), 'error');
+      return;
+    }
+    sessionId = res.sessionId;
+    statusEl.textContent = 'connected · ' + conn.host;
+    btnConnect.style.display = 'none';
+    btnDisconnect.style.display = '';
+    wireProgress();
+    loadRemote(res.startPath);
+    if (!panes.local.path) {
+      const home = await window.api.sftpHomeLocal();
+      loadLocal(home.path);
+    }
+  }
+
+  async function disconnect() {
+    if (sessionId) await window.api.sftpDisconnect(sessionId);
+    if (offProgress) { offProgress(); offProgress = null; }
+    sessionId = null;
+    btnConnect.style.display = '';
+    btnDisconnect.style.display = 'none';
+    statusEl.textContent = 'not connected';
+  }
+
+  btnConnect.addEventListener('click', connect);
+  btnDisconnect.addEventListener('click', disconnect);
 })();
