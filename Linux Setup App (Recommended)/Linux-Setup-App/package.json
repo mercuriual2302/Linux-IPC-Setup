@@ -1,7 +1,7 @@
 {
   "name": "linux-ipc-setup-console",
   "productName": "Linux Setup Console",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Automated provisioning tool for Linux IPCs",
   "main": "main.js",
   "author": {
