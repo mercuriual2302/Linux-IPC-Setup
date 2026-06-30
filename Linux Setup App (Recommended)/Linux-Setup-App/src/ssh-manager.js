@@ -123,6 +123,23 @@ class SSHManager {
     await this.ssh.putFile(localPath, remotePath);
   }
 
+  /**
+   * Open an interactive PTY shell channel on the existing connection.
+   * Returns the raw ssh2 stream - duplex, write() sends keystrokes,
+   * 'data' events are the terminal's raw output bytes. Used by the
+   * Shell view; separate from exec()/execStream() which are one-shot.
+   */
+  shell({ cols = 80, rows = 24, term = "xterm-256color" } = {}) {
+    if (this._disposed) throw new Error("SSH manager disposed");
+    if (!this.ssh.connection) throw new Error("Not connected");
+    return new Promise((resolve, reject) => {
+      this.ssh.connection.shell({ term, cols, rows }, (err, stream) => {
+        if (err) return reject(err);
+        resolve(stream);
+      });
+    });
+  }
+
   /** Tear down the connection — safe to call multiple times. */
   dispose() {
     if (this._disposed) return;
