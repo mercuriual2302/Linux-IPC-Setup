@@ -81,13 +81,14 @@ _sudo usermod -aG sudo TF1200`
 # Inner setup script — executed by the Electron app over SSH.
 # Positional args: $1 = MyBeckhoff username, $2 = MyBeckhoff password,
 #                  $3 = Administrator password (for sudo).
+# $1/$2 may be blank if bhf.conf already exists on the CX - see check below.
 set -e
 BECKHOFF_USER="$1"
 BECKHOFF_PASS="$2"
 SUDO_PASS="$3"
 
-if [ -z "$BECKHOFF_USER" ] || [ -z "$BECKHOFF_PASS" ] || [ -z "$SUDO_PASS" ]; then
-  echo "[CX] ERROR: Missing credentials (usage: \$0 BK_USER BK_PASS SUDO_PASS)" >&2
+if [ -z "$SUDO_PASS" ]; then
+  echo "[CX] ERROR: Missing Administrator password (usage: \$0 BK_USER BK_PASS SUDO_PASS)" >&2
   exit 2
 fi
 
@@ -106,19 +107,27 @@ _sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
 # Prime sudo's timestamp so subsequent calls don't re-prompt within 5-15 min
 _sudo -v
 
-echo "[CX] Creating APT auth file..."
-AUTH_TMP=$(mktemp)
-printf 'machine deb.beckhoff.com\nlogin %s\npassword %s\nmachine deb-mirror.beckhoff.com\nlogin %s\npassword %s\n' \\
-  "$BECKHOFF_USER" "$BECKHOFF_PASS" "$BECKHOFF_USER" "$BECKHOFF_PASS" > "$AUTH_TMP"
-_sudo mkdir -p /etc/apt/auth.conf.d
-_sudo mv "$AUTH_TMP" /etc/apt/auth.conf.d/bhf.conf
-_sudo chmod 600 /etc/apt/auth.conf.d/bhf.conf
-_sudo chown root:root /etc/apt/auth.conf.d/bhf.conf
-
-# Sanity — print credential lengths so truncation/corruption shows up in logs
-echo "[CX] Auth file written: user=\${#BECKHOFF_USER} chars, pass=\${#BECKHOFF_PASS} chars"
-echo "[CX] Auth file preview (password masked):"
-_sudo sed 's/^password .*/password ***MASKED***/' /etc/apt/auth.conf.d/bhf.conf
+# Skip rewriting the auth file if MyBeckhoff creds are already on the CX -
+# this is what lets the UI run setup again without retyping the password.
+if _sudo test -s /etc/apt/auth.conf.d/bhf.conf; then
+  echo "[CX] MyBeckhoff auth file already present on CX - reusing existing credentials."
+elif [ -n "$BECKHOFF_USER" ] && [ -n "$BECKHOFF_PASS" ]; then
+  echo "[CX] Creating APT auth file..."
+  AUTH_TMP=$(mktemp)
+  printf 'machine deb.beckhoff.com\nlogin %s\npassword %s\nmachine deb-mirror.beckhoff.com\nlogin %s\npassword %s\n' \\
+    "$BECKHOFF_USER" "$BECKHOFF_PASS" "$BECKHOFF_USER" "$BECKHOFF_PASS" > "$AUTH_TMP"
+  _sudo mkdir -p /etc/apt/auth.conf.d
+  _sudo mv "$AUTH_TMP" /etc/apt/auth.conf.d/bhf.conf
+  _sudo chmod 600 /etc/apt/auth.conf.d/bhf.conf
+  _sudo chown root:root /etc/apt/auth.conf.d/bhf.conf
+  # Sanity — print credential lengths so truncation/corruption shows up in logs
+  echo "[CX] Auth file written: user=\${#BECKHOFF_USER} chars, pass=\${#BECKHOFF_PASS} chars"
+  echo "[CX] Auth file preview (password masked):"
+  _sudo sed 's/^password .*/password ***MASKED***/' /etc/apt/auth.conf.d/bhf.conf
+else
+  echo "[CX] ERROR: No MyBeckhoff auth file on CX and no credentials provided (usage: \$0 BK_USER BK_PASS SUDO_PASS)" >&2
+  exit 2
+fi
 
 ${feedLine}
 echo "[CX] Updating package lists..."

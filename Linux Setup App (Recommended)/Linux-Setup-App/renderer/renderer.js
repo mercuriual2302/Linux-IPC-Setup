@@ -1,10 +1,5 @@
 // why is javascript so hard? 
 // renderer/renderer.js - UI logic for the Electron app.
-// Adapted from the inline <script> in twincat_setup_gui_v4.html, plus:
-//   • Test Connection button  → main.invoke('ssh:test')
-//   • Fetch From CX button    → main.invoke('ssh:fetch-packages')
-//   • Run Setup / Apply Config → main.invoke('ssh:run-setup' | 'ssh:run-tf1200') + streaming
-//   • View toggle (terminal vs script preview)
 
 
 // Curated package list. Extras from apt-cache search get appended as discovered.
@@ -70,6 +65,7 @@ let selectedFeed = 'trixie-stable';
 let activeSessionId = null;
 let lastScript = '', lastFilename = 'setup.sh';
 let terminalBuffer = '';
+let credsConfirmedOnCx = false; // set true when MyBeckhoff creds are already found on the CX
 
 
 const $ = (id) => document.getElementById(id);
@@ -179,11 +175,13 @@ function updateConnDots() {
 function setGlobalConn(state, text) {
   const badge = $('global-conn');
   const dot = $('global-dot');
+  const sidebar = $('sidebar');
   badge.classList.remove('ok', 'err');
   dot.classList.remove('ok', 'err', 'warn', 'pulse');
   if (state === 'ok') { badge.classList.add('ok'); dot.classList.add('ok'); }
   else if (state === 'err') { badge.classList.add('err'); dot.classList.add('err'); }
   else if (state === 'busy') { dot.classList.add('warn', 'pulse'); }
+  if (sidebar) sidebar.classList.toggle('connected', state === 'ok');
   $('global-conn-text').textContent = text;
 }
 
@@ -202,6 +200,7 @@ $('btn-test').addEventListener('click', async () => {
   if (res.ok) {
     setGlobalConn('ok', 'CONNECTED · ' + opts.host);
     toast('SSH OK - ' + (res.output.split('\n')[0] || 'connected'), 'success');
+    if (window._maybeAutoReadInfo) window._maybeAutoReadInfo();
   } else {
     setGlobalConn('err', 'FAILED');
     toast('SSH failed: ' + res.error, 'error');
@@ -386,7 +385,7 @@ function renderVersionList() {
 
 // Tabs
 const tabs = document.querySelectorAll('.tab');
-const pages = { setup:'page-setup', tf1200:'page-tf1200', cxmgmt:'page-cxmgmt', script:'page-script' };
+const pages = { dashboard:'page-dashboard', setup:'page-setup', services:'page-services', network:'page-network', firewall:'page-firewall', users:'page-users', packages:'page-packages', tf1200:'page-tf1200' };
 tabs.forEach(t => t.addEventListener('click', () => {
   tabs.forEach(x => x.classList.remove('active'));
   t.classList.add('active');
@@ -670,7 +669,7 @@ function showScriptPreview(script, name) {
     setTimeout(addLine, 3);
   }
   addLine();
-  showTab('script');
+  openTerminal();
   setView('script');
 }
 
@@ -681,7 +680,8 @@ $('btn-run-setup').addEventListener('click', async () => {
   const bkUser = $('bk-user').value.trim();
   const bkPass = $('bk-pass').value.trim();
   if (!ipOk(ip)) { toast('Enter a valid CX IP first', 'warn'); showTab('setup'); return; }
-  if (!bkUser || !bkPass) { toast('MyBeckhoff username and password required', 'warn'); showTab('setup'); return; }
+  if (!bkUser) { toast('MyBeckhoff username required', 'warn'); showTab('setup'); return; }
+  if (!bkPass && !credsConfirmedOnCx) { toast('MyBeckhoff password required', 'warn'); showTab('setup'); return; }
 
   const pkgs = [...selectedPkgs];
   if (!confirm(
@@ -692,7 +692,7 @@ $('btn-run-setup').addEventListener('click', async () => {
   )) return;
 
   // Switch to terminal view
-  showTab('script');
+  openTerminal();
   setView('terminal');
   clearTerminal();
   $('prog').classList.add('running');
@@ -733,7 +733,7 @@ $('btn-run-tf1200').addEventListener('click', async () => {
 
   if (!confirm(`Apply TF1200 config to ${ip}?\n\nstartUrl: ${hmiUrl}\n\nThis writes /home/TF1200/.config/TF1200-UI-Client/config.json and REBOOTS the CX.`)) return;
 
-  showTab('script');
+  openTerminal();
   setView('terminal');
   clearTerminal();
   $('prog').classList.add('running');
@@ -894,13 +894,26 @@ function getCxMgmtConn() {
 // Tab 3 credentials are kept in sync by the bidirectional propagateCreds().
 // No extra tab-click handler needed.
 
+function openTerminal() {
+  const d = $('term-drawer');
+  if (!d) return;
+  d.classList.add('open');
+  const c = $('term-chevron'); if (c) c.textContent = '▾';
+}
 function goToTerminal(sessionId) {
-  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.querySelector('[data-tab="script"]').classList.add('active');
-  $('page-script').classList.add('active');
+  openTerminal();
   if (sessionId) $('session-status').textContent = `session: ${sessionId}`;
 }
+(function initTermDrawer() {
+  const bar = $('term-bar');
+  if (bar) bar.addEventListener('click', () => {
+    const d = $('term-drawer');
+    d.classList.toggle('open');
+    const c = $('term-chevron'); if (c) c.textContent = d.classList.contains('open') ? '▾' : '▸';
+  });
+  const openBtn = $('btn-open-term');
+  if (openBtn) openBtn.addEventListener('click', openTerminal);
+})();
 
 // Network configurator
 toggleGroupInit('net-iface-toggle');
@@ -1262,7 +1275,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
     if (!conn.host) { toast('Enter the CX IP first', 'warn'); return; }
 
     // Switch to the live terminal and prime the progress bar (mirrors RUN SETUP).
-    showTab('script');
+    openTerminal();
     setView('terminal');
     clearTerminal();
     $('prog').classList.add('running');
@@ -1339,7 +1352,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
   async function runAction(action, extra, okMsg, failMsg) {
     const conn = getCxMgmtConn();
     if (!conn.host) { toast('Enter the CX IP first', 'warn'); return null; }
-    showTab('script'); setView('terminal'); clearTerminal();
+    openTerminal(); setView('terminal'); clearTerminal();
     $('prog').classList.add('running'); $('prog').style.width = '8%';
     let res;
     try { res = await window.api.userMgmt({ ...conn, action, ...extra }); }
@@ -1416,7 +1429,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
   });
 
   // Lazy-load the account list the first time the CX Management tab is opened
-  const cxTab = document.querySelector('.tab[data-tab="cxmgmt"]');
+  const cxTab = document.querySelector(`.tab[data-tab="users"]`);
   if (cxTab) cxTab.addEventListener('click', () => {
     const conn = getCxMgmtConn();
     if (conn.host && !$('um-rows').children.length) refreshUsers();
@@ -1592,13 +1605,17 @@ $('btn-validate-creds').addEventListener('click', async () => {
   btnInit.addEventListener('click', readInfo);
   btnHeader.addEventListener('click', readInfo);
 
-  // Auto-read when switching to the CX Management tab if IP is set and panel is empty
+  // Auto-read whenever the CX is connected and the panel hasn't been loaded yet -
+  // called both when switching to the Dashboard and right after TEST CONNECTION succeeds
+  function maybeAutoReadInfo() {
+    const conn = getCxMgmtConn();
+    if (conn.host && $('info-body').style.display === 'none') readInfo();
+  }
+  window._maybeAutoReadInfo = maybeAutoReadInfo;
+
   document.querySelectorAll('.tab').forEach(t => {
-    if (t.dataset.tab === 'cxmgmt') {
-      t.addEventListener('click', () => {
-        const conn = getCxMgmtConn();
-        if (conn.host && $('info-body').style.display === 'none') readInfo();
-      });
+    if (t.dataset.tab === 'dashboard') {
+      t.addEventListener('click', maybeAutoReadInfo);
     }
   });
 })();
@@ -1633,8 +1650,16 @@ $('btn-validate-creds').addEventListener('click', async () => {
     // If credentials are confirmed on the CX, mark the password field as pre-set
     // so validation isn't mandatory before running setup
     if (passEl && !passEl.value) passEl.placeholder = '(set on CX - leave blank to keep)';
+    credsConfirmedOnCx = true;
     _credsCached = true;
   }
+
+  // If the user starts typing their own password, they're overriding the
+  // on-CX creds - require the normal validation again
+  const passField = $('bk-pass');
+  if (passField) passField.addEventListener('input', () => {
+    if (passField.value) credsConfirmedOnCx = false;
+  });
 
   // Hook into the existing test connection button - read creds after success
   const testBtn = $('btn-test');
@@ -1649,6 +1674,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
   clearBtn.addEventListener('click', () => {
     banner.style.display = 'none';
     _credsCached = false;
+    credsConfirmedOnCx = false;
     const passEl = $('bk-pass');
     if (passEl) passEl.placeholder = '••••••••';
   });
@@ -1726,7 +1752,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
     } else {
       if (!confirm(`Switch feed from ${current} to ${selectedFeed} and run apt update?`)) return;
     }
-    showTab('script'); setView('terminal'); clearTerminal();
+    openTerminal(); setView('terminal'); clearTerminal();
     $('prog').classList.add('running'); $('prog').style.width = '8%';
     const res = await window.api.switchFeed({ ...conn, feed: selectedFeed });
     $('prog').classList.remove('running'); $('prog').style.width = '100%';
@@ -1743,7 +1769,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
   updateBtn.addEventListener('click', async () => {
     const conn = getCxMgmtConn();
     if (!conn.host) { toast('Enter the CX IP first', 'warn'); return; }
-    showTab('script'); setView('terminal'); clearTerminal();
+    openTerminal(); setView('terminal'); clearTerminal();
     $('prog').classList.add('running'); $('prog').style.width = '8%';
     const res = await window.api.updateFeed(conn);
     $('prog').classList.remove('running'); $('prog').style.width = '100%';
@@ -2042,7 +2068,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
       const pass = reinitPass ? reinitPass.value.trim() : '1';
       if (!pass) { toast('Enter a new TF2000 password', 'warn'); return; }
       if (!confirm('This wipes the existing TF2000 HMI Server config and reinitialises it. Continue?')) return;
-      showTab('script'); setView('terminal'); clearTerminal();
+      openTerminal(); setView('terminal'); clearTerminal();
       $('prog').classList.add('running'); $('prog').style.width = '8%';
       const res = await window.api.serviceMgmt({ ...conn, action: 'reinit', service: 'TcHmiSrv', tf2000Pass: pass })
         .catch(e => ({ ok: false, error: String(e.message || e) }));
@@ -2054,7 +2080,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
 
   // Auto-load when switching to CX Management tab
   document.querySelectorAll('.tab').forEach(t => {
-    if (t.dataset.tab === 'cxmgmt') {
+    if (t.dataset.tab === 'services') {
       t.addEventListener('click', () => {
         const conn = getCxMgmtConn();
         if (conn.host && grid.children.length === 0) loadServices();
@@ -2075,23 +2101,70 @@ $('btn-validate-creds').addEventListener('click', async () => {
   let busy = false;
   let devices = [];
   let linuxOnly = true;
+  let pendingDevice = null; // { ip, mac, type, iface } currently shown in the connect panel
 
-  const pass = () => $('cx-pass').value || '1';
-  const open = () => { overlay.classList.add('open'); run(); };
   const close = () => { overlay.classList.remove('open'); };
 
   const btnFilter = $('scan-filter');
+
+  // contextual password prompt - only appears once a device has been picked
+  const connectPanel = $('scan-connect');
+  const connectIp    = $('scan-connect-ip');
+  const connectMac   = $('scan-connect-mac');
+  const connectPass  = $('scan-connect-pass');
+  const connectGo    = $('scan-connect-go');
+  const connectBack  = $('scan-connect-back');
+  const actionsRow   = $('scan-actions');
+
+  function showConnectPrompt(d, ip) {
+    pendingDevice = { ip, mac: d.mac, type: d.type, iface: d.iface };
+    connectIp.textContent = ip;
+    connectMac.textContent = d.mac + (d.type === 'direct' ? ' · direct link' : ' · ' + d.iface);
+    connectPass.value = $('cx-pass').value || '';
+    listEl.style.display = 'none';
+    if (actionsRow) actionsRow.style.display = 'none';
+    connectPanel.style.display = 'flex';
+    subEl.textContent = 'Enter the Administrator password to connect';
+    connectPass.focus();
+  }
+
+  function hideConnectPrompt() {
+    connectPanel.style.display = 'none';
+    listEl.style.display = '';
+    if (actionsRow) actionsRow.style.display = '';
+    pendingDevice = null;
+    applyFilter();
+  }
+
+  function confirmConnect() {
+    if (!pendingDevice) return;
+    const password = connectPass.value || '1';
+    propagateCreds(pendingDevice.ip, password);
+    toast(`IP set to ${pendingDevice.ip}`, 'success');
+    close();
+    $('btn-test').click();
+  }
+
+  if (connectBack) connectBack.addEventListener('click', hideConnectPrompt);
+  if (connectGo)   connectGo.addEventListener('click', confirmConnect);
+  if (connectPass) connectPass.addEventListener('keydown', (e) => { if (e.key === 'Enter') confirmConnect(); });
+
+  const open = () => {
+    overlay.classList.add('open');
+    hideConnectPrompt();
+    run();
+  };
 
   function applyFilter() {
     const visible = linuxOnly
       ? devices.filter(d => d.type === 'direct' || d.os === 'linux')
       : devices;
     if (btnFilter) {
-      btnFilter.textContent = linuxOnly ? 'LINUX ONLY' : 'ALL DEVICES';
-      btnFilter.classList.toggle('active', linuxOnly);
+      btnFilter.checked = linuxOnly;
+      btnFilter.title = linuxOnly ? 'Showing Linux devices only - untick to show all' : 'Showing all devices - tick to filter to Linux only';
     }
     if (!visible.length && devices.length) {
-      listEl.innerHTML = `<div style="font-family:var(--tc-mono);font-size:11px;color:var(--tc-muted);padding:.5rem 0">No Linux IPCs found. Toggle to show all Beckhoff devices.</div>`;
+      listEl.innerHTML = `<div style="font-family:var(--tc-mono);font-size:11px;color:var(--tc-muted);padding:.5rem 0">No Linux IPCs found. Untick "Linux only" to show all Beckhoff devices.</div>`;
     } else {
       listEl.innerHTML = visible.map((d) => deviceRow(d, devices.indexOf(d))).join('');
     }
@@ -2154,9 +2227,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
     if (!d) return;
 
     if (btn.dataset.act === 'use') {
-      propagateCreds(d.ip, pass());
-      toast(`IP set to ${d.ip}`, 'success');
-      close();
+      showConnectPrompt(d, d.ip);
       return;
     }
 
@@ -2166,9 +2237,9 @@ $('btn-validate-creds').addEventListener('click', async () => {
     try { r = await window.api.resolveDirectLink({ mac: d.mac, laptopIp: d.laptopIp }); }
     catch (err) { r = { ok: false, error: String(err.message || err) }; }
     if (r && r.ok) {
-      propagateCreds(r.ip, pass());
-      toast(`Direct-link CX found at ${r.ip}`, 'success');
-      close();
+      btn.disabled = false;
+      btn.textContent = 'IDENTIFY';
+      showConnectPrompt(d, r.ip);
     } else {
       btn.disabled = false;
       btn.textContent = 'IDENTIFY';
@@ -2179,6 +2250,6 @@ $('btn-validate-creds').addEventListener('click', async () => {
   if (btnScan)   btnScan.addEventListener('click', open);
   if (btnClose)  btnClose.addEventListener('click', close);
   if (btnRescan) btnRescan.addEventListener('click', run);
-  if (btnFilter) btnFilter.addEventListener('click', () => { linuxOnly = !linuxOnly; applyFilter(); });
+  if (btnFilter) btnFilter.addEventListener('change', () => { linuxOnly = btnFilter.checked; applyFilter(); });
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
 })();
