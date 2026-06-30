@@ -2100,8 +2100,13 @@ $('btn-validate-creds').addEventListener('click', async () => {
   let devices = [];
   let linuxOnly = true;
 
-  const pass = () => $('cx-pass').value || '1';
-  const open = () => { overlay.classList.add('open'); run(); };
+  const scanPassEl = $('scan-pass');
+  const pass = () => (scanPassEl && scanPassEl.value) || $('cx-pass').value || '1';
+  const open = () => {
+    overlay.classList.add('open');
+    if (scanPassEl) scanPassEl.value = $('cx-pass').value || '';
+    run();
+  };
   const close = () => { overlay.classList.remove('open'); };
 
   const btnFilter = $('scan-filter');

@@ -404,6 +404,11 @@ html:not([data-theme="dark"]) .apt-creds-banner{background:rgba(0,120,80,.06);bo
 .scan-close{background:none;border:none;color:var(--tc-muted);font-size:14px;cursor:pointer;padding:.2rem .4rem;border-radius:4px;transition:all .15s}
 .scan-close:hover{color:var(--tc-danger)}
 .scan-sub{padding:.8rem 1.25rem;font-family:var(--tc-mono);font-size:11px;color:var(--tc-muted);border-bottom:1px solid var(--tc-border)}
+.scan-passrow{padding:.8rem 1.25rem;border-bottom:1px solid var(--tc-border);display:flex;flex-direction:column;gap:.35rem}
+.scan-passrow label{font-family:var(--tc-mono);font-size:10px;letter-spacing:.06em;color:var(--tc-muted)}
+.scan-passrow input{background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .7rem;font-family:var(--tc-mono);font-size:13px;color:var(--tc-text);max-width:220px}
+.scan-passrow input:focus{outline:none;border-color:var(--tc-accent2)}
+.scan-passrow .hint{margin:0}
 .scan-list{padding:.75rem 1.25rem;overflow-y:auto;display:flex;flex-direction:column;gap:.6rem;flex:1;min-height:60px}
 .scan-card{display:flex;align-items:center;gap:.75rem;padding:.7rem .85rem;background:var(--tc-surface2);border:1px solid var(--tc-border);border-radius:6px}
 .scan-card-main{flex:1;min-width:0}
