@@ -60,6 +60,8 @@ contextBridge.exposeInMainWorld('api', {
   sftpMkdirLocal:   (localPath) => ipcRenderer.invoke('sftp:mkdir-local', { localPath }),
   sftpDeleteLocal:  (localPath, isDir) => ipcRenderer.invoke('sftp:delete-local', { localPath, isDir }),
   sftpStatLocal:    (localPath) => ipcRenderer.invoke('sftp:stat-local', { localPath }),
+  sftpPreviewLocal:  (localPath) => ipcRenderer.invoke('sftp:preview-local', { localPath }),
+  sftpPreviewRemote: (sessionId, remotePath) => ipcRenderer.invoke('sftp:preview-remote', { sessionId, remotePath }),
   sftpPickLocalDir: () => ipcRenderer.invoke('sftp:pick-local-dir'),
   fsJoin:           (base, name) => ipcRenderer.invoke('fs:join', { base, name }),
   fsDirname:        (p) => ipcRenderer.invoke('fs:dirname', { p }),

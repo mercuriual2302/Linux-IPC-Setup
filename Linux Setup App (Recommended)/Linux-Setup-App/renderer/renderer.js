@@ -2371,6 +2371,29 @@ $('btn-validate-creds').addEventListener('click', async () => {
     remote: { path: '', entries: [], pathInput: $('remote-path'), listEl: $('remote-list') }
   };
 
+  const previewOverlay = $('preview-overlay');
+  const previewTitle = $('preview-title');
+  const previewBody = $('preview-body');
+  const previewClose = $('preview-close');
+  if (previewClose) previewClose.addEventListener('click', () => previewOverlay.classList.remove('open'));
+  if (previewOverlay) previewOverlay.addEventListener('click', (e) => { if (e.target === previewOverlay) previewOverlay.classList.remove('open'); });
+
+  async function previewFile(side, entry) {
+    previewTitle.textContent = entry.name;
+    previewBody.textContent = 'Loading...';
+    previewOverlay.classList.add('open');
+    let res;
+    if (side === 'local') {
+      const full = (await window.api.fsJoin(panes.local.path, entry.name)).path;
+      res = await window.api.sftpPreviewLocal(full);
+    } else {
+      if (!sessionId) { previewOverlay.classList.remove('open'); toast('Connect first', 'warn'); return; }
+      const full = remoteJoin(panes.remote.path, entry.name);
+      res = await window.api.sftpPreviewRemote(sessionId, full);
+    }
+    previewBody.textContent = res.ok ? res.content : (res.error || 'Could not preview this file.');
+  }
+
   function fmtSize(n) {
     if (!n) return '0 B';
     if (n < 1024) return n + ' B';
@@ -2408,6 +2431,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
     const icon = isDir ? '▣' : '▫';
     const sizeStr = isDir ? '' : fmtSize(entry.size);
     const dateStr = isDir ? '' : fmtDate(entry.mtime);
+    const viewBtn = isDir ? '' : `<button class="sftp-view-btn" data-act="preview" data-idx="${idx}" title="Preview">⊙</button>`;
     const xferBtn = isDir ? '' : (side === 'local'
       ? `<button class="sftp-xfer-btn" data-act="upload" data-idx="${idx}" title="Upload to CX">→</button>`
       : `<button class="sftp-xfer-btn" data-act="download" data-idx="${idx}" title="Download to local">←</button>`);
@@ -2416,7 +2440,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
         <span class="sftp-row-name" title="${escapeHtml(entry.name)}">${icon} ${escapeHtml(entry.name)}</span>
         <span class="sftp-row-size">${sizeStr}</span>
         <span class="sftp-row-date">${dateStr}</span>
-        <span class="sftp-row-actions">${xferBtn}<button class="sftp-del-btn" data-act="delete" data-idx="${idx}" title="Delete">✕</button></span>
+        <span class="sftp-row-actions">${viewBtn}${xferBtn}<button class="sftp-del-btn" data-act="delete" data-idx="${idx}" title="Delete">✕</button></span>
       </div>`;
   }
   function upRowHtml() {
@@ -2444,7 +2468,14 @@ $('btn-validate-creds').addEventListener('click', async () => {
   async function loadRemote(targetPath) {
     if (!sessionId) return;
     const res = await window.api.sftpList(sessionId, targetPath);
-    if (!res.ok) { toast('Could not list remote folder: ' + (res.error || 'unknown'), 'error'); return; }
+    if (!res.ok) {
+      const isPerm = /permission denied/i.test(res.error || '');
+      const msg = isPerm
+        ? "Permission denied. SFTP has no sudo - it can only read what the connected account can already access directly. This folder belongs to another user; use Shell (sudo ls/cat ...) to reach it instead."
+        : 'Could not list remote folder: ' + (res.error || 'unknown');
+      toast(msg, 'error');
+      return;
+    }
     panes.remote.path = res.path;
     panes.remote.entries = res.entries;
     render('remote');
@@ -2577,6 +2608,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
         if (btn.dataset.act === 'upload') transfer('local', entry);
         else if (btn.dataset.act === 'download') transfer('remote', entry);
         else if (btn.dataset.act === 'delete') deleteEntry(side, entry);
+        else if (btn.dataset.act === 'preview') previewFile(side, entry);
         return;
       }
       const row = e.target.closest('.sftp-row');

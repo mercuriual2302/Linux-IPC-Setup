@@ -527,6 +527,49 @@ ipcMain.handle('sftp:stat-local', async (_evt, { localPath }) => {
   catch (_) { return { ok: true, exists: false }; }
 });
 
+// File preview - text only, size-capped so a huge log or binary doesn't choke the renderer
+const MAX_PREVIEW_BYTES = 512 * 1024;
+function looksBinary(buf) {
+  const len = Math.min(buf.length, 8000);
+  for (let i = 0; i < len; i++) { if (buf[i] === 0) return true; }
+  return false;
+}
+
+ipcMain.handle('sftp:preview-local', async (_evt, { localPath }) => {
+  try {
+    const st = await fs.promises.stat(localPath);
+    if (st.size > MAX_PREVIEW_BYTES) {
+      return { ok: false, error: `File is ${(st.size / 1024).toFixed(0)} KB - too large to preview (limit 512 KB). Download it instead.` };
+    }
+    const buf = await fs.promises.readFile(localPath);
+    if (looksBinary(buf)) return { ok: false, error: "This looks like a binary file and can't be shown as text." };
+    return { ok: true, content: buf.toString('utf8') };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+ipcMain.handle('sftp:preview-remote', async (_evt, { sessionId, remotePath }) => {
+  const s = sftpSessions.get(sessionId);
+  if (!s) return { ok: false, error: 'not connected' };
+  try {
+    const stats = await sftpManager.stat(s.sftp, remotePath);
+    if (stats && stats.size > MAX_PREVIEW_BYTES) {
+      return { ok: false, error: `File is ${(stats.size / 1024).toFixed(0)} KB - too large to preview (limit 512 KB). Download it instead.` };
+    }
+    // reuse the same proven SFTP download path into a scratch temp file, then read it back -
+    // avoids writing a second, separately-tested way of pulling bytes off the CX
+    const tmpPath = path.join(os.tmpdir(), `lic-preview-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    await s.mgr.sftpDownload(remotePath, tmpPath, s.sftp, () => {});
+    const buf = await fs.promises.readFile(tmpPath);
+    fs.promises.unlink(tmpPath).catch(() => {});
+    if (looksBinary(buf)) return { ok: false, error: "This looks like a binary file and can't be shown as text." };
+    return { ok: true, content: buf.toString('utf8') };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
 ipcMain.handle('sftp:pick-local-dir', async () => {
   const res = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] });
   if (res.canceled || !res.filePaths.length) return { ok: false, cancelled: true };

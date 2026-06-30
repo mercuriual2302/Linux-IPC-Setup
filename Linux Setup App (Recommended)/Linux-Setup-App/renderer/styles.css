@@ -533,3 +533,13 @@ html:not([data-theme="dark"]) .apt-creds-banner{background:rgba(0,120,80,.06);bo
 .sftp-xfer-bar-wrap{flex:1;height:6px;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:3px;overflow:hidden}
 .sftp-xfer-bar{height:100%;background:var(--tc-accent2);transition:width .2s}
 .sftp-xfer-pct{flex:0 0 36px;text-align:right;color:var(--tc-accent2)}
+
+/* sftp file preview button + modal */
+.sftp-view-btn{background:transparent;border:1px solid var(--tc-border);border-radius:3px;color:var(--tc-muted);font-size:11px;width:20px;height:20px;line-height:1;cursor:pointer;transition:all .15s}
+.sftp-view-btn:hover{border-color:var(--tc-accent2);color:var(--tc-accent2)}
+.preview-overlay{position:fixed;inset:0;background:rgba(0,0,0,.78);z-index:10000;display:none;align-items:center;justify-content:center;backdrop-filter:blur(4px)}
+.preview-overlay.open{display:flex}
+.preview-modal{background:var(--tc-surface);border:1px solid var(--tc-border);border-radius:8px;width:min(800px,92vw);max-height:80vh;display:flex;flex-direction:column;overflow:hidden}
+.preview-head{display:flex;align-items:center;justify-content:space-between;padding:1rem 1.25rem;border-bottom:1px solid var(--tc-border)}
+.preview-title{font-family:var(--tc-mono);font-size:12px;font-weight:700;letter-spacing:.05em;color:var(--tc-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.preview-body{margin:0;padding:1rem 1.25rem;overflow:auto;font-family:var(--tc-mono);font-size:11px;line-height:1.5;color:var(--tc-text);white-space:pre-wrap;word-break:break-word;background:var(--tc-bg)}
