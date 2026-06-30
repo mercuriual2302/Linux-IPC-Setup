@@ -8,9 +8,11 @@ Built with Electron. Tested on CX9240 running Debian trixie (arm64).
 
 ## What it does
 
-Connects to a target CX over SSH and runs the full provisioning sequence automatically: writes MyBeckhoff APT credentials, sets the feed channel, installs the TwinCAT 3 runtime and any optional packages you select, initialises TF2000 HMI Server if needed, configures TF1200 UI Client, and reboots. Output streams live into the built-in terminal so you can watch it happen.
+Connects to a target CX over SSH and runs the full provisioning sequence automatically: writes MyBeckhoff APT credentials, sets the feed channel, installs the TwinCAT 3 runtime and any optional packages you select, initialises TF2000 HMI Server if needed, configures TF1200 UI Client, and reboots. Output streams live so you can watch it happen.
 
-There is also a management tab for post-provisioning tasks: network configuration, firewall management, user and password management, SSH key installation, package updates, APT feed switching, and a live system info dashboard.
+Beyond initial setup there's a full set of post-provisioning tools: network configuration, firewall management, user and password management, SSH key installation, package updates, APT feed switching, a live system info dashboard, a device discovery scanner for finding a CX with no known IP, a live interactive shell, and a dual-pane SFTP file browser.
+
+If the CX itself has no internet access, the app can offer to route package downloads through your own laptop's connection for that run.
 
 ---
 
@@ -56,53 +58,57 @@ Output goes to `dist/`. The app icon is read from `build/icon.ico`.
 
 ---
 
-## Tabs
+## Layout
 
-### Full Setup
-The main provisioning flow. Enter the CX IP, Administrator password, and MyBeckhoff credentials. Choose a feed channel (`trixie-stable` recommended, `trixie-unstable` only if Beckhoff support tells you to). Pick your packages, optionally pin specific versions, and click Run.
+The app is one window. A connection bar runs across the top, enter the CX IP and Administrator password once and every view uses it. A Scan button next to it finds a CX on your network or wired directly to your laptop, even if you don't know its IP yet. A sidebar on the left holds every view, grouped by what they're for:
+
+- **Overview** - Dashboard, a live read-out of the connected CX
+- **Provision** - Setup, the full first-time provisioning run
+- **Manage** - Services, Network, Firewall, Users, Packages
+- **Configure** - TF1200 UI Client
+- **Tools** - Shell, Files
+
+A collapsible terminal drawer sits at the bottom of the window and shows live output from whatever action you run. This is separate from the Shell tool, the drawer is a passive log of what the app itself is doing, Shell is a real interactive terminal session you type into yourself.
+
+### Dashboard
+Live system info: hostname, uptime, kernel, TwinCAT version, APT feed, storage, memory, network interfaces, and service status. Loads automatically once you're connected.
+
+### Setup
+The main provisioning flow. Enter your MyBeckhoff credentials, choose a feed channel (`trixie-stable` recommended, `trixie-unstable` only if Beckhoff support tells you to), pick your packages, optionally pin specific versions, and run.
 
 Always installed:
 - `tc31-xar-um` (TwinCAT 3 XAR runtime)
 - `console-setup`
 
-Optional packages are fetched live from the connected feed via `apt-cache search`, so the list always reflects what is actually available.
+Optional packages are fetched live from the connected feed, so the list always reflects what's actually available.
 
-Special handling for TF2000: if the HMI server has already been initialised from a previous run, setup skips re-initialisation and just ensures the service is running. You can run the full setup multiple times without wiping your HMI project.
+If the HMI server has already been initialised from a previous run, setup skips re-initialisation and just ensures the service is running, so you can run setup more than once without wiping your HMI project. The same goes for MyBeckhoff credentials, if they're already saved on the CX from a past run, you don't need to retype the password to run setup again.
 
 You can also generate a standalone `.sh` script instead of running live, which works from any bash terminal with `sshpass` installed.
 
-After a successful test connection, the app checks whether MyBeckhoff credentials already exist on the CX (`/etc/apt/auth.conf.d/bhf.conf`) and pre-fills the username field if they do. The password is never read back.
+### Services, Network, Firewall, Users, Packages
+Day to day management once a CX is already set up. Restart services, change network settings, manage the firewall, add or remove users, switch the APT feed, and check for package updates, all without running a full setup again.
 
-### TF1200 Config
-Configures TF1200 UI Client on an already-provisioned CX. Set the HMI URL, toggle kiosk mode, manage Chromium command-line switches, and apply the config via SSH. A timestamped backup of the existing config is created before any changes are made.
+### TF1200 UI Client
+Configures the kiosk browser that shows your HMI on a screen plugged into the CX. Reads the existing config first so nothing gets overwritten by accident, and takes a timestamped backup before applying changes.
 
-The **Read from CX** button reads the current `config.json` from the CX and populates all the editor fields before you make any changes, so nothing gets accidentally overwritten.
+### Shell
+A real interactive terminal session over SSH. Things like `vim`, `top`, `journalctl -f`, and sudo password prompts all work properly here, this isn't a one-shot command box, it's a full terminal. The session stays alive while you switch to other views and back.
 
-### CX Management
-Post-provisioning ops without re-running the full setup.
+### Files
+A dual-pane SFTP browser, your laptop on one side and the CX on the other. Upload, download, preview text files inline, create folders, and delete things, with a confirmation before anything gets overwritten. SFTP has no concept of `sudo`, so it can only reach files the connected account already has permission to read, anything restricted to another user needs Shell instead.
 
-- **CX Information** - live dashboard showing hostname, uptime, kernel, TwinCAT version, APT feed channel, storage, memory, network interfaces, and service status. Reads in a single SSH session.
-- **Network** - configure `end0` or `end1` as DHCP or static, applied immediately via `systemd-networkd`
-- **Firewall** - manage `nftables` rules, with pre-configured toggles for ADS, OPC-UA, HMI, and SSH ports
-- **APT Feed Manager** - switch between `trixie-stable` and `trixie-unstable` without running a full setup, or just run `apt update` against the current feed
-- **User Management** - list local accounts, change passwords, add and remove users, grant or revoke sudo, lock and unlock accounts, install SSH public keys, force password change at next login
-- **Package Updates** - check for upgrades against the Beckhoff feed and selectively upgrade packages without running a full setup
-- **Power** - shutdown, restart, or restart just the TwinCAT runtime from the header menu, available from any tab
+### Device discovery
+Press Scan in the connection bar to find a CX without typing its IP. Works two ways: a CX on the same network as your laptop is found by its MAC address, a CX wired directly to your laptop with no IP assigned yet is found over its link-local address. Devices are tagged Linux or Windows so you don't pick the wrong one, and picking a device asks for its password right there rather than reusing whatever's already in the connection bar.
 
-### Terminal
-Live SSH output for every operation. ANSI colour codes are rendered so the output looks the same as a real terminal. A progress bar tracks long-running operations. Generated scripts can be copied or saved from here.
+### Internet access for the CX
+If Setup or credential validation detects the CX can't reach the Beckhoff package feed, the app offers to route that traffic through your own laptop's internet connection instead. You're always asked first, nothing happens automatically. Once you've answered for a given CX, the same answer is reused for the rest of that session, you won't be asked twice for the same unit.
 
 ---
 
 ## Connection profiles
 
-The **Profiles** button in the header saves and loads named CX configurations (name, IP, Administrator password, optionally MyBeckhoff credentials). Profiles are stored locally in the app's user data folder and are never committed to the repo. Click a saved profile to load all fields at once across every tab.
-
----
-
-## Credential sync
-
-All tabs share the same connection credentials. Entering an IP or password in any tab updates all the others automatically. The HMI URL in the TF1200 tab auto-fills from the IP unless you have manually set a different one.
+The Profiles button in the connection bar saves and loads named CX configurations (name, IP, Administrator password, optionally MyBeckhoff credentials). Profiles are stored locally in the app's user data folder and are never committed to the repo. Click a saved profile to load every field at once.
 
 ---
 
@@ -120,8 +126,11 @@ Linux Setup App (Recommended)/
     main.js           -- Electron main process, all IPC handlers
     preload.js        -- contextBridge, exposes window.api to renderer
     src/
-      ssh-manager.js    -- node-ssh wrapper
+      ssh-manager.js    -- node-ssh wrapper (connect, exec, shell, SFTP transfers)
       script-builder.js -- generates the bash scripts that run on the CX
+      sftp-manager.js   -- SFTP listing, mkdir, delete, realpath
+      discovery.js      -- network and direct-link device discovery
+      socks-proxy.js    -- hand-rolled SOCKS5 server for the laptop-as-proxy option
     renderer/
       index.html        -- app shell and all UI
       renderer.js       -- event handlers and SSH wiring
@@ -139,4 +148,5 @@ Linux Setup Guide.docx  -- end user guide
 - If you change the CX IP via the Network Configurator while connected through that interface, the SSH session will drop. That is expected.
 - Shutting down the CX from the Power menu is a full ACPI power-off. It will not come back on its own. Use Restart if you want it to come back automatically.
 - The `trixie-unstable` feed should only be used if Beckhoff support specifically instructs you to. Stable is the right choice for production deployments.
+- SFTP needs the `sftp-server` subsystem enabled on the CX's sshd. It's present on the standard CX9240 image, but if you're working with a more stripped-down image and Files won't connect, check `/etc/ssh/sshd_config` for a `Subsystem sftp ...` line.
 - Connection profiles are stored in `%APPDATA%\linux-ipc0-setup-console\cx-profiles.json` on Windows. They are not synced to any repo.
