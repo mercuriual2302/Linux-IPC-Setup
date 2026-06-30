@@ -35,6 +35,7 @@ if (!gotLock) {
 
 let mainWindow = null;
 const activeSessions = new Map(); // sessionId → SSHManager
+const shellSessions = new Map(); // sessionId → { mgr, stream } - live PTY sessions for the Shell view
 
 
 // Window creation
@@ -76,6 +77,12 @@ function createWindow() {
       try { mgr.dispose(); } catch (_) {}
     }
     activeSessions.clear();
+    // Tear down any live shell sessions
+    for (const { mgr, stream } of shellSessions.values()) {
+      try { stream.end(); } catch (_) {}
+      try { mgr.dispose(); } catch (_) {}
+    }
+    shellSessions.clear();
   });
 }
 
@@ -311,6 +318,62 @@ ipcMain.handle('ssh:cancel', async (_evt, { sessionId }) => {
   mgr.dispose();
   activeSessions.delete(sessionId);
   sendToRenderer('ssh:status', { sessionId, status: 'cancelled', message: 'Cancelled by user' });
+  return { ok: true };
+});
+
+
+// Live shell - interactive PTY session for the Shell view.
+// Opens a real shell channel (not a one-shot exec), streams raw bytes both
+// ways so things like vim, top, journalctl -f and sudo prompts work properly.
+ipcMain.handle('shell:open', async (_evt, { host, username, password, port, cols, rows }) => {
+  const sessionId = `shell-${Date.now()}`;
+  const mgr = new SSHManager();
+  try {
+    await mgr.connect({ host, username: username || 'Administrator', password, port: port || 22 });
+    const stream = await mgr.shell({ cols: cols || 80, rows: rows || 24 });
+    shellSessions.set(sessionId, { mgr, stream });
+
+    stream.on('data', (chunk) => {
+      sendToRenderer('shell:data', { sessionId, chunk });
+    });
+    if (stream.stderr) {
+      stream.stderr.on('data', (chunk) => {
+        sendToRenderer('shell:data', { sessionId, chunk });
+      });
+    }
+    stream.on('close', () => {
+      sendToRenderer('shell:exit', { sessionId });
+      shellSessions.delete(sessionId);
+      mgr.dispose();
+    });
+
+    return { ok: true, sessionId };
+  } catch (err) {
+    mgr.dispose();
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+// Keystrokes are high-frequency - send/on rather than invoke to skip the
+// promise round trip per character.
+ipcMain.on('shell:input', (_evt, { sessionId, data }) => {
+  const session = shellSessions.get(sessionId);
+  if (session && session.stream && session.stream.writable) session.stream.write(data);
+});
+
+ipcMain.on('shell:resize', (_evt, { sessionId, cols, rows }) => {
+  const session = shellSessions.get(sessionId);
+  if (session && session.stream) {
+    try { session.stream.setWindow(rows, cols, 0, 0); } catch (_) {}
+  }
+});
+
+ipcMain.handle('shell:close', async (_evt, { sessionId }) => {
+  const session = shellSessions.get(sessionId);
+  if (!session) return { ok: false, error: 'no such session' };
+  try { session.stream.end(); } catch (_) {}
+  session.mgr.dispose();
+  shellSessions.delete(sessionId);
   return { ok: true };
 });
 

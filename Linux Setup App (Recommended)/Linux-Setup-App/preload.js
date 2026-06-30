@@ -4,7 +4,7 @@
 // preload.js runs in isolated context, bridges renderer ↔ main
 const { contextBridge, ipcRenderer } = require('electron');
 
-const VALID_EVENTS = ['ssh:output', 'ssh:status'];
+const VALID_EVENTS = ['ssh:output', 'ssh:status', 'shell:data', 'shell:exit'];
 
 contextBridge.exposeInMainWorld('api', {
   // one-shot invokes - existing
@@ -39,6 +39,12 @@ contextBridge.exposeInMainWorld('api', {
   runVerify:      (opts) => ipcRenderer.invoke('cx:verify', opts),
   discoverDevices:   ()     => ipcRenderer.invoke('cx:discover'),
   resolveDirectLink: (opts) => ipcRenderer.invoke('cx:resolve-direct', opts),
+
+  // Live shell (interactive PTY) - input/resize are fire-and-forget, no promise round trip
+  openShell:      (opts) => ipcRenderer.invoke('shell:open', opts),
+  sendShellInput: (sessionId, data) => ipcRenderer.send('shell:input', { sessionId, data }),
+  resizeShell:    (sessionId, cols, rows) => ipcRenderer.send('shell:resize', { sessionId, cols, rows }),
+  closeShell:     (sessionId) => ipcRenderer.invoke('shell:close', { sessionId }),
 
   // streaming events
   on: (channel, cb) => {

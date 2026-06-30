@@ -493,3 +493,10 @@ html:not([data-theme="dark"]) .apt-creds-banner{background:rgba(0,120,80,.06);bo
   .connbar-pass{width:90px}
   .sidebar{width:168px}
 }
+/* live shell (interactive PTY) */
+.shell-toolbar{display:flex;align-items:center;gap:.6rem;padding:0 1.5rem .75rem}
+.shell-toolbar .btn-run{padding:.6rem 1rem;font-size:11px}
+.shell-term-wrap{padding:0 1.5rem 1.5rem}
+#shell-term{height:480px;background:#000;border:1px solid var(--tc-border);padding:8px}
+#shell-term .xterm{height:100%}
+#shell-term .xterm-viewport{overflow-y:auto}

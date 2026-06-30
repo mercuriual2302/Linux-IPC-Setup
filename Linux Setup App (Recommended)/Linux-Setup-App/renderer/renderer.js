@@ -385,7 +385,7 @@ function renderVersionList() {
 
 // Tabs
 const tabs = document.querySelectorAll('.tab');
-const pages = { dashboard:'page-dashboard', setup:'page-setup', services:'page-services', network:'page-network', firewall:'page-firewall', users:'page-users', packages:'page-packages', tf1200:'page-tf1200' };
+const pages = { dashboard:'page-dashboard', setup:'page-setup', services:'page-services', network:'page-network', firewall:'page-firewall', users:'page-users', packages:'page-packages', tf1200:'page-tf1200', shell:'page-shell' };
 tabs.forEach(t => t.addEventListener('click', () => {
   tabs.forEach(x => x.classList.remove('active'));
   t.classList.add('active');
@@ -2252,4 +2252,105 @@ $('btn-validate-creds').addEventListener('click', async () => {
   if (btnRescan) btnRescan.addEventListener('click', run);
   if (btnFilter) btnFilter.addEventListener('change', () => { linuxOnly = btnFilter.checked; applyFilter(); });
   overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+})();
+
+// Live shell - interactive PTY session over SSH (vim, top, journalctl -f, sudo prompts all work)
+(function initLiveShell() {
+  const btnConnect = $('btn-shell-connect');
+  const btnDisconnect = $('btn-shell-disconnect');
+  const statusEl = $('shell-status');
+  const termEl = $('shell-term');
+  if (!btnConnect || !termEl || typeof Terminal === 'undefined') return;
+
+  let term = null;
+  let fitAddon = null;
+  let sessionId = null;
+  let offShellData = null;
+  let offShellExit = null;
+
+  function ensureTerm() {
+    if (term) return;
+    term = new Terminal({
+      cursorBlink: true,
+      fontFamily: "'JetBrains Mono', monospace",
+      fontSize: 13,
+      theme: { background: '#000000', foreground: '#e6edf3', cursor: '#00d4aa' }
+    });
+    fitAddon = new FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+    term.open(termEl);
+    fitAddon.fit();
+    term.onData((data) => {
+      if (sessionId) window.api.sendShellInput(sessionId, data);
+    });
+    if (typeof ResizeObserver !== 'undefined') {
+      new ResizeObserver(() => {
+        if (!fitAddon) return;
+        fitAddon.fit();
+        if (sessionId) window.api.resizeShell(sessionId, term.cols, term.rows);
+      }).observe(termEl);
+    }
+  }
+
+  function endLocalSession() {
+    if (offShellData) { offShellData(); offShellData = null; }
+    if (offShellExit) { offShellExit(); offShellExit = null; }
+    sessionId = null;
+    btnConnect.style.display = '';
+    btnDisconnect.style.display = 'none';
+    statusEl.textContent = 'not connected';
+  }
+
+  async function connect() {
+    const conn = getCxMgmtConn();
+    if (!conn.host) { toast('Enter the CX IP first', 'warn'); return; }
+    ensureTerm();
+    term.clear();
+    term.reset();
+    btnConnect.disabled = true;
+    statusEl.textContent = 'connecting...';
+
+    offShellData = window.api.on('shell:data', (payload) => {
+      if (payload.sessionId === sessionId) term.write(new Uint8Array(payload.chunk));
+    });
+    offShellExit = window.api.on('shell:exit', (payload) => {
+      if (payload.sessionId === sessionId) {
+        term.writeln('\r\n\x1b[1;33m[session closed]\x1b[0m');
+        endLocalSession();
+      }
+    });
+
+    const res = await window.api.openShell({ host: conn.host, password: conn.password, port: 22, cols: term.cols, rows: term.rows });
+    btnConnect.disabled = false;
+    if (!res.ok) {
+      statusEl.textContent = 'failed: ' + (res.error || 'unknown');
+      toast('Shell connect failed: ' + (res.error || 'unknown'), 'error');
+      if (offShellData) { offShellData(); offShellData = null; }
+      if (offShellExit) { offShellExit(); offShellExit = null; }
+      return;
+    }
+    sessionId = res.sessionId;
+    statusEl.textContent = 'connected · ' + conn.host;
+    btnConnect.style.display = 'none';
+    btnDisconnect.style.display = '';
+    fitAddon.fit();
+    window.api.resizeShell(sessionId, term.cols, term.rows);
+    term.focus();
+  }
+
+  async function disconnect() {
+    if (sessionId) await window.api.closeShell(sessionId);
+    if (term) term.writeln('\r\n\x1b[1;33m[disconnected]\x1b[0m');
+    endLocalSession();
+  }
+
+  btnConnect.addEventListener('click', connect);
+  btnDisconnect.addEventListener('click', disconnect);
+
+  // re-fit when navigating to the Shell view - it may have been resized while hidden
+  document.querySelectorAll('.tab').forEach(t => {
+    if (t.dataset.tab === 'shell') {
+      t.addEventListener('click', () => { if (fitAddon) fitAddon.fit(); });
+    }
+  });
 })();

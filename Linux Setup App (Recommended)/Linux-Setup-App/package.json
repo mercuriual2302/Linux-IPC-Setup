@@ -17,6 +17,8 @@
     "dist": "electron-builder --win nsis portable"
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "node-ssh": "^13.2.0"
   },
   "devDependencies": {
