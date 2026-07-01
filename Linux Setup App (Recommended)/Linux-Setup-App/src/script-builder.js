@@ -162,8 +162,11 @@ _sudo reboot
 }
 
 //  INNER: TF1Arsenal00 config (runs on CX as /tmp/tf1200_configure.sh $1 $2) 
-function buildInnerTF1200Script({ jsonConfig = {} } = {}) {
+function buildInnerTF1200Script({ jsonConfig = {}, proxyHost = null, proxyPort = null } = {}) {
   const jqExpr = buildJqExpr(jsonConfig);
+  const proxyOpts = (proxyHost && proxyPort)
+    ? ` -o Acquire::http::Proxy=socks5h://${proxyHost}:${proxyPort}/ -o Acquire::https::Proxy=socks5h://${proxyHost}:${proxyPort}/`
+    : '';
 
   return `#!/bin/bash
 # Inner TF1200 config script — executed over SSH by the Electron app.
@@ -181,7 +184,7 @@ fi
 export TERM=dumb
 export DEBIAN_FRONTEND=noninteractive
 export DEBCONF_NONINTERACTIVE_SEEN=true
-APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Quiet::NoUpdate=true'
+APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Quiet::NoUpdate=true${proxyOpts}'
 
 # ── sudo wrapper: feed password on stdin (-S), keep credentials cached (-v) ──
 _sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }

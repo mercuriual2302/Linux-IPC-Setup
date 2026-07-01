@@ -810,6 +810,16 @@ $('btn-run-tf1200').addEventListener('click', async () => {
   if (!ipOk(ip)) { toast('Enter a valid CX IP first', 'warn'); showTab('tf1200'); return; }
   if (!hmiUrl) { toast('HMI Server URL required', 'warn'); showTab('tf1200'); return; }
 
+  const runBtn = $('btn-run-tf1200');
+  const prevLabel = runBtn.textContent;
+  runBtn.disabled = true;
+  runBtn.textContent = 'CHECKING INTERNET...';
+  const proxyDecision = await ensureProxyDecision(ip, cxPass);
+  runBtn.textContent = prevLabel;
+  runBtn.disabled = false;
+  if (proxyDecision.cancelled) return;
+  const { proxyHost, proxyPort } = proxyDecision;
+
   if (!confirm(`Apply TF1200 config to ${ip}?\n\nstartUrl: ${hmiUrl}\n\nThis writes /home/TF1200/.config/TF1200-UI-Client/config.json and REBOOTS the CX.`)) return;
 
   openTerminal();
@@ -827,7 +837,7 @@ $('btn-run-tf1200').addEventListener('click', async () => {
 
   const res = await window.api.runTF1200({
     host: ip, username: 'Administrator', password: cxPass, port: 22,
-    hmiUrl, jsonConfig
+    hmiUrl, jsonConfig, proxyHost, proxyPort
   });
 
   $('prog').classList.remove('running');
