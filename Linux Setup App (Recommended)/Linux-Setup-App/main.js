@@ -262,7 +262,7 @@ ipcMain.handle('ssh:run-setup', async (_evt, opts) => {
 
 // IPC: run TF1200 config live
 ipcMain.handle('ssh:run-tf1200', async (_evt, opts) => {
-  const { host, username, password, port, hmiUrl, jsonConfig } = opts;
+  const { host, username, password, port, hmiUrl, jsonConfig, proxyHost, proxyPort } = opts;
 
   const sessionId = `tf1200-${Date.now()}`;
   const mgr = new SSHManager();
@@ -274,7 +274,7 @@ ipcMain.handle('ssh:run-tf1200', async (_evt, opts) => {
     await mgr.connect({ host, username, password, port: port || 22 });
     sendToRenderer('ssh:status', { sessionId, status: 'connected', message: `SSH OK - ${host}` });
 
-    const innerScript = ScriptBuilder.buildInnerTF1200Script({ jsonConfig });
+    const innerScript = ScriptBuilder.buildInnerTF1200Script({ jsonConfig, proxyHost, proxyPort });
 
     const tmpPath = path.join(os.tmpdir(), `tc-tf1200-${Date.now()}.sh`);
     await fs.promises.writeFile(tmpPath, innerScript, { mode: 0o755 });
