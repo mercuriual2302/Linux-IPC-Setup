@@ -856,10 +856,10 @@ ipcMain.handle('cx:firewall', async (_evt, opts) => {
     const label = String(p.label || '').replace(/[^A-Za-z0-9 ._/-]/g, '').slice(0, 40);
     cleanPorts.push({ port: portNum, proto, label });
   }
-  const openRules = cleanPorts.map(p =>
-    `_sudo nft add rule inet filter input ${p.proto} dport ${p.port} accept comment "${p.label}"`
-  ).join('\n');
-
+  const openRules = cleanPorts.map(p => {
+  const commentPart = p.label ? ` comment '"${p.label}"'` : '';
+  return `_sudo nft add rule inet filter input ${p.proto} dport ${p.port} accept${commentPart}`;
+  }).join('\n');
   const script = `#!/bin/bash
 set -e
 SUDO_PASS='${password.replace(/'/g, "'\\''")}'
