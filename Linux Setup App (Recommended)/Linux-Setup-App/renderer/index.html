@@ -317,6 +317,13 @@
         <div class="section">
           <div class="section-label">firewall manager</div>
           <div class="section-subtitle">Configures nftables on the CX. Default policy is DROP - only ticked ports are opened. Disabling flushes all rules.</div>
+          <div class="field" style="margin-bottom:.6rem">
+            <label>CURRENT CONFIG (READ FROM CX)</label>
+            <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap">
+              <button class="sel-btn" id="btn-fw-read" style="font-size:10px;padding:.25rem .6rem">⟳ READ FROM CX</button>
+            </div>
+            <div class="hint" id="fw-read-status" style="margin-top:.35rem">Not read yet - connect and click READ FROM CX, or switch to this tab while connected.</div>
+          </div>
           <div class="field" style="margin-bottom:.75rem">
             <label>NFTABLES</label>
             <div class="toggle-group" id="fw-enable-toggle">

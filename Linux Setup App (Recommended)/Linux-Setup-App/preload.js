@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('api', {
   validateCreds:  (opts) => ipcRenderer.invoke('cx:validate-creds', opts),
   applyNetwork:   (opts) => ipcRenderer.invoke('cx:network', opts),
   applyFirewall:  (opts) => ipcRenderer.invoke('cx:firewall', opts),
+  readFirewall:   (opts) => ipcRenderer.invoke('cx:read-firewall', opts),
   changePassword: (opts) => ipcRenderer.invoke('cx:passwd', opts),
   usersList:      (opts) => ipcRenderer.invoke('cx:users-list', opts),
   userMgmt:       (opts) => ipcRenderer.invoke('cx:user-mgmt', opts),

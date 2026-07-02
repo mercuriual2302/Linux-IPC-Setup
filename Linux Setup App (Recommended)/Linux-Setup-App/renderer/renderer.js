@@ -200,7 +200,7 @@ $('btn-test').addEventListener('click', async () => {
   if (res.ok) {
     setGlobalConn('ok', 'CONNECTED · ' + opts.host);
     toast('SSH OK - ' + (res.output.split('\n')[0] || 'connected'), 'success');
-    if (window._maybeAutoReadInfo) window._maybeAutoReadInfo();
+    refreshActiveTab();
   } else {
     setGlobalConn('err', 'FAILED');
     toast('SSH failed: ' + res.error, 'error');
@@ -386,12 +386,31 @@ function renderVersionList() {
 // Tabs
 const tabs = document.querySelectorAll('.tab');
 const pages = { dashboard:'page-dashboard', setup:'page-setup', services:'page-services', network:'page-network', firewall:'page-firewall', users:'page-users', packages:'page-packages', tf1200:'page-tf1200', shell:'page-shell', sftp:'page-sftp' };
+
+// Registry of "read from CX" refreshers, one per tab, populated by each
+// section below as it initialises. Switching to a tab - or reconnecting via
+// TEST CONNECTION - calls into this so a view can never keep showing state
+// left over from a previous CX, a previous session, or an action taken
+// elsewhere in the app. Views that hold in-progress unsaved edits (TF1200's
+// config editor) deliberately don't register here, since auto-refreshing
+// would silently discard whatever the user is mid-typing.
+const tabAutoRefresh = {};
+
+function refreshActiveTab() {
+  const activeTab = document.querySelector('.tab.active');
+  const key = activeTab && activeTab.dataset.tab;
+  const refresh = key && tabAutoRefresh[key];
+  if (refresh) refresh();
+}
+
 tabs.forEach(t => t.addEventListener('click', () => {
   tabs.forEach(x => x.classList.remove('active'));
   t.classList.add('active');
   Object.values(pages).forEach(p => $(p).classList.remove('active'));
   $(pages[t.dataset.tab]).classList.add('active');
   if (t.dataset.tab === 'tf1200') syncCredentials();
+  const refresh = tabAutoRefresh[t.dataset.tab];
+  if (refresh) refresh();
 }));
 
 // Feed toggle
@@ -1058,6 +1077,94 @@ $('btn-apply-network').addEventListener('click', async () => {
 toggleGroupInit('fw-enable-toggle');
 toggleGroupInit('fw-custom-proto');
 
+const fwReadBtn = $('btn-fw-read');
+const fwReadStatus = $('fw-read-status');
+
+// Apply a read result onto the ports grid: clears every preset check first
+// (so a stale local click can't survive a fresh read), then ticks whatever
+// the CX actually reports. Anything the CX has open that isn't already a
+// preset card - a custom port, or one a TwinCAT Function auto-opened on
+// install - gets its own card added so it's visible rather than silently
+// dropped on the next Apply.
+function applyFirewallReadResult(res) {
+  document.querySelectorAll('#fw-ports-grid .fw-check').forEach(chk => {
+    chk.classList.remove('selected');
+    const card = chk.closest('.pkg-card');
+    if (card) card.classList.remove('selected');
+  });
+
+  const grid = $('fw-ports-grid');
+  (res.ports || []).forEach(p => {
+    let card = grid.querySelector(`[data-port="${p.port}"][data-proto="${p.proto}"]`);
+    if (card) {
+      const chk = card.querySelector('.fw-check');
+      if (chk) chk.classList.add('selected');
+      card.classList.add('selected');
+      return;
+    }
+    card = document.createElement('div');
+    card.className = 'pkg-card selected';
+    card.dataset.port = p.port;
+    card.dataset.proto = p.proto;
+    card.dataset.label = p.label || `Port ${p.port}`;
+    const desc = p.label ? `Port ${p.port}/${p.proto} - found on CX` : `Port ${p.port}/${p.proto} - found on CX, no label set`;
+    card.innerHTML = `
+      <div class="pkg-badge badge-opt">${p.proto.toUpperCase()}</div>
+      <div class="pkg-name">
+        <span class="pkg-check fw-check selected">
+          <svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
+        </span>${escapeHtml(p.label || `Port ${p.port}`)}
+      </div>
+      <div class="pkg-desc">${escapeHtml(desc)}</div>`;
+    card.addEventListener('click', () => {
+      card.querySelector('.fw-check').classList.toggle('selected');
+    });
+    grid.appendChild(card);
+  });
+
+  // NFTABLES toggle reflects whether the service is actually enabled on the CX
+  document.querySelectorAll('#fw-enable-toggle .toggle-opt').forEach(o => {
+    o.classList.toggle('active', o.dataset.val === String(res.enabled));
+  });
+}
+
+async function readFirewallFromCx() {
+  const conn = getCxMgmtConn();
+  if (!conn.host) { toast('Enter the CX IP first', 'warn'); return; }
+  if (fwReadBtn.disabled) return;
+  fwReadBtn.disabled = true; fwReadBtn.textContent = '...';
+  let res;
+  try { res = await window.api.readFirewall(conn); }
+  catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
+  fwReadBtn.disabled = false; fwReadBtn.textContent = '⟳ READ FROM CX';
+
+  if (!res || !res.ok) {
+    if (fwReadStatus) {
+      fwReadStatus.textContent = 'Could not read firewall: ' + (res && res.error ? res.error : 'unknown error');
+      fwReadStatus.style.color = 'var(--tc-danger)';
+    }
+    toast('Could not read firewall from CX', 'error');
+    return;
+  }
+
+  applyFirewallReadResult(res);
+  const ts = new Date().toLocaleTimeString();
+  if (fwReadStatus) {
+    fwReadStatus.textContent = `Read from ${conn.host} at ${ts} - firewall ${res.enabled ? 'enabled' : 'disabled'}, ${res.ports.length} port(s) open`;
+    fwReadStatus.style.color = 'var(--tc-accent2)';
+  }
+  toast('Firewall config read from CX', 'success');
+}
+
+if (fwReadBtn) fwReadBtn.addEventListener('click', readFirewallFromCx);
+
+// Refresh every time the Firewall tab is opened so it can't keep showing
+// rules from a previous CX or an earlier Apply run elsewhere in the app.
+tabAutoRefresh.firewall = () => {
+  const conn = getCxMgmtConn();
+  if (conn.host && fwReadBtn && !fwReadBtn.disabled) readFirewallFromCx();
+};
+
 // Toggle fw port cards
 document.querySelectorAll('#fw-ports-grid .pkg-card').forEach(card => {
   card.addEventListener('click', () => {
@@ -1526,12 +1633,14 @@ $('btn-validate-creds').addEventListener('click', async () => {
       .then((r) => { if (r && r.ok) { $('um-add-user').value = ''; $('um-add-pass').value = ''; $('um-add-sudo').checked = false; } });
   });
 
-  // Lazy-load the account list the first time the CX Management tab is opened
-  const cxTab = document.querySelector(`.tab[data-tab="users"]`);
-  if (cxTab) cxTab.addEventListener('click', () => {
+  // Refresh every time the Users tab is opened, not just the first time, so
+  // the account list can't go stale after changes made from another tab or
+  // another session.
+  tabAutoRefresh.users = () => {
     const conn = getCxMgmtConn();
-    if (conn.host && !$('um-rows').children.length) refreshUsers();
-  });
+    const btn = $('btn-um-refresh');
+    if (conn.host && !btn.disabled) refreshUsers();
+  };
 })();
 
 // TF1200 - read config from CX
@@ -1703,19 +1812,15 @@ $('btn-validate-creds').addEventListener('click', async () => {
   btnInit.addEventListener('click', readInfo);
   btnHeader.addEventListener('click', readInfo);
 
-  // Auto-read whenever the CX is connected and the panel hasn't been loaded yet -
-  // called both when switching to the Dashboard and right after TEST CONNECTION succeeds
+  // Refresh every time the Dashboard tab is opened (not just the first time)
+  // so it can't keep showing a read from a previous CX or an earlier action
+  // taken elsewhere in the app. Skips only while a read is already running.
   function maybeAutoReadInfo() {
     const conn = getCxMgmtConn();
-    if (conn.host && $('info-body').style.display === 'none') readInfo();
+    if (conn.host && !btnHeader.disabled) readInfo();
   }
   window._maybeAutoReadInfo = maybeAutoReadInfo;
-
-  document.querySelectorAll('.tab').forEach(t => {
-    if (t.dataset.tab === 'dashboard') {
-      t.addEventListener('click', maybeAutoReadInfo);
-    }
-  });
+  tabAutoRefresh.dashboard = maybeAutoReadInfo;
 })();
 
 // APT feed manager and MyBeckhoff credential auto-read
@@ -1809,11 +1914,11 @@ $('btn-validate-creds').addEventListener('click', async () => {
   }
 
   // Read current feed from CX
-  readBtn.addEventListener('click', async () => {
+  async function readCurrentFeed() {
     const conn = getCxMgmtConn();
     if (!conn.host) { toast('Enter the CX IP first', 'warn'); return; }
+    if (readBtn.disabled) return;
     readBtn.disabled = true; readBtn.textContent = '...';
-    const mgr = new (window._SSHManager || Object)();
     try {
       const res = await window.api.cxInfo(conn);
       if (res && res.ok && res.info && res.info.FEED) {
@@ -1838,7 +1943,15 @@ $('btn-validate-creds').addEventListener('click', async () => {
       toast('Could not read feed from CX', 'error');
     }
     readBtn.disabled = false; readBtn.textContent = '⟳ READ';
-  });
+  }
+  readBtn.addEventListener('click', readCurrentFeed);
+
+  // Refresh every time the Packages tab is opened so the shown feed can't
+  // go stale after a switch made from the Setup tab or a previous session.
+  tabAutoRefresh.packages = () => {
+    const conn = getCxMgmtConn();
+    if (conn.host && !readBtn.disabled) readCurrentFeed();
+  };
 
   // Switch feed + apt update
   switchBtn.addEventListener('click', async () => {
@@ -2178,15 +2291,12 @@ $('btn-validate-creds').addEventListener('click', async () => {
     });
   }
 
-  // Auto-load when switching to CX Management tab
-  document.querySelectorAll('.tab').forEach(t => {
-    if (t.dataset.tab === 'services') {
-      t.addEventListener('click', () => {
-        const conn = getCxMgmtConn();
-        if (conn.host && grid.children.length === 0) loadServices();
-      });
-    }
-  });
+  // Refresh every time the Services tab is opened, not just when the grid
+  // is empty, so status shown can't lag behind what's actually running.
+  tabAutoRefresh.services = () => {
+    const conn = getCxMgmtConn();
+    if (conn.host && !refreshBtn.disabled) loadServices();
+  };
 })();
 
 // device discovery (find CX on network or direct cable)
