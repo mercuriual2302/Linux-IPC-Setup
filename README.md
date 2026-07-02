@@ -149,4 +149,4 @@ Linux Setup Guide.docx  -- end user guide
 - Shutting down the CX from the Power menu is a full ACPI power-off. It will not come back on its own. Use Restart if you want it to come back automatically.
 - The `trixie-unstable` feed should only be used if Beckhoff support specifically instructs you to. Stable is the right choice for production deployments.
 - SFTP needs the `sftp-server` subsystem enabled on the CX's sshd. It's present on the standard CX9240 image, but if you're working with a more stripped-down image and Files won't connect, check `/etc/ssh/sshd_config` for a `Subsystem sftp ...` line.
-- Connection profiles are stored in `%APPDATA%\linux-ipc0-setup-console\cx-profiles.json` on Windows. They are not synced to any repo.
+- Connection profiles are stored in `%APPDATA%\Linux Setup Console\cx-profiles.json` on Windows (Electron keys the user data folder off the product name). They are not synced to any repo.

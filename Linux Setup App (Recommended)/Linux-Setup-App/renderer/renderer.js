@@ -1162,10 +1162,10 @@ function renderInstalledTable() {
   const hasUpdates = _installedPkgs.some(p => p.upgradable);
   rows.innerHTML = _installedPkgs.map(p => `
     <div class="upd-row" style="display:grid;grid-template-columns:1fr auto auto 36px;gap:.5rem;padding:.35rem .6rem;border-bottom:1px solid var(--tc-border);align-items:center">
-      <span class="upd-name">${p.name}</span>
-      <span class="upd-old">${p.version}</span>
-      <span class="${p.upgradable ? 'upd-new' : ''}" style="${p.upgradable ? '' : 'color:var(--tc-muted)'}">${p.upgradable ? '→ ' + p.newVer : '✓ up to date'}</span>
-      <span>${p.upgradable ? `<input type="checkbox" class="upd-chk" data-pkg="${p.name}" data-ver="${p.newVer}" checked style="cursor:pointer">` : ''}</span>
+      <span class="upd-name">${escapeHtml(p.name)}</span>
+      <span class="upd-old">${escapeHtml(p.version)}</span>
+      <span class="${p.upgradable ? 'upd-new' : ''}" style="${p.upgradable ? '' : 'color:var(--tc-muted)'}">${p.upgradable ? '→ ' + escapeHtml(p.newVer) : '✓ up to date'}</span>
+      <span>${p.upgradable ? `<input type="checkbox" class="upd-chk" data-pkg="${escapeHtml(p.name)}" data-ver="${escapeHtml(p.newVer)}" checked style="cursor:pointer">` : ''}</span>
     </div>`).join('');
   $('updates-select-all-row').style.display = hasUpdates ? 'block' : 'none';
   $('btn-upgrade-selected').style.display = hasUpdates ? '' : 'none';
@@ -1647,8 +1647,8 @@ $('btn-validate-creds').addEventListener('click', async () => {
     $('info-metrics').innerHTML = metrics.map(m => `
       <div class="info-metric">
         <div class="info-metric-label">${m.label}</div>
-        <div class="info-metric-value">${m.value}</div>
-        <div class="info-metric-sub">${m.sub}</div>
+        <div class="info-metric-value">${escapeHtml(m.value)}</div>
+        <div class="info-metric-sub">${escapeHtml(m.sub)}</div>
       </div>`).join('');
 
     // disk
@@ -1669,8 +1669,8 @@ $('btn-validate-creds').addEventListener('click', async () => {
     $('info-ifaces').innerHTML = ifaces.length
       ? ifaces.map(i => `
           <div class="info-row">
-            <span class="info-row-label">${dot(i.state)}&nbsp;<code>${i.name}</code>&nbsp;${ifaceBadge(i.state)}</span>
-            <span class="info-row-val">${i.ip}</span>
+            <span class="info-row-label">${dot(i.state)}&nbsp;<code>${escapeHtml(i.name)}</code>&nbsp;${ifaceBadge(i.state)}</span>
+            <span class="info-row-val">${escapeHtml(i.ip)}</span>
           </div>`).join('')
       : '<div class="um-empty">No interfaces found</div>';
 
@@ -1678,7 +1678,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
     $('info-svcs').innerHTML = svcs.length
       ? svcs.map(s => `
           <div class="info-row">
-            <span class="info-row-label"><code>${s.name}</code></span>
+            <span class="info-row-label"><code>${escapeHtml(s.name)}</code></span>
             ${badge(s.state)}
           </div>`).join('')
       : '<div class="um-empty">No services found</div>';
@@ -1958,8 +1958,8 @@ $('btn-validate-creds').addEventListener('click', async () => {
       row.className = 'profile-item';
       row.innerHTML = `
         <div class="profile-item-info">
-          <div class="profile-item-name">${p.name}</div>
-          <div class="profile-item-sub">${p.ip}${p.bkUser ? '  ·  ' + p.bkUser : ''}</div>
+          <div class="profile-item-name">${escapeHtml(p.name)}</div>
+          <div class="profile-item-sub">${escapeHtml(p.ip)}${p.bkUser ? '  ·  ' + escapeHtml(p.bkUser) : ''}</div>
         </div>
         <button class="profile-item-del" data-idx="${i}" title="Delete">✕</button>`;
       row.addEventListener('click', (e) => {
@@ -2089,16 +2089,18 @@ $('btn-validate-creds').addEventListener('click', async () => {
       const row = document.createElement('div');
       row.className = 'svc-row';
       row.id = `svc-row-${svc.id}`;
+      // svc fields originate on the CX (systemctl output) - escape everything
+      const svcId = escapeHtml(svc.id);
       const stopBtn = svc.canStop
-        ? `<button class="svc-btn danger" data-svc="${svc.id}" data-action="stop">STOP</button>`
+        ? `<button class="svc-btn danger" data-svc="${svcId}" data-action="stop">STOP</button>`
         : '';
       row.innerHTML = `
-        <span class="svc-name">${svc.label}</span>
-        ${svc.desc ? `<span class="svc-desc">${svc.desc}</span>` : '<span class="svc-desc"></span>'}
-        <span class="svc-state ${stateClass(svc.state)}" id="svc-state-${svc.id}">${svc.state}</span>
+        <span class="svc-name">${escapeHtml(svc.label)}</span>
+        ${svc.desc ? `<span class="svc-desc">${escapeHtml(svc.desc)}</span>` : '<span class="svc-desc"></span>'}
+        <span class="svc-state ${stateClass(svc.state)}" id="svc-state-${svcId}">${escapeHtml(svc.state)}</span>
         <div class="svc-actions">
-          <button class="svc-btn" data-svc="${svc.id}" data-action="start">START</button>
-          <button class="svc-btn" data-svc="${svc.id}" data-action="restart">RESTART</button>
+          <button class="svc-btn" data-svc="${svcId}" data-action="start">START</button>
+          <button class="svc-btn" data-svc="${svcId}" data-action="restart">RESTART</button>
           ${stopBtn}
         </div>`;
       grid.appendChild(row);

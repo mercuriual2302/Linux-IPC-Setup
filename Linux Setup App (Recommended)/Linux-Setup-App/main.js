@@ -17,8 +17,12 @@ const socksProxy = require('./src/socks-proxy');
 // without this the raw TCP error bubbles up to Electron and shows a dialog.
 process.on('uncaughtException', (err) => {
   if (err && (err.code === 'ECONNRESET' || /ECONNRESET|Connection lost|channel close/i.test(err.message))) return;
-  // Re-throw anything else so real bugs still surface
-  throw err;
+  // Surface real bugs without rethrowing - a throw inside this handler kills
+  // the process instantly with no dialog. Log it and tell the user instead.
+  console.error('[main] Uncaught exception:', err);
+  try {
+    dialog.showErrorBox('Unexpected error', String((err && err.stack) || err));
+  } catch (_) {}
 });
 
 
@@ -57,8 +61,7 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
-      webSecurity: false
+      sandbox: false
     },
     autoHideMenuBar: true
   });
@@ -207,13 +210,10 @@ ipcMain.handle('ssh:run-setup', async (_evt, opts) => {
     });
 
     // Write locally, upload via SFTP, then exec
-    const tmpPath = path.join(os.tmpdir(), `tc-setup-${Date.now()}.sh`);
-    await fs.promises.writeFile(tmpPath, innerScript, { mode: 0o755 });
 
     sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m Uploading setup script to /tmp/twincat_setup.sh\r\n` });
 
-    await mgr.putFile(tmpPath, '/tmp/twincat_setup.sh');
-    await fs.promises.unlink(tmpPath).catch(() => {});
+    await withTempScript('tc-setup', innerScript, (p) => mgr.putFile(p, '/tmp/twincat_setup.sh'));
 
     sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m Executing on CX - this takes 10-15 minutes. Do not interrupt.\r\n\r\n` });
 
@@ -276,13 +276,10 @@ ipcMain.handle('ssh:run-tf1200', async (_evt, opts) => {
 
     const innerScript = ScriptBuilder.buildInnerTF1200Script({ jsonConfig, proxyHost, proxyPort });
 
-    const tmpPath = path.join(os.tmpdir(), `tc-tf1200-${Date.now()}.sh`);
-    await fs.promises.writeFile(tmpPath, innerScript, { mode: 0o755 });
 
     sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m Uploading config script to /tmp/tf1200_configure.sh\r\n` });
 
-    await mgr.putFile(tmpPath, '/tmp/tf1200_configure.sh');
-    await fs.promises.unlink(tmpPath).catch(() => {});
+    await withTempScript('tc-tf1200', innerScript, (p) => mgr.putFile(p, '/tmp/tf1200_configure.sh'));
 
     sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m Applying TF1200 config...\r\n\r\n` });
 
@@ -624,9 +621,18 @@ ipcMain.handle('proxy:start', async (_evt, { host, port }) => {
       });
       probe.on('error', reject);
     });
+    // If a proxy is already running but bound to a different adapter (a new
+    // target CX on another subnet), tear it down and rebind on the right one
+    if (activeProxy && activeProxy.host !== localAddress) {
+      await socksProxy.stopSocksServer(activeProxy.server);
+      activeProxy = null;
+    }
     if (!activeProxy) {
-      const { server, port: proxyPort } = await socksProxy.startSocksServer();
-      activeProxy = { server, port: proxyPort };
+      const { server, port: proxyPort } = await socksProxy.startSocksServer({
+        bindHost: localAddress,
+        allowFrom: [host]
+      });
+      activeProxy = { server, port: proxyPort, host: localAddress };
     }
     return { ok: true, proxyHost: localAddress, proxyPort: activeProxy.port };
   } catch (err) {
@@ -695,12 +701,33 @@ async function sshStream(sessionId, opts, cmd) {
   return result;
 }
 
+// Validators for values that end up inside generated shell scripts.
+// Anything that fails these never reaches a template literal.
+const IPV4_RE  = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+const IFACE_RE = /^[A-Za-z0-9._-]{1,32}$/;
+const UNIT_RE  = /^[A-Za-z0-9:._@-]{1,128}$/;
+
+// Write a script to a local temp file, hand the path to fn (usually putFile),
+// and always delete the temp file - even when connect/putFile throws. The old
+// inline pattern left password-bearing scripts in %TEMP% on any error before
+// the unlink line. Mode 0600: only this user needs to read it, and the exec
+// bit is set on the CX side by chmod +x, not here.
+async function withTempScript(prefix, content, fn) {
+  const tmpPath = path.join(os.tmpdir(), `${prefix}-${Date.now()}.sh`);
+  await fs.promises.writeFile(tmpPath, content, { mode: 0o600 });
+  try {
+    return await fn(tmpPath);
+  } finally {
+    await fs.promises.unlink(tmpPath).catch(() => {});
+  }
+}
+
 
 // MyBeckhoff credential validator
 // Uses curl on the CX to check credentials against the Beckhoff APT repo.
 // Returns in under 3 seconds - no apt update needed.
 ipcMain.handle('cx:validate-creds', async (_evt, { host, password, port, beckhoffUser, beckhoffPass, proxyHost, proxyPort }) => {
-  const esc = (s) => (s || '').replace(/'/g, "'\''");
+  const esc = (s) => (s || '').replace(/'/g, "'\\''");
   const proxyFlag = (proxyHost && proxyPort) ? `-x socks5h://${proxyHost}:${proxyPort} ` : '';
   // curl a known Beckhoff InRelease file with basic auth - 200 = valid, 401 = bad creds
   const cmd = `curl -s -o /dev/null -w "%{http_code}" --max-time 10 ${proxyFlag}` +
@@ -727,6 +754,18 @@ ipcMain.handle('cx:network', async (_evt, opts) => {
   const { host, password, port, iface = 'end0', mode, ip, prefix = '24', gateway, dns = '8.8.8.8' } = opts;
   const sessionId = `net-${Date.now()}`;
 
+  // Everything below is interpolated into a shell script - validate first
+  if (!IFACE_RE.test(iface)) return { ok: false, error: `Invalid interface name: ${iface}` };
+  const pfx = parseInt(prefix, 10);
+  if (mode !== 'dhcp') {
+    if (!IPV4_RE.test(ip || '')) return { ok: false, error: `Invalid IP address: ${ip}` };
+    if (!Number.isInteger(pfx) || pfx < 0 || pfx > 32 || String(pfx) !== String(prefix).trim()) {
+      return { ok: false, error: `Invalid prefix: ${prefix}` };
+    }
+    if (gateway && !IPV4_RE.test(gateway)) return { ok: false, error: `Invalid gateway: ${gateway}` };
+    if (!IPV4_RE.test(dns)) return { ok: false, error: `Invalid DNS address: ${dns}` };
+  }
+
   const sudoLine = `_sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }`;
   let script;
 
@@ -738,6 +777,7 @@ ${sudoLine}
 _sudo -v
 IFACE="${iface}"
 FILE="/etc/systemd/network/10-\${IFACE}.network"
+trap 'rm -f "$0"' EXIT
 echo "[CX] Writing DHCP config for \$IFACE..."
 TMP=$(mktemp)
 printf '[Match]\nName=%s\n\n[Network]\nDHCP=yes\n' "\$IFACE" > "\$TMP"
@@ -755,6 +795,7 @@ ${sudoLine}
 _sudo -v
 IFACE="${iface}"
 FILE="/etc/systemd/network/10-\${IFACE}.network"
+trap 'rm -f "$0"' EXIT
 echo "[CX] Writing static IP config for \$IFACE..."
 TMP=$(mktemp)
 printf '[Match]\nName=%s\n\n[Network]\nAddress=%s/%s\n' "\$IFACE" "${ip}" "${prefix}" > "\$TMP"
@@ -770,14 +811,11 @@ echo "[CX] Gateway: ${gateway || 'none'}  DNS: ${dns}"
   }
 
   try {
-    const tmpPath = path.join(os.tmpdir(), `cx-net-${Date.now()}.sh`);
-    await fs.promises.writeFile(tmpPath, script, { mode: 0o755 });
     sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m Applying network config...\r\n` });
     const mgr = new SSHManager();
     activeSessions.set(sessionId, mgr);
     await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
-    await mgr.putFile(tmpPath, '/tmp/cx_network.sh');
-    await fs.promises.unlink(tmpPath).catch(() => {});
+    await withTempScript('cx-net', script, (p) => mgr.putFile(p, '/tmp/cx_network.sh'));
     const result = await mgr.execStream('chmod +x /tmp/cx_network.sh && /tmp/cx_network.sh', {
       onStdout: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() }),
       onStderr: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() })
@@ -805,7 +843,20 @@ ipcMain.handle('cx:firewall', async (_evt, opts) => {
   const { host, password, port, enable, ports = [] } = opts;
   const sessionId = `fw-${Date.now()}`;
 
-  const openRules = ports.filter(p => p.open).map(p =>
+  // Validate everything that reaches the script - port must be a real port,
+  // proto is forced to tcp/udp, label is stripped to a safe comment charset
+  const cleanPorts = [];
+  for (const p of ports) {
+    if (!p || !p.open) continue;
+    const portNum = parseInt(p.port, 10);
+    if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
+      return { ok: false, error: `Invalid port: ${p.port}` };
+    }
+    const proto = p.proto === 'udp' ? 'udp' : 'tcp';
+    const label = String(p.label || '').replace(/[^A-Za-z0-9 ._/-]/g, '').slice(0, 40);
+    cleanPorts.push({ port: portNum, proto, label });
+  }
+  const openRules = cleanPorts.map(p =>
     `_sudo nft add rule inet filter input ${p.proto} dport ${p.port} accept  # ${p.label}`
   ).join('\n');
 
@@ -814,6 +865,7 @@ set -e
 SUDO_PASS='${password.replace(/'/g, "'\\''")}'
 _sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
 _sudo -v
+trap 'rm -f "$0"' EXIT
 
 ${enable ? `echo "[CX] Configuring nftables firewall..."
 _sudo nft flush ruleset
@@ -839,13 +891,10 @@ echo "[CX] Firewall disabled - all ports open."`}
 `;
 
   try {
-    const tmpPath = path.join(os.tmpdir(), `cx-fw-${Date.now()}.sh`);
-    await fs.promises.writeFile(tmpPath, script, { mode: 0o755 });
     const mgr = new SSHManager();
     activeSessions.set(sessionId, mgr);
     await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
-    await mgr.putFile(tmpPath, '/tmp/cx_firewall.sh');
-    await fs.promises.unlink(tmpPath).catch(() => {});
+    await withTempScript('cx-fw', script, (p) => mgr.putFile(p, '/tmp/cx_firewall.sh'));
     const result = await mgr.execStream('chmod +x /tmp/cx_firewall.sh && /tmp/cx_firewall.sh', {
       onStdout: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() }),
       onStderr: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() })
@@ -866,26 +915,26 @@ ipcMain.handle('cx:passwd', async (_evt, opts) => {
   const { host, password, port, targetUser, newPassword } = opts;
   const sessionId = `passwd-${Date.now()}`;
 
+  // User-supplied values travel as base64 (injection-safe), matching cx:user-mgmt
+  const b64 = (s) => Buffer.from(String(s == null ? '' : s), 'utf8').toString('base64');
   const script = `#!/bin/bash
 set -e
+trap 'rm -f "$0"' EXIT
 SUDO_PASS='${password.replace(/'/g, "'\\''")}'
-NEW_PASS='${newPassword.replace(/'/g, "'\\''")}'
-TARGET='${targetUser}'
 _sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
 _sudo -v
+TARGET="$(printf '%s' '${b64(targetUser)}' | base64 -d)"
+NEW_PASS="$(printf '%s' '${b64(newPassword)}' | base64 -d)"
 echo "[CX] Changing password for user: $TARGET"
 _sudo sh -c 'printf "%s:%s\\n" "$1" "$2" | chpasswd' _ "$TARGET" "$NEW_PASS"
 echo "[CX] Password changed successfully for $TARGET."
 `;
 
   try {
-    const tmpPath = path.join(os.tmpdir(), `cx-passwd-${Date.now()}.sh`);
-    await fs.promises.writeFile(tmpPath, script, { mode: 0o755 });
     const mgr = new SSHManager();
     activeSessions.set(sessionId, mgr);
     await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
-    await mgr.putFile(tmpPath, '/tmp/cx_passwd.sh');
-    await fs.promises.unlink(tmpPath).catch(() => {});
+    await withTempScript('cx-passwd', script, (p) => mgr.putFile(p, '/tmp/cx_passwd.sh'));
     const result = await mgr.execStream('chmod +x /tmp/cx_passwd.sh && /tmp/cx_passwd.sh', {
       onStdout: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() }),
       onStderr: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() })
@@ -916,7 +965,7 @@ ipcMain.handle('cx:fetch-updates', async (_evt, opts) => {
       for (const line of result.stdout.split('\n')) {
         const m = line.match(/^([^\s/]+)\//);
         if (m && /^(tc[0-9]|tf[0-9]|te[0-9]|mdp-bhf|adstool|tcusbsrv)/i.test(m[1])) {
-          const verMatch = line.match(/(\S+)\s+\[upgradable from: (\S+)\]/);
+          const verMatch = line.match(/^\S+\s+(\S+)\s+\S+\s+\[upgradable from: (\S+)\]/);
           updates.push({ name: m[1], newVer: verMatch ? verMatch[1] : '?', oldVer: verMatch ? verMatch[2] : '?' });
         }
       }
@@ -952,6 +1001,7 @@ APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Quiet:
 SUDO_PASS='${password.replace(/'/g, "'\\''")}'
 _sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
 _sudo -v
+trap 'rm -f "$0"' EXIT
 echo "[CX] Running apt update..."
 _sudo apt $APT_OPTS update -y
 echo "[CX] Running upgrade..."
@@ -959,14 +1009,11 @@ _sudo apt $APT_OPTS install -y --only-upgrade ${(packages && packages.length ? p
 echo "[CX] Upgrade complete."
 `;
   try {
-    const tmpPath = path.join(os.tmpdir(), `cx-upgrade-${Date.now()}.sh`);
-    await fs.promises.writeFile(tmpPath, script, { mode: 0o755 });
     const mgr = new SSHManager();
     activeSessions.set(sessionId, mgr);
     sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m Starting upgrade on ${host}...\r\n` });
     await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
-    await mgr.putFile(tmpPath, '/tmp/cx_upgrade.sh');
-    await fs.promises.unlink(tmpPath).catch(() => {});
+    await withTempScript('cx-upgrade', script, (p) => mgr.putFile(p, '/tmp/cx_upgrade.sh'));
     const result = await mgr.execStream('chmod +x /tmp/cx_upgrade.sh && /tmp/cx_upgrade.sh', {
       onStdout: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() }),
       onStderr: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() })
@@ -1004,6 +1051,7 @@ ipcMain.handle('cx:verify', async (_evt, opts) => {
 SUDO_PASS='${password.replace(/'/g, "'\\''")}'
 _sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
 _sudo -v 2>/dev/null
+trap 'rm -f "$0"' EXIT
 echo "=== PACKAGE VERIFICATION ==="
 ${pkgChecks}
 echo "=== SERVICE STATUS ==="
@@ -1017,14 +1065,11 @@ echo "=== END ==="
 `;
 
   try {
-    const tmpPath = path.join(os.tmpdir(), `cx-verify-${Date.now()}.sh`);
-    await fs.promises.writeFile(tmpPath, script, { mode: 0o755 });
     const mgr = new SSHManager();
     activeSessions.set(sessionId, mgr);
     sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m Running post-install verification...\r\n\r\n` });
     await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
-    await mgr.putFile(tmpPath, '/tmp/cx_verify.sh');
-    await fs.promises.unlink(tmpPath).catch(() => {});
+    await withTempScript('cx-verify', script, (p) => mgr.putFile(p, '/tmp/cx_verify.sh'));
 
     const rawLines = [];
     const result = await mgr.execStream('chmod +x /tmp/cx_verify.sh && /tmp/cx_verify.sh', {
@@ -1426,6 +1471,7 @@ APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Quiet:
 SUDO_PASS='${escPass}'
 _sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
 _sudo -v
+trap 'rm -f "$0"' EXIT
 echo "[CX] Switching APT feed to: ${channel}"
 _sudo bash -c 'printf "deb [signed-by=/usr/share/keyrings/bhf.asc] https://deb.beckhoff.com/debian ${channel} main\\n" > /etc/apt/sources.list.d/bhf.list'
 echo "[CX] Feed set to ${channel}. Running apt update..."
@@ -1434,14 +1480,11 @@ echo "[CX] Done. Feed is now ${channel}."
 `;
 
   try {
-    const tmpPath = path.join(os.tmpdir(), `cx-switchfeed-${Date.now()}.sh`);
-    await fs.promises.writeFile(tmpPath, script, { mode: 0o755 });
     const mgr = new SSHManager();
     activeSessions.set(sessionId, mgr);
     sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m Switching feed to ${channel}...\r\n` });
     await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
-    await mgr.putFile(tmpPath, '/tmp/cx_switchfeed.sh');
-    await fs.promises.unlink(tmpPath).catch(() => {});
+    await withTempScript('cx-switchfeed', script, (p) => mgr.putFile(p, '/tmp/cx_switchfeed.sh'));
     const result = await mgr.execStream('chmod +x /tmp/cx_switchfeed.sh && /tmp/cx_switchfeed.sh', {
       onStdout: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() }),
       onStderr: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() })
@@ -1473,20 +1516,18 @@ SUDO_PASS='${escPass}'
 _sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
 _sudo -v
 FEED=$(grep -oE 'trixie-[a-z]+' /etc/apt/sources.list.d/bhf.list 2>/dev/null | head -1 || echo unknown)
+trap 'rm -f "$0"' EXIT
 echo "[CX] Running apt update on feed: $FEED"
 _sudo apt $APT_OPTS update -y
 echo "[CX] apt update complete."
 `;
 
   try {
-    const tmpPath = path.join(os.tmpdir(), `cx-updatefeed-${Date.now()}.sh`);
-    await fs.promises.writeFile(tmpPath, script, { mode: 0o755 });
     const mgr = new SSHManager();
     activeSessions.set(sessionId, mgr);
     sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m Running apt update...\r\n` });
     await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
-    await mgr.putFile(tmpPath, '/tmp/cx_updatefeed.sh');
-    await fs.promises.unlink(tmpPath).catch(() => {});
+    await withTempScript('cx-updatefeed', script, (p) => mgr.putFile(p, '/tmp/cx_updatefeed.sh'));
     const result = await mgr.execStream('chmod +x /tmp/cx_updatefeed.sh && /tmp/cx_updatefeed.sh', {
       onStdout: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() }),
       onStderr: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() })
@@ -1530,6 +1571,13 @@ ipcMain.handle('profiles:save', async (_evt, { profiles }) => {
 ipcMain.handle('cx:service-mgmt', async (_evt, opts) => {
   const { host, password, port, action, service, tf2000Pass } = opts || {};
   const sessionId = `svcmgmt-${Date.now()}`;
+
+  // Service names come from the renderer (which got them from the CX) and are
+  // interpolated into a shell script - never let a hostile name through
+  const needsService = ['status', 'start', 'stop', 'restart'].includes(action);
+  if (needsService && !UNIT_RE.test(String(service || ''))) {
+    return { ok: false, error: `Invalid or missing service name: ${service}` };
+  }
   const escPass = String(password || '').replace(/'/g, "'\\''");
 
   // Pinned services - always shown first with friendly labels
@@ -1559,8 +1607,6 @@ ipcMain.handle('cx:service-mgmt', async (_evt, opts) => {
       const result = await mgr.exec(
         `systemctl list-units --type=service --all --no-pager --no-legend 2>/dev/null | awk '{print $1, $3, $4}'`
       );
-      mgr.dispose();
-
       const discovered = [];
       String(result.stdout || '').replace(/\r/g, '').split('\n').forEach(line => {
         const parts = line.trim().split(/\s+/);
@@ -1573,22 +1619,13 @@ ipcMain.handle('cx:service-mgmt', async (_evt, opts) => {
         discovered.push({ id: name, label: name, desc: '', state, canStop: !NO_STOP.has(name), pinned: false });
       });
 
-      // Get states for pinned services
-      const pinnedList = await Promise.all(Object.entries(PINNED).map(async ([id, meta]) => {
-        const r = await mgr.exec(`systemctl is-active ${id} 2>/dev/null || echo inactive`).catch(() => ({ stdout: 'unknown' }));
-        const state = String(r && r.stdout || 'unknown').replace(/\r?\n/g, '').trim();
-        return { id, ...meta, state, pinned: true };
-      }));
-
-      // mgr was disposed above so re-connect for pinned states
-      const mgr2 = new SSHManager();
-      await mgr2.connect({ host, username: 'Administrator', password, port: port || 22 });
+      // States for pinned services - same connection, no reconnect
       const pinnedWithStates = await Promise.all(Object.entries(PINNED).map(async ([id, meta]) => {
-        const r = await mgr2.exec(`systemctl is-active ${id} 2>/dev/null; true`);
-        const state = String(r.stdout || '').replace(/\r/g, '').split('\n')[0].trim() || 'unknown';
+        const r = await mgr.exec(`systemctl is-active ${id} 2>/dev/null; true`).catch(() => ({ stdout: '' }));
+        const state = String((r && r.stdout) || '').replace(/\r/g, '').split('\n')[0].trim() || 'unknown';
         return { id, ...meta, state, pinned: true, canStop: meta.canStop && !NO_STOP.has(id) };
       }));
-      mgr2.dispose();
+      mgr.dispose();
 
       return { ok: true, services: [...pinnedWithStates, ...discovered] };
     } catch (err) {
@@ -1602,7 +1639,7 @@ ipcMain.handle('cx:service-mgmt', async (_evt, opts) => {
     const mgr = new SSHManager();
     try {
       await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
-      const result = await mgr.exec(`systemctl is-active ${service} 2>/dev/null || echo inactive`);
+      const result = await mgr.exec(`systemctl is-active "${service}" 2>/dev/null || echo inactive`);
       mgr.dispose();
       const state = String(result.stdout || '').replace(/\r?\n/g, '').trim();
       return { ok: true, service, state };
@@ -1621,6 +1658,7 @@ export TERM=dumb
 SUDO_PASS='${escPass}'
 _sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
 _sudo -v
+trap 'rm -f "$0"' EXIT
 echo "[CX] Stopping TcHmiSrv..."
 _sudo systemctl stop TcHmiSrv || true
 echo "[CX] Removing HMI Server init state..."
@@ -1636,14 +1674,11 @@ STATE=$(_sudo systemctl is-active TcHmiSrv 2>/dev/null || echo unknown)
 echo "[CX] TcHmiSrv is now: $STATE"
 `;
     try {
-      const tmpPath = path.join(os.tmpdir(), `cx-reinit-${Date.now()}.sh`);
-      await fs.promises.writeFile(tmpPath, script, { mode: 0o755 });
       const mgr = new SSHManager();
       activeSessions.set(sessionId, mgr);
       sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m Reinitialising TF2000 HMI Server...\r\n` });
       await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
-      await mgr.putFile(tmpPath, '/tmp/cx_reinit.sh');
-      await fs.promises.unlink(tmpPath).catch(() => {});
+      await withTempScript('cx-reinit', script, (p) => mgr.putFile(p, '/tmp/cx_reinit.sh'));
       const result = await mgr.execStream('chmod +x /tmp/cx_reinit.sh && /tmp/cx_reinit.sh', {
         onStdout: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() }),
         onStderr: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() })
@@ -1671,22 +1706,20 @@ set -e
 SUDO_PASS='${escPass}'
 _sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
 _sudo -v
+trap 'rm -f "$0"' EXIT
 echo "[CX] systemctl ${action} ${service}"
-_sudo systemctl ${action} ${service}
+_sudo systemctl ${action} "${service}"
 sleep 1
-STATE=$(_sudo systemctl is-active ${service} 2>/dev/null || echo unknown)
+STATE=$(_sudo systemctl is-active "${service}" 2>/dev/null || echo unknown)
 echo "[CX] ${service} is now: $STATE"
 `;
 
   try {
-    const tmpPath = path.join(os.tmpdir(), `cx-svc-${Date.now()}.sh`);
-    await fs.promises.writeFile(tmpPath, script, { mode: 0o755 });
     const mgr = new SSHManager();
     activeSessions.set(sessionId, mgr);
     sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m ${action} ${service}...\r\n` });
     await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
-    await mgr.putFile(tmpPath, '/tmp/cx_svc.sh');
-    await fs.promises.unlink(tmpPath).catch(() => {});
+    await withTempScript('cx-svc', script, (p) => mgr.putFile(p, '/tmp/cx_svc.sh'));
     const result = await mgr.execStream('chmod +x /tmp/cx_svc.sh && /tmp/cx_svc.sh', {
       onStdout: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() }),
       onStderr: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() })
