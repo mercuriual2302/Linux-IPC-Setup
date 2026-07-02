@@ -146,7 +146,12 @@ fi
 ${feedLine}
 echo "[CX] Updating package lists..."
 _sudo apt $APT_OPTS update -y
-echo "[CX] Disabling firewall..."
+echo "[CX] Saving current firewall state before setup..."
+FW_WAS_ACTIVE=$(_sudo systemctl is-active nftables 2>/dev/null || true)
+FW_WAS_ACTIVE=\${FW_WAS_ACTIVE:-inactive}
+FW_WAS_ENABLED=$(_sudo systemctl is-enabled nftables 2>/dev/null || true)
+FW_WAS_ENABLED=\${FW_WAS_ENABLED:-disabled}
+echo "[CX] Disabling firewall for setup..."
 _sudo systemctl stop nftables || true
 _sudo systemctl disable nftables || true
 echo "[CX] Installing console-setup..."
@@ -161,6 +166,17 @@ ${runtimeLine1}
 ${pkgsBlock}${mdpBlock}${hmiBlock}${tf1200Block}
 echo "[CX] Upgrading all packages..."
 _sudo apt $APT_OPTS upgrade -y
+echo "[CX] Restoring firewall to its state before setup (was active=$FW_WAS_ACTIVE, enabled=$FW_WAS_ENABLED)..."
+if [ "$FW_WAS_ENABLED" = "enabled" ]; then
+  _sudo systemctl enable nftables || true
+else
+  _sudo systemctl disable nftables || true
+fi
+if [ "$FW_WAS_ACTIVE" = "active" ]; then
+  _sudo systemctl start nftables || true
+else
+  _sudo systemctl stop nftables || true
+fi
 echo "[CX] Setup complete! Rebooting in 5 seconds..."
 sleep 5
 _sudo reboot
