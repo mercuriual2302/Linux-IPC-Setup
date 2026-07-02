@@ -212,7 +212,10 @@ async function resolveDirectLinkIp(mac, laptopIp) {
 async function scanLinkLocalForSSH(targetMac) {
   const norm = (m) => String(m || '').replace(/[^0-9a-fA-F]/g, '').toLowerCase();
   const hosts = [];
-  for (let a = 1; a < 255; a++) for (let b = 1; b < 255; b++) hosts.push(`169.254.${a}.${b}`);
+  // RFC 3927 reserves 169.254.0.x and 169.254.255.x, so the third octet runs
+  // 1-254. The fourth octet is a plain host byte in the /16 - 0 and 255 are
+  // valid there, and skipping them meant a CX at x.0 or x.255 was never found.
+  for (let a = 1; a < 255; a++) for (let b = 0; b <= 255; b++) hosts.push(`169.254.${a}.${b}`);
   // shuffle so average-case performance is O(N/2) regardless of where the CX landed
   for (let i = hosts.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -224,7 +227,9 @@ async function scanLinkLocalForSSH(targetMac) {
     let completed = 0;
     let idx = 0;
     const total = hosts.length;
-    const CONC = 1500;
+    // 1500 concurrent sockets could exhaust handles (EMFILE) on some Windows
+    // machines - 512 still sweeps the /16 in a few seconds on a direct link
+    const CONC = 512;
 
     function next() {
       if (found || idx >= total) return;

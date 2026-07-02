@@ -12,6 +12,11 @@
 //
 // Note: $APT_OPTS is a shell variable defined inside the inner script itself;
 // these install lines expand to `sudo apt $APT_OPTS install -y ...` on the CX.
+// Single-quote a value for safe use inside a generated shell script
+function shq(s) {
+  return `'${String(s).replace(/'/g, `'\\''`)}'`;
+}
+
 function installLine(name, pkgVersions) {
   const v = pkgVersions && pkgVersions[name];
   if (v && v.mode === 'pinned' && v.version) {
@@ -65,7 +70,7 @@ if _sudo test -f /etc/TwinCAT/Functions/TF2000-HMI-Server/TcHmiSrv.cfg 2>/dev/nu
   _sudo systemctl start TcHmiSrv.service || true
 else
   echo "[CX] Initializing TF2000 HMI Server..."
-  _sudo TcHmiSrv --initialize --password=${tf2000Pass}
+  _sudo TcHmiSrv --initialize --password=${shq(tf2000Pass)}
   _sudo systemctl enable TcHmiSrv.service
   _sudo systemctl start TcHmiSrv.service
 fi`
@@ -91,6 +96,7 @@ _sudo usermod -aG sudo TF1200`
 #                  $3 = Administrator password (for sudo).
 # $1/$2 may be blank if bhf.conf already exists on the CX - see check below.
 set -e
+trap 'rm -f "$0"' EXIT
 BECKHOFF_USER="$1"
 BECKHOFF_PASS="$2"
 SUDO_PASS="$3"
@@ -172,6 +178,7 @@ function buildInnerTF1200Script({ jsonConfig = {}, proxyHost = null, proxyPort =
 # Inner TF1200 config script — executed over SSH by the Electron app.
 # Positional args: $1 = HMI_URL, $2 = Administrator password (for sudo).
 set -e
+trap 'rm -f "$0"' EXIT
 HMI_URL="$1"
 SUDO_PASS="$2"
 CONFIG_FILE="/home/TF1200/.config/TF1200-UI-Client/config.json"

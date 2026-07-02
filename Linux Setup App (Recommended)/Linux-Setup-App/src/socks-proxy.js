@@ -8,7 +8,7 @@
 // run, nothing is ever written permanently to the CX's apt config.
 const net = require('net');
 
-function handleClient(client) {
+function handleClient(client, sockets) {
   let stage = 'greeting';
   let buf = Buffer.alloc(0);
 
@@ -53,6 +53,7 @@ function handleClient(client) {
 
       stage = 'relay';
       const upstream = net.connect(port, addr, () => {
+        if (sockets) { sockets.add(upstream); upstream.on('close', () => sockets.delete(upstream)); }
         client.write(Buffer.from([0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])); // success
         client.pipe(upstream);
         upstream.pipe(client);
@@ -67,13 +68,35 @@ function handleClient(client) {
   client.on('error', () => {});
 }
 
-// Binds to 0.0.0.0 on an ephemeral port (OS-assigned, so there's never a
-// "port already in use" failure) and resolves with that port once listening.
-function startSocksServer() {
+// Binds to the given adapter address on an ephemeral port (OS-assigned, so
+// there's never a "port already in use" failure) and resolves with that port
+// once listening. Previously bound 0.0.0.0 with no auth, which made the
+// laptop an open proxy on every network it was attached to for the duration
+// of a Setup run. Now: bind only the CX-facing adapter, and optionally
+// reject any client that isn't the target CX itself.
+function normAddr(a) {
+  // ::ffff:192.168.1.5 and 192.168.1.5 are the same client
+  return String(a || '').replace(/^::ffff:/i, '');
+}
+
+function startSocksServer({ bindHost = '127.0.0.1', allowFrom = null } = {}) {
   return new Promise((resolve, reject) => {
-    const server = net.createServer(handleClient);
+    const sockets = new Set();
+    const allowed = Array.isArray(allowFrom) && allowFrom.length
+      ? new Set(allowFrom.map(normAddr))
+      : null;
+    const server = net.createServer((client) => {
+      if (allowed && !allowed.has(normAddr(client.remoteAddress))) {
+        client.destroy();
+        return;
+      }
+      sockets.add(client);
+      client.on('close', () => sockets.delete(client));
+      handleClient(client, sockets);
+    });
+    server._activeSockets = sockets;
     server.on('error', reject);
-    server.listen(0, '0.0.0.0', () => {
+    server.listen(0, bindHost, () => {
       resolve({ server, port: server.address().port });
     });
   });
@@ -82,10 +105,16 @@ function startSocksServer() {
 function stopSocksServer(server) {
   return new Promise((resolve) => {
     if (!server) return resolve();
+    // close() only stops new connections - unref() detaches from the event
+    // loop but leaves existing pipes flowing. Destroy them so "stop" means
+    // stopped, not "stops eventually when apt finishes downloading".
+    if (server._activeSockets) {
+      for (const sock of server._activeSockets) {
+        try { sock.destroy(); } catch (_) {}
+      }
+      server._activeSockets.clear();
+    }
     server.close(() => resolve());
-    // close() waits for existing connections to end on their own - for a setup
-    // run that just finished we want this torn down promptly instead.
-    server.getConnections((_err, count) => { if (count) server.unref(); });
   });
 }
 
