@@ -856,10 +856,10 @@ ipcMain.handle('cx:firewall', async (_evt, opts) => {
     const label = String(p.label || '').replace(/[^A-Za-z0-9 ._/-]/g, '').slice(0, 40);
     cleanPorts.push({ port: portNum, proto, label });
   }
-  const openRules = cleanPorts.map(p =>
-    `_sudo nft add rule inet filter input ${p.proto} dport ${p.port} accept  # ${p.label}`
-  ).join('\n');
-
+  const openRules = cleanPorts.map(p => {
+  const commentPart = p.label ? ` comment '"${p.label}"'` : '';
+  return `_sudo nft add rule inet filter input ${p.proto} dport ${p.port} accept${commentPart}`;
+  }).join('\n');
   const script = `#!/bin/bash
 set -e
 SUDO_PASS='${password.replace(/'/g, "'\\''")}'
@@ -905,6 +905,68 @@ echo "[CX] Firewall disabled - all ports open."`}
     return { ok: result.code === 0, sessionId };
   } catch (err) {
     sendToRenderer('ssh:status', { sessionId, status: 'failed', message: err.message });
+    return { ok: false, error: err.message };
+  }
+});
+
+// Firewall reader - parses the live nftables ruleset so the current open
+// ports and labels can be shown before anything is changed. Read-only,
+// never writes anything to the CX. Text output rather than `nft -j` so this
+// doesn't depend on the installed nft build supporting JSON output.
+ipcMain.handle('cx:read-firewall', async (_evt, opts) => {
+  const { host, password, port } = opts || {};
+  const escPass = String(password || '').replace(/'/g, "'\\''");
+  const mgr = new SSHManager();
+  const sessionId = `readfw-${Date.now()}`;
+  activeSessions.set(sessionId, mgr);
+  try {
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+    const cmd = `
+_sudo() { echo '${escPass}' | sudo -S -p '' "$@"; }
+ACTIVE=$(_sudo systemctl is-active nftables 2>/dev/null || true); ACTIVE=\${ACTIVE:-inactive}
+ENABLED=$(_sudo systemctl is-enabled nftables 2>/dev/null || true); ENABLED=\${ENABLED:-disabled}
+echo "___ACTIVE___$ACTIVE"
+echo "___ENABLED___$ENABLED"
+echo "___RULESET___"
+_sudo nft list ruleset 2>/dev/null || true
+`;
+    const result = await mgr.exec(cmd);
+    mgr.dispose();
+    activeSessions.delete(sessionId);
+
+    const out = (result.stdout || '').replace(/\r/g, '');
+    const activeMatch = out.match(/___ACTIVE___(\S+)/);
+    const enabledMatch = out.match(/___ENABLED___(\S+)/);
+    const active = activeMatch ? activeMatch[1] : 'inactive';
+    const enabled = enabledMatch ? enabledMatch[1] : 'disabled';
+
+    const marker = '___RULESET___';
+    const rulesetIdx = out.indexOf(marker);
+    const rulesetText = rulesetIdx !== -1 ? out.slice(rulesetIdx + marker.length) : '';
+
+    // Matches lines this app generates itself (tcp/udp dport N accept, with
+    // an optional nft comment carrying the label) - also picks up anything
+    // else in the same shape, e.g. a port a TwinCAT Function auto-opened.
+    const ports = [];
+    const lineRe = /^\s*(tcp|udp)\s+dport\s+(\d+)\s+accept(?:\s+comment\s+"([^"]*)")?/;
+    rulesetText.split('\n').forEach((line) => {
+      const m = line.match(lineRe);
+      if (!m) return;
+      const proto = m[1];
+      const dport = parseInt(m[2], 10);
+      if (proto === 'tcp' && dport === 22) return; // hardcoded SSH rule, not user-toggleable
+      ports.push({ port: dport, proto, label: m[3] || '', open: true });
+    });
+
+    return {
+      ok: true,
+      enabled: enabled === 'enabled',
+      active: active === 'active',
+      ports
+    };
+  } catch (err) {
+    mgr.dispose();
+    activeSessions.delete(sessionId);
     return { ok: false, error: err.message };
   }
 });
