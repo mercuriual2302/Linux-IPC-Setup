@@ -1858,7 +1858,7 @@ function recipeSlug(name) {
 // that fails to read is simply omitted (partial capture is still useful), and
 // the per-section read errors are reported back so the UI can note them.
 ipcMain.handle('recipe:capture', async (_evt, opts) => {
-  const { host, password, port, name } = opts || {};
+  const { host, password, port, name, beckhoffUser, beckhoffPass, tf2000Pass } = opts || {};
   const escPass = String(password || '').replace(/'/g, "'\\''");
   const mgr = new SSHManager();
   const sessionId = `capture-${Date.now()}`;
@@ -1868,8 +1868,8 @@ ipcMain.handle('recipe:capture', async (_evt, opts) => {
   try {
     await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
 
-    // 1. System info (feed, tc version, interfaces) - one compound command
-    let info = {}, ifaces = [];
+    // 1. System info (feed, tc version, interfaces, AMS NetID) - one compound command
+    let info = {}, ifaces = [], amsNetIdHex = null;
     try {
       const infoCmd = `
 _sudo() { echo '${escPass}' | sudo -S -p '' "$@"; }
@@ -1877,6 +1877,7 @@ echo "HOSTNAME|||$(hostname)"
 echo "OS|||$(grep PRETTY_NAME /etc/os-release | cut -d= -f2 | tr -d '"')"
 echo "TC_VER|||$(dpkg-query -W -f='\${Version}' tc31-xar-um 2>/dev/null || echo unknown)"
 echo "FEED|||$(grep -oE 'trixie-[a-z]+' /etc/apt/sources.list.d/bhf.list 2>/dev/null | head -1 || echo unknown)"
+echo "AMSNETID|||$(_sudo grep -oE 'Name=\\"AmsNetId\\"[^>]*>[0-9A-Fa-f]+' /etc/TwinCAT/3.1/TcRegistry.xml 2>/dev/null | grep -oE '[0-9A-Fa-f]+$' || true)"
 ip -o addr show | awk '/inet / && !/127.0.0.1/{split($4,a,"/"); gsub("\r","",a[1]); n=$2; gsub("\r","",n); print "IFACE|||"n"|||"$4}'
 `;
       const infoRes = await mgr.exec(infoCmd);
@@ -1885,10 +1886,20 @@ ip -o addr show | awk '/inet / && !/127.0.0.1/{split($4,a,"/"); gsub("\r","",a[1
         const parts = line.trim().replace(/\r/g, '').split('|||');
         if (parts.length < 2) return;
         if (parts[0] === 'IFACE') { ifaceMap[parts[1]] = { name: parts[1], ip: parts[2], state: 'up' }; }
+        else if (parts[0] === 'AMSNETID') { amsNetIdHex = parts[1] || null; }
         else info[parts[0]] = parts[1];
       });
       ifaces = Object.values(ifaceMap);
     } catch (e) { warnings.push('Could not read system info: ' + e.message); }
+
+    // AMS NetID on the wire is 6 hex bytes (e.g. 053B151A0101) - manual section
+    // 8.5 shows it dotted-decimal (5.59.21.26.1.1), one decimal per hex byte.
+    let amsNetId = null;
+    if (amsNetIdHex && /^[0-9A-Fa-f]{12}$/.test(amsNetIdHex)) {
+      amsNetId = amsNetIdHex.match(/.{2}/g).map(h => parseInt(h, 16)).join('.');
+    } else if (amsNetIdHex) {
+      warnings.push('AMS NetID found but not in the expected 6-byte format - skipped');
+    }
 
     // 2. Installed TwinCAT packages with their versions
     let packages = [];
@@ -1944,7 +1955,21 @@ _sudo nft list ruleset 2>/dev/null || true
     mgr.dispose();
     activeSessions.delete(sessionId);
 
-    const built = recipe.buildRecipeFromCapture({ name, sourceHost: host, info, ifaces, packages, firewall, tf1200 });
+    // Nudge the user rather than silently capturing an incomplete recipe: if
+    // packages were found but no MyBeckhoff credentials were supplied for
+    // this capture, flag it so they know to add them (or accept the recipe
+    // will require them to be typed in at apply time instead).
+    if (packages.length && !beckhoffUser && !beckhoffPass) {
+      warnings.push('No MyBeckhoff credentials entered for this capture - this recipe will require them to be typed in when applied.');
+    }
+    if (packages.some(p => p.name === 'tf2000-hmi-server') && !tf2000Pass) {
+      warnings.push('tf2000-hmi-server is installed but no TF2000 password was entered - this recipe will require it when applied.');
+    }
+
+    const built = recipe.buildRecipeFromCapture({
+      name, sourceHost: host, info, ifaces, packages, firewall, tf1200,
+      amsNetId, beckhoffUser, beckhoffPass, tf2000Pass
+    });
     const check = recipe.validateRecipe(built);
     if (!check.ok) {
       return { ok: false, error: 'Captured recipe failed validation: ' + check.errors.join('; ') };
@@ -2015,7 +2040,12 @@ ipcMain.handle('recipe:export', async (_evt, { recipe: rec }) => {
   });
   if (canceled || !filePath) return { ok: false, canceled: true };
   try {
-    await fs.promises.writeFile(filePath, JSON.stringify(rec, null, 2), 'utf8');
+    // Exported recipes are meant to be shared with colleagues - never write
+    // a password to a file that might end up in email, chat, or a shared
+    // drive. Username is kept so whoever imports it knows which account to
+    // supply a password for; passwords are always typed fresh on their end.
+    const shareable = recipe.stripSecretsForExport(rec);
+    await fs.promises.writeFile(filePath, JSON.stringify(shareable, null, 2), 'utf8');
     return { ok: true, path: filePath };
   } catch (e) {
     return { ok: false, error: e.message };
@@ -2054,6 +2084,33 @@ ipcMain.handle('recipe:apply', async (_evt, opts) => {
   const plan = recipe.buildApplyPlan(rec, { include: include || {}, applyNetwork: applyNetwork === true });
   if (!plan.length) return { ok: false, error: 'Nothing to apply - no sections selected' };
 
+  // Effective credentials: whatever was freshly typed for this run wins, else
+  // fall back to what the recipe itself has stored from capture. Either way,
+  // if what's needed still isn't there, refuse before touching the network -
+  // no connection is opened, nothing partial happens. This is the explicit
+  // "force input" gate: previously a missing credential just logged a warning
+  // and continued, which meant apt sometimes failed later, sometimes silently
+  // succeeded against an unauthenticated feed, and either way the user found
+  // out only after the fact.
+  const effectiveBeckhoffUser = beckhoffUser || (rec.credentials && rec.credentials.beckhoffUsername) || '';
+  const effectiveBeckhoffPass = beckhoffPass || (rec.credentials && rec.credentials.beckhoffPassword) || '';
+  const effectiveTf2000Pass = tf2000Pass || (rec.credentials && rec.credentials.tf2000Password) || '';
+
+  if (recipe.needsBeckhoffAuth(rec, include || {}) && !(effectiveBeckhoffUser && effectiveBeckhoffPass)) {
+    return {
+      ok: false,
+      error: 'This recipe needs MyBeckhoff credentials to switch feeds or install packages. Enter a username and password before applying.',
+      needsCredentials: 'beckhoff'
+    };
+  }
+  if (recipe.needsTf2000Password(rec, include || {}) && !effectiveTf2000Pass) {
+    return {
+      ok: false,
+      error: 'The package list includes tf2000-hmi-server, which needs a password to initialise. Enter one before applying.',
+      needsCredentials: 'tf2000'
+    };
+  }
+
   const sessionId = incomingSession || `apply-${Date.now()}`;
   const results = [];
   const emit = (data) => sendToRenderer('ssh:output', { sessionId, data });
@@ -2070,10 +2127,10 @@ ipcMain.handle('recipe:apply', async (_evt, opts) => {
       let stepResult;
       switch (s.kind) {
         case 'feed':
-          stepResult = await applyFeedStep(host, password, port, s.data.channel, { beckhoffUser, beckhoffPass, proxyHost, proxyPort }, emit);
+          stepResult = await applyFeedStep(host, password, port, s.data.channel, { beckhoffUser: effectiveBeckhoffUser, beckhoffPass: effectiveBeckhoffPass, proxyHost, proxyPort }, emit);
           break;
         case 'packages':
-          stepResult = await applyPackagesStep(host, password, port, s.data.packages, { beckhoffUser, beckhoffPass, proxyHost, proxyPort }, emit);
+          stepResult = await applyPackagesStep(host, password, port, s.data.packages, { beckhoffUser: effectiveBeckhoffUser, beckhoffPass: effectiveBeckhoffPass, tf2000Pass: effectiveTf2000Pass, proxyHost, proxyPort }, emit);
           break;
         case 'firewall':
           stepResult = await applyFirewallStep(host, password, port, s.data, emit);
@@ -2183,13 +2240,35 @@ _sudo apt $APT_OPTS update -y 2>&1 | tail -5`;
 
 async function applyPackagesStep(host, password, port, packages, creds, emit) {
   const escPass = String(password || '').replace(/'/g, "'\\''");
-  const { beckhoffUser, beckhoffPass, proxyHost, proxyPort } = creds || {};
+  const { beckhoffUser, beckhoffPass, tf2000Pass, proxyHost, proxyPort } = creds || {};
   // Build the install list, honouring version pins where present
   const installArgs = packages.map(p => {
     if (!/^[A-Za-z0-9._+-]+$/.test(p.name)) return null;
     return p.version ? `${p.name}=${p.version}` : p.name;
   }).filter(Boolean).join(' ');
   if (!installArgs) return { ok: false, error: 'No valid packages to install' };
+
+  // tf2000-hmi-server needs a one-time initialisation with its own password
+  // after install, same as the main Setup flow and the service reinit action -
+  // otherwise the service is installed but never brought up. Matches
+  // script-builder.js's buildInnerSetupScript hmiBlock exactly.
+  const needsTf2000 = packages.some(p => p.name === 'tf2000-hmi-server');
+  let tf2000Block = '';
+  if (needsTf2000) {
+    const escTf2000Pass = String(tf2000Pass || '').replace(/'/g, "'\\''");
+    tf2000Block = `
+echo "[CX] Checking TF2000 HMI Server..."
+if _sudo test -f /etc/TwinCAT/Functions/TF2000-HMI-Server/TcHmiSrv.cfg 2>/dev/null || _sudo systemctl is-active TcHmiSrv.service &>/dev/null; then
+  echo "[CX] TF2000 already initialized - skipping init, ensuring service is running."
+  _sudo systemctl enable TcHmiSrv.service || true
+  _sudo systemctl start TcHmiSrv.service || true
+else
+  echo "[CX] Initializing TF2000 HMI Server..."
+  _sudo TcHmiSrv --initialize --password='${escTf2000Pass}'
+  _sudo systemctl enable TcHmiSrv.service
+  _sudo systemctl start TcHmiSrv.service
+fi`;
+  }
 
   const mgr = new SSHManager();
   try {
@@ -2201,7 +2280,8 @@ ${buildAptPreamble(escPass, beckhoffUser, beckhoffPass, proxyHost, proxyPort)}
 _sudo apt $APT_OPTS update -y 2>&1 | tail -3
 echo "[CX] Installing: ${installArgs}"
 _sudo DEBIAN_FRONTEND=noninteractive apt $APT_OPTS install -y ${installArgs}
-echo "[CX] Package install complete"`;
+echo "[CX] Package install complete"
+${tf2000Block}`;
     await withTempScript('rec-pkgs', script, (p) => mgr.putFile(p, '/tmp/rec_pkgs.sh'));
     const res = await mgr.execStream('chmod +x /tmp/rec_pkgs.sh && /tmp/rec_pkgs.sh', {
       onStdout: (c) => emit(c.toString()), onStderr: (c) => emit(c.toString())

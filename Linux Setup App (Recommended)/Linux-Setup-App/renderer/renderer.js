@@ -2909,6 +2909,9 @@ $('btn-validate-creds').addEventListener('click', async () => {
 // ===========================================================================
 (function initRecipes() {
   const nameInput   = $('recipe-name');
+  const bkUserInput = $('recipe-bk-user');
+  const bkPassInput = $('recipe-bk-pass');
+  const tf2000Input = $('recipe-tf2000-pass');
   const captureBtn  = $('btn-recipe-capture');
   const captureStat = $('recipe-capture-status');
   const previewBox  = $('recipe-capture-preview');
@@ -2923,6 +2926,11 @@ $('btn-validate-creds').addEventListener('click', async () => {
   const applyPanel  = $('recipe-apply-panel');
   const applySubEl  = $('recipe-apply-subtitle');
   const applySecsEl = $('recipe-apply-sections');
+  const applyCredsBox   = $('recipe-apply-creds');
+  const applyCredsHint  = $('recipe-apply-creds-hint');
+  const applyBkUserInput   = $('recipe-apply-bk-user');
+  const applyBkPassInput   = $('recipe-apply-bk-pass');
+  const applyTf2000Input   = $('recipe-apply-tf2000-pass');
   const applyRunBtn = $('btn-recipe-apply-run');
   const applyCancel = $('btn-recipe-apply-cancel');
   const applyStat   = $('recipe-apply-status');
@@ -2939,6 +2947,9 @@ $('btn-validate-creds').addEventListener('click', async () => {
     const conn = getCxMgmtConn();
     if (!conn.host) { toast('Connect to a CX first', 'warn'); return; }
     const name = (nameInput.value || '').trim() || `Recipe ${new Date().toISOString().slice(0,10)}`;
+    const beckhoffUser = (bkUserInput.value || '').trim();
+    const beckhoffPass = bkPassInput.value || '';
+    const tf2000Pass = tf2000Input.value || '';
 
     captureBtn.disabled = true; captureBtn.textContent = 'CAPTURING...';
     captureStat.textContent = 'Reading state from ' + conn.host + '...';
@@ -2946,7 +2957,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
     previewBox.style.display = 'none';
 
     let res;
-    try { res = await window.api.recipeCapture({ ...conn, name }); }
+    try { res = await window.api.recipeCapture({ ...conn, name, beckhoffUser, beckhoffPass, tf2000Pass }); }
     catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
 
     captureBtn.disabled = false; captureBtn.textContent = '⛃ CAPTURE FROM CX';
@@ -2971,11 +2982,20 @@ $('btn-validate-creds').addEventListener('click', async () => {
       const tag = identity ? ' <span style="color:var(--tc-warn)">(identity - reference only)</span>' : '';
       return `<div style="padding:.15rem 0">• <strong>${escapeHtml(key)}</strong>: ${escapeHtml(summary)}${tag}</div>`;
     }).join('');
+
+    const creds = rec.credentials || {};
+    const credBits = [];
+    credBits.push(creds.beckhoffUsername ? `MyBeckhoff: ${escapeHtml(creds.beckhoffUsername)} (password saved)` : 'MyBeckhoff: not set');
+    if (sections.packages && sections.packages.some(p => p.name === 'tf2000-hmi-server')) {
+      credBits.push(creds.tf2000Password ? 'TF2000 password: saved' : 'TF2000 password: not set');
+    }
+    const credRow = `<div style="padding:.15rem 0;margin-top:.3rem;border-top:1px solid var(--tc-border);padding-top:.4rem">• <strong>credentials</strong>: ${credBits.join(' · ')}</div>`;
+
     let warnHtml = '';
     if (warnings.length) {
       warnHtml = `<div style="margin-top:.5rem;color:var(--tc-warn)">${warnings.map(w => '⚠ ' + escapeHtml(w)).join('<br>')}</div>`;
     }
-    sectionsEl.innerHTML = rows + warnHtml;
+    sectionsEl.innerHTML = rows + credRow + warnHtml;
     previewBox.style.display = '';
   }
 
@@ -3069,16 +3089,65 @@ $('btn-validate-creds').addEventListener('click', async () => {
       const summary = summariseSection(key, sections[key]);
       const checked = identity ? '' : 'checked';
       const disabledNote = identity
-        ? ' <span style="color:var(--tc-warn)">— per-device, handled in the Network view</span>'
+        ? ' <span style="color:var(--tc-warn)">- per-device, handled in the Network view</span>'
         : '';
       return `<label style="display:flex;align-items:center;gap:.5rem;padding:.3rem 0;font-family:var(--tc-mono);font-size:12px;cursor:pointer">
         <input type="checkbox" class="recipe-sec-chk" data-key="${escapeHtml(key)}" ${checked} ${identity ? 'disabled' : ''}>
         <strong>${escapeHtml(key)}</strong> <span style="color:var(--tc-muted)">${escapeHtml(summary)}</span>${disabledNote}
       </label>`;
     }).join('');
+
+    // Prefill from whatever the recipe already has saved - editable, so a
+    // different account or a one-off override is just as easy as accepting
+    // what's stored.
+    const creds = rec.credentials || {};
+    applyBkUserInput.value = creds.beckhoffUsername || '';
+    applyBkPassInput.value = creds.beckhoffPassword || '';
+    applyTf2000Input.value = creds.tf2000Password || '';
+
+    const updateCredsVisibility = () => {
+      const include = currentInclude();
+      const needsBk = recipeNeedsBeckhoffAuth(rec, include);
+      const needsTf = recipeNeedsTf2000Password(rec, include);
+      applyCredsBox.style.display = (needsBk || needsTf) ? '' : 'none';
+      const missing = [];
+      if (needsBk && !(applyBkUserInput.value.trim() && applyBkPassInput.value)) missing.push('MyBeckhoff username/password');
+      if (needsTf && !applyTf2000Input.value) missing.push('TF2000 init password');
+      applyCredsHint.textContent = missing.length
+        ? `Required for this apply: ${missing.join(', ')}.`
+        : (needsBk || needsTf) ? 'Credentials look complete for this apply.' : '';
+      applyCredsHint.style.color = missing.length ? 'var(--tc-warn)' : 'var(--tc-accent2)';
+    };
+    applySecsEl.querySelectorAll('.recipe-sec-chk').forEach(chk => chk.addEventListener('change', updateCredsVisibility));
+    [applyBkUserInput, applyBkPassInput, applyTf2000Input].forEach(inp => inp.addEventListener('input', updateCredsVisibility));
+    updateCredsVisibility();
+
     applyStat.textContent = '';
     applyPanel.style.display = '';
     applyPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  function currentInclude() {
+    const include = {};
+    applySecsEl.querySelectorAll('.recipe-sec-chk').forEach(chk => {
+      if (chk.checked && !chk.disabled) include[chk.dataset.key] = true;
+    });
+    return include;
+  }
+
+  // Mirrors recipe.js's needsBeckhoffAuth/needsTf2000Password exactly (that
+  // module runs in the main process and isn't reachable from the renderer),
+  // so the UI can warn before a wasted round trip - the real gate is still
+  // enforced server-side in recipe:apply regardless of what happens here.
+  function recipeNeedsBeckhoffAuth(rec, include) {
+    const s = (rec && rec.sections) || {};
+    const wants = (key) => include[key] === true;
+    return !!((wants('feed') && s.feed) || (wants('packages') && s.packages && s.packages.length));
+  }
+  function recipeNeedsTf2000Password(rec, include) {
+    const s = (rec && rec.sections) || {};
+    if (include.packages !== true) return false;
+    return !!(s.packages || []).some(p => p && p.name === 'tf2000-hmi-server');
   }
 
   applyCancel.addEventListener('click', () => {
@@ -3091,11 +3160,25 @@ $('btn-validate-creds').addEventListener('click', async () => {
     const conn = getCxMgmtConn();
     if (!conn.host) { toast('Connect to a CX first', 'warn'); return; }
 
-    const include = {};
-    applySecsEl.querySelectorAll('.recipe-sec-chk').forEach(chk => {
-      if (chk.checked && !chk.disabled) include[chk.dataset.key] = true;
-    });
+    const include = currentInclude();
     if (!Object.keys(include).length) { toast('Tick at least one section to apply', 'warn'); return; }
+
+    const beckhoffUser = (applyBkUserInput.value || '').trim();
+    const beckhoffPass = applyBkPassInput.value || '';
+    const tf2000Pass = applyTf2000Input.value || '';
+
+    // Client-side check first so a missing credential doesn't cost a round
+    // trip - the same requirement is enforced again in main.js regardless.
+    if (recipeNeedsBeckhoffAuth(applyTarget, include) && !(beckhoffUser && beckhoffPass)) {
+      toast('Enter MyBeckhoff username and password before applying', 'warn');
+      applyBkUserInput.focus();
+      return;
+    }
+    if (recipeNeedsTf2000Password(applyTarget, include) && !tf2000Pass) {
+      toast('Enter the TF2000 init password before applying', 'warn');
+      applyTf2000Input.focus();
+      return;
+    }
 
     const targetCount = Object.keys(include).length;
     if (!confirm(`Apply ${targetCount} section(s) of "${applyTarget.name}" to ${conn.host}?\n\nThis will change the CX's configuration.`)) return;
@@ -3121,9 +3204,9 @@ $('btn-validate-creds').addEventListener('click', async () => {
       recipe: applyTarget,
       include,
       applyNetwork: false, // phase 1: never auto-push network via recipe
-      beckhoffUser: ($('bk-user') && $('bk-user').value.trim()) || '',
-      beckhoffPass: ($('bk-pass') && $('bk-pass').value.trim()) || '',
-      tf2000Pass: (typeof getTf2000Pass === 'function' ? getTf2000Pass() : '1'),
+      beckhoffUser,
+      beckhoffPass,
+      tf2000Pass,
       proxyHost,
       proxyPort
     }).catch(e => ({ ok: false, error: String((e && e.message) || e) }));
@@ -3135,7 +3218,8 @@ $('btn-validate-creds').addEventListener('click', async () => {
       applyStat.style.color = 'var(--tc-accent2)';
       toast('Recipe applied to ' + conn.host, 'success');
     } else {
-      applyStat.textContent = 'Apply stopped: ' + (res.error || 'unknown error') + (res.failedAt != null ? ` (step ${res.failedAt + 1})` : '');
+      const suffix = res.needsCredentials ? ' - fill in the credentials above and try again.' : '';
+      applyStat.textContent = 'Apply stopped: ' + (res.error || 'unknown error') + (res.failedAt != null ? ` (step ${res.failedAt + 1})` : '') + suffix;
       applyStat.style.color = 'var(--tc-danger)';
       toast('Recipe apply failed - see terminal', 'error');
     }

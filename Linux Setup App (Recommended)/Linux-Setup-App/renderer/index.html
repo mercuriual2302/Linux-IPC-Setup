@@ -249,6 +249,22 @@
             <input type="text" id="recipe-name" placeholder="e.g. F1 cell golden image" style="width:100%;max-width:420px;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)">
           </div>
 
+          <div style="display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:.4rem">
+            <div class="field" style="flex:1;min-width:200px">
+              <label>MYBECKHOFF USERNAME</label>
+              <input type="text" id="recipe-bk-user" placeholder="user@company.com" style="width:100%;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)">
+            </div>
+            <div class="field" style="flex:1;min-width:200px">
+              <label>MYBECKHOFF PASSWORD</label>
+              <input type="password" id="recipe-bk-pass" placeholder="•••••••" style="width:100%;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)">
+            </div>
+            <div class="field" style="flex:1;min-width:200px">
+              <label>TF2000 INIT PASSWORD (if applicable)</label>
+              <input type="password" id="recipe-tf2000-pass" placeholder="•••••••" style="width:100%;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)">
+            </div>
+          </div>
+          <div class="hint" style="margin-bottom:.6rem">Saved with this recipe in your local library so it never needs re-typing on repeat applies. Automatically removed if you export the recipe to share it - whoever imports it types their own.</div>
+
           <div class="btn-row" style="gap:.5rem">
             <button class="btn-run" id="btn-recipe-capture">CAPTURE FROM CX</button>
           </div>
@@ -281,6 +297,24 @@
           <div class="section-subtitle" id="recipe-apply-subtitle">Select which sections to apply to the connected CX. Identity settings (network) are off by default and left to the Network view.</div>
 
           <div id="recipe-apply-sections" style="margin-bottom:.75rem"></div>
+
+          <div id="recipe-apply-creds" style="display:none;margin-bottom:.75rem">
+            <div style="display:flex;gap:.6rem;flex-wrap:wrap">
+              <div class="field" style="flex:1;min-width:200px">
+                <label>MYBECKHOFF USERNAME</label>
+                <input type="text" id="recipe-apply-bk-user" placeholder="user@company.com" style="width:100%;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)">
+              </div>
+              <div class="field" style="flex:1;min-width:200px">
+                <label>MYBECKHOFF PASSWORD</label>
+                <input type="password" id="recipe-apply-bk-pass" placeholder="•••••••" style="width:100%;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)">
+              </div>
+              <div class="field" style="flex:1;min-width:200px">
+                <label>TF2000 INIT PASSWORD</label>
+                <input type="password" id="recipe-apply-tf2000-pass" placeholder="•••••••" style="width:100%;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)">
+              </div>
+            </div>
+            <div class="hint" id="recipe-apply-creds-hint" style="margin-top:.35rem"></div>
+          </div>
 
           <div class="btn-row" style="gap:.5rem">
             <button class="btn-run" id="btn-recipe-apply-run">APPLY TO CONNECTED CX</button>

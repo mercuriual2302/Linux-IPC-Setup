@@ -20,6 +20,15 @@ const RECIPE_VERSION = 1;
 // opts in per-run. This is the single most important safety property here.
 const IDENTITY_SECTIONS = ['network'];
 
+// Packages that need a companion initialisation step beyond a plain apt
+// install, keyed by the password field they need. Right now this is just
+// TF2000 HMI Server, but written as a lookup so a future package with the
+// same shape (install + one-time init with its own password) is a one-line
+// addition rather than another silent gap like this one turned out to be.
+const PACKAGE_INIT_REQUIREMENTS = {
+  'tf2000-hmi-server': 'tf2000Password'
+};
+
 // validation
 
 function isPlainObject(v) {
@@ -105,6 +114,19 @@ function validateRecipe(recipe) {
     errors.push('tf1200 section must be an object');
   }
 
+  if (recipe.credentials !== undefined) {
+    if (!isPlainObject(recipe.credentials)) {
+      errors.push('credentials must be an object');
+    } else {
+      ['beckhoffUsername', 'beckhoffPassword', 'tf2000Password'].forEach((key) => {
+        const v = recipe.credentials[key];
+        if (v !== undefined && v !== null && typeof v !== 'string') {
+          errors.push(`credentials.${key} must be a string or null`);
+        }
+      });
+    }
+  }
+
   return { ok: errors.length === 0, errors };
 }
 
@@ -118,7 +140,10 @@ function validateRecipe(recipe) {
 //   packages  - array of { name, version } the caller resolved as installed
 //   firewall  - from cx:read-firewall ({ enabled, ports })
 //   tf1200    - from cx:read-tf1200-config ({ config })
-function buildRecipeFromCapture({ name, sourceHost, info, ifaces, packages, firewall, tf1200 } = {}) {
+//   amsNetId  - string, e.g. "5.59.21.26.1.1" (per manual section 8.5) - reference only
+//   beckhoffUser/beckhoffPass - MyBeckhoff account for this recipe's apt steps
+//   tf2000Pass - password used to initialise TF2000 HMI Server, if included
+function buildRecipeFromCapture({ name, sourceHost, info, ifaces, packages, firewall, tf1200, amsNetId, beckhoffUser, beckhoffPass, tf2000Pass } = {}) {
   const sections = {};
 
   if (info && info.FEED && info.FEED !== 'unknown') {
@@ -140,19 +165,33 @@ function buildRecipeFromCapture({ name, sourceHost, info, ifaces, packages, fire
     };
   }
 
-  // Network is captured for reference only (see IDENTITY_SECTIONS). Store the
-  // interface list so a human can read what the source had, but this never
-  // auto-applies.
-  if (Array.isArray(ifaces) && ifaces.length) {
+  // Network/identity is captured for reference only (see IDENTITY_SECTIONS).
+  // Hostname and AMS NetID are per-device the same way an IP is (manual
+  // section 8.5 - changing AMS NetID changes the device's address on the
+  // TwinCAT network) so they live here too, never auto-applied.
+  if ((Array.isArray(ifaces) && ifaces.length) || amsNetId || (info && info.HOSTNAME)) {
     sections.network = {
       note: 'Per-device identity - not applied by default',
-      interfaces: ifaces.map(i => ({ name: i.name, ip: i.ip, state: i.state }))
+      interfaces: (ifaces || []).map(i => ({ name: i.name, ip: i.ip, state: i.state })),
+      hostname: (info && info.HOSTNAME) || null,
+      amsNetId: amsNetId || null
     };
   }
 
   if (tf1200 && tf1200.config && isPlainObject(tf1200.config)) {
     sections.tf1200 = { config: tf1200.config };
   }
+
+  // Credentials live outside `sections` deliberately: they're not a "desired
+  // device state" a user ticks on and off like feed/packages/firewall, they're
+  // supporting data those steps need to run at all. Kept locally so a saved
+  // recipe never needs re-typing on repeat applies - stripSecretsForExport()
+  // removes the passwords before a recipe is ever written to a shareable file.
+  const credentials = {
+    beckhoffUsername: beckhoffUser || null,
+    beckhoffPassword: beckhoffPass || null,
+    tf2000Password: tf2000Pass || null
+  };
 
   return {
     schema: 'linux-ipc-recipe',
@@ -165,7 +204,8 @@ function buildRecipeFromCapture({ name, sourceHost, info, ifaces, packages, fire
       tcVersion: info.TC_VER || null,
       os: info.OS || null
     } : null,
-    sections
+    sections,
+    credentials
   };
 }
 
@@ -247,11 +287,47 @@ function summariseSection(key, val) {
   }
 }
 
+// True if applying this recipe's currently-ticked sections would touch apt
+// (feed switch or package install), meaning MyBeckhoff credentials are
+// required to authenticate against the Beckhoff package server. Takes the
+// same `include` map buildApplyPlan does, so this reflects what's actually
+// about to run rather than everything the recipe could theoretically do.
+function needsBeckhoffAuth(recipe, include) {
+  const s = (recipe && recipe.sections) || {};
+  const wants = (key) => !include || include[key] === true;
+  return !!((wants('feed') && s.feed) || (wants('packages') && s.packages && s.packages.length));
+}
+
+// True if the ticked packages include one that needs a companion init step
+// requiring its own password (see PACKAGE_INIT_REQUIREMENTS).
+function needsTf2000Password(recipe, include) {
+  const s = (recipe && recipe.sections) || {};
+  if (include && include.packages !== true) return false;
+  return !!(s.packages || []).some(p => p && PACKAGE_INIT_REQUIREMENTS[p.name] === 'tf2000Password');
+}
+
+// Deep-clones a recipe with credential passwords removed. Usernames are kept
+// (not secret, and tell whoever imports the file which account to supply a
+// password for) - only the two password fields are stripped. Always call
+// this before a recipe is written anywhere outside the local recipes folder.
+function stripSecretsForExport(recipe) {
+  const copy = JSON.parse(JSON.stringify(recipe));
+  if (copy.credentials) {
+    copy.credentials.beckhoffPassword = null;
+    copy.credentials.tf2000Password = null;
+  }
+  return copy;
+}
+
 module.exports = {
   RECIPE_VERSION,
   IDENTITY_SECTIONS,
+  PACKAGE_INIT_REQUIREMENTS,
   validateRecipe,
   buildRecipeFromCapture,
   buildApplyPlan,
-  listSections
+  listSections,
+  needsBeckhoffAuth,
+  needsTf2000Password,
+  stripSecretsForExport
 };
