@@ -20,7 +20,7 @@ const RECIPE_VERSION = 1;
 // opts in per-run. This is the single most important safety property here.
 const IDENTITY_SECTIONS = ['network'];
 
-// -- validation ------------------------------------------------------------
+// validation
 
 function isPlainObject(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
@@ -108,7 +108,7 @@ function validateRecipe(recipe) {
   return { ok: errors.length === 0, errors };
 }
 
-// -- capture ---------------------------------------------------------------
+// capture 
 
 // Turns the pieces read off a CX (via existing handlers) into a recipe object.
 // Each argument is optional - whatever the caller managed to read gets folded
@@ -169,7 +169,7 @@ function buildRecipeFromCapture({ name, sourceHost, info, ifaces, packages, fire
   };
 }
 
-// -- apply planning --------------------------------------------------------
+// apply planning
 
 // Given a validated recipe and a set of per-section apply toggles, produce an
 // ordered list of steps for main.js to execute. Order matters: feed before

@@ -2046,7 +2046,7 @@ ipcMain.handle('recipe:import', async () => {
 // hard failure (fail-fast within a device) rather than compounding errors.
 // Returns a per-step result array the UI (and, in phase 2, fleet mode) uses.
 ipcMain.handle('recipe:apply', async (_evt, opts) => {
-  const { host, password, port, recipe: rec, include, applyNetwork, beckhoffUser, beckhoffPass, tf2000Pass, sessionId: incomingSession } = opts || {};
+  const { host, password, port, recipe: rec, include, applyNetwork, beckhoffUser, beckhoffPass, tf2000Pass, proxyHost, proxyPort, sessionId: incomingSession } = opts || {};
 
   const check = recipe.validateRecipe(rec);
   if (!check.ok) return { ok: false, error: 'Invalid recipe: ' + check.errors.join('; ') };
@@ -2070,10 +2070,10 @@ ipcMain.handle('recipe:apply', async (_evt, opts) => {
       let stepResult;
       switch (s.kind) {
         case 'feed':
-          stepResult = await applyFeedStep(host, password, port, s.data.channel, emit);
+          stepResult = await applyFeedStep(host, password, port, s.data.channel, { beckhoffUser, beckhoffPass, proxyHost, proxyPort }, emit);
           break;
         case 'packages':
-          stepResult = await applyPackagesStep(host, password, port, s.data.packages, { beckhoffUser, beckhoffPass, tf2000Pass }, emit);
+          stepResult = await applyPackagesStep(host, password, port, s.data.packages, { beckhoffUser, beckhoffPass, proxyHost, proxyPort }, emit);
           break;
         case 'firewall':
           stepResult = await applyFirewallStep(host, password, port, s.data, emit);
@@ -2119,21 +2119,59 @@ ipcMain.handle('recipe:apply', async (_evt, opts) => {
 //    concern, and tears down. Kept small and independent so fleet mode can run
 //    many of these in parallel without shared state. --
 
-async function applyFeedStep(host, password, port, channel, emit) {
+// Shared preamble for any apply step that runs apt: writes MyBeckhoff auth
+// (skipping if already present on the CX, exactly like the Setup flow so
+// re-running a recipe never requires retyping the password) and builds the
+// apt proxy options if the caller resolved a laptop-proxy for this CX.
+// escPass is the already-escaped Administrator/sudo password.
+function buildAptPreamble(escPass, beckhoffUser, beckhoffPass, proxyHost, proxyPort) {
+  const escUser = String(beckhoffUser || '').replace(/'/g, "'\\''");
+  const escBkPass = String(beckhoffPass || '').replace(/'/g, "'\\''");
+
+  // Only trust a proxy host/port we ourselves started via proxy:start - both
+  // must look right or we silently skip proxying rather than build a bad
+  // apt option string.
+  const validProxy = proxyHost && Number.isInteger(proxyPort) && /^[0-9.]+$/.test(String(proxyHost));
+  const proxyOpts = validProxy
+    ? ` -o Acquire::http::Proxy=socks5h://${proxyHost}:${proxyPort}/ -o Acquire::https::Proxy=socks5h://${proxyHost}:${proxyPort}/`
+    : '';
+
+  return `SUDO_PASS='${escPass}'
+_sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
+_sudo -v
+BECKHOFF_USER='${escUser}'
+BECKHOFF_PASS='${escBkPass}'
+if _sudo test -s /etc/apt/auth.conf.d/bhf.conf; then
+  echo "[CX] MyBeckhoff auth file already present on CX - reusing existing credentials."
+elif [ -n "$BECKHOFF_USER" ] && [ -n "$BECKHOFF_PASS" ]; then
+  echo "[CX] Creating APT auth file..."
+  AUTH_TMP=$(mktemp)
+  printf 'machine deb.beckhoff.com\\nlogin %s\\npassword %s\\nmachine deb-mirror.beckhoff.com\\nlogin %s\\npassword %s\\n' "$BECKHOFF_USER" "$BECKHOFF_PASS" "$BECKHOFF_USER" "$BECKHOFF_PASS" > "$AUTH_TMP"
+  _sudo mkdir -p /etc/apt/auth.conf.d
+  _sudo mv "$AUTH_TMP" /etc/apt/auth.conf.d/bhf.conf
+  _sudo chmod 600 /etc/apt/auth.conf.d/bhf.conf
+  _sudo chown root:root /etc/apt/auth.conf.d/bhf.conf
+  echo "[CX] Auth file written."
+else
+  echo "[CX] WARNING: no MyBeckhoff credentials available and none stored on CX - apt may fail to authenticate." >&2
+fi
+APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0${proxyOpts}'`;
+}
+
+async function applyFeedStep(host, password, port, channel, creds, emit) {
   if (!/^trixie-(stable|unstable)$/.test(channel)) return { ok: false, error: `Invalid channel ${channel}` };
   const escPass = String(password || '').replace(/'/g, "'\\''");
+  const { beckhoffUser, beckhoffPass, proxyHost, proxyPort } = creds || {};
   const mgr = new SSHManager();
   try {
     await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
     const script = `#!/bin/bash
 set -e
 trap 'rm -f "$0"' EXIT
-SUDO_PASS='${escPass}'
-_sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
-_sudo -v
+${buildAptPreamble(escPass, beckhoffUser, beckhoffPass, proxyHost, proxyPort)}
 _sudo sed -i -E 's#trixie-(stable|unstable)#${channel}#g' /etc/apt/sources.list.d/bhf.list
 echo "[CX] Feed set to ${channel}"
-_sudo apt update -y 2>&1 | tail -5`;
+_sudo apt $APT_OPTS update -y 2>&1 | tail -5`;
     await withTempScript('rec-feed', script, (p) => mgr.putFile(p, '/tmp/rec_feed.sh'));
     const res = await mgr.execStream('chmod +x /tmp/rec_feed.sh && /tmp/rec_feed.sh', {
       onStdout: (c) => emit(c.toString()), onStderr: (c) => emit(c.toString())
@@ -2145,6 +2183,7 @@ _sudo apt update -y 2>&1 | tail -5`;
 
 async function applyPackagesStep(host, password, port, packages, creds, emit) {
   const escPass = String(password || '').replace(/'/g, "'\\''");
+  const { beckhoffUser, beckhoffPass, proxyHost, proxyPort } = creds || {};
   // Build the install list, honouring version pins where present
   const installArgs = packages.map(p => {
     if (!/^[A-Za-z0-9._+-]+$/.test(p.name)) return null;
@@ -2158,12 +2197,10 @@ async function applyPackagesStep(host, password, port, packages, creds, emit) {
     const script = `#!/bin/bash
 set -e
 trap 'rm -f "$0"' EXIT
-SUDO_PASS='${escPass}'
-_sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
-_sudo -v
-_sudo apt update -y 2>&1 | tail -3
+${buildAptPreamble(escPass, beckhoffUser, beckhoffPass, proxyHost, proxyPort)}
+_sudo apt $APT_OPTS update -y 2>&1 | tail -3
 echo "[CX] Installing: ${installArgs}"
-_sudo DEBIAN_FRONTEND=noninteractive apt install -y ${installArgs}
+_sudo DEBIAN_FRONTEND=noninteractive apt $APT_OPTS install -y ${installArgs}
 echo "[CX] Package install complete"`;
     await withTempScript('rec-pkgs', script, (p) => mgr.putFile(p, '/tmp/rec_pkgs.sh'));
     const res = await mgr.execStream('chmod +x /tmp/rec_pkgs.sh && /tmp/rec_pkgs.sh', {
@@ -2173,6 +2210,7 @@ echo "[CX] Package install complete"`;
     return { ok: res.code === 0, error: res.code === 0 ? null : `package step exit ${res.code}` };
   } catch (e) { mgr.dispose(); return { ok: false, error: e.message }; }
 }
+
 
 async function applyFirewallStep(host, password, port, data, emit) {
   const escPass = String(password || '').replace(/'/g, "'\\''");

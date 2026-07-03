@@ -3100,6 +3100,17 @@ $('btn-validate-creds').addEventListener('click', async () => {
     const targetCount = Object.keys(include).length;
     if (!confirm(`Apply ${targetCount} section(s) of "${applyTarget.name}" to ${conn.host}?\n\nThis will change the CX's configuration.`)) return;
 
+    // Only feed/packages steps touch apt, so only they need the CX's internet
+    // reachability checked and, if needed, the laptop-proxy offered - same
+    // question Setup asks, asked here too rather than skipped for Recipes.
+    let proxyHost = null, proxyPort = null;
+    if (include.feed || include.packages) {
+      const proxyDecision = await ensureProxyDecision(conn.host, conn.password);
+      if (proxyDecision.cancelled) return;
+      proxyHost = proxyDecision.proxyHost;
+      proxyPort = proxyDecision.proxyPort;
+    }
+
     applyRunBtn.disabled = true; applyRunBtn.textContent = 'APPLYING...';
     applyStat.textContent = 'Applying to ' + conn.host + '...';
     applyStat.style.color = 'var(--tc-muted)';
@@ -3112,7 +3123,9 @@ $('btn-validate-creds').addEventListener('click', async () => {
       applyNetwork: false, // phase 1: never auto-push network via recipe
       beckhoffUser: ($('bk-user') && $('bk-user').value.trim()) || '',
       beckhoffPass: ($('bk-pass') && $('bk-pass').value.trim()) || '',
-      tf2000Pass: (typeof getTf2000Pass === 'function' ? getTf2000Pass() : '1')
+      tf2000Pass: (typeof getTf2000Pass === 'function' ? getTf2000Pass() : '1'),
+      proxyHost,
+      proxyPort
     }).catch(e => ({ ok: false, error: String((e && e.message) || e) }));
 
     applyRunBtn.disabled = false; applyRunBtn.textContent = '▶ APPLY TO CONNECTED CX';
