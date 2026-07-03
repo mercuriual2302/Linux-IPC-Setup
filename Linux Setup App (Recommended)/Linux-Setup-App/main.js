@@ -1053,6 +1053,44 @@ ipcMain.handle('cx:fetch-updates', async (_evt, opts) => {
   }
 });
 
+// Kernel/bootloader packages always need a reboot to actually take effect -
+// an apt upgrade alone leaves the old kernel running until then. Shared by
+// the system-updates listing (to flag rows) and the upgrade handler (to
+// decide whether to report needsReboot even if /var/run/reboot-required
+// isn't populated on this image).
+const KERNEL_PACKAGE_RE = /^(linux-image|linux-headers|linux-base|linux-sysctl-defaults|systemd-boot)/i;
+
+// Full system update check - every upgradable package, not just TwinCAT/
+// Beckhoff ones. This is what surfaces kernel, systemd, OpenSSH, and other
+// OS-level updates that the TwinCAT-scoped check above deliberately hides.
+ipcMain.handle('cx:fetch-system-updates', async (_evt, opts) => {
+  const { host, password, port, proxyHost, proxyPort } = opts || {};
+  try {
+    const pw = (password || '').replace(/'/g, "'\\''");
+    const proxyOpts = buildProxyAptOpts(proxyHost, proxyPort);
+    const result = await sshExec({ host, password, port },
+      `echo '${pw}' | sudo -S -p '' apt-get${proxyOpts} update -qq 2>/dev/null; ` +
+      `apt list --upgradable 2>/dev/null | grep -v '^Listing'`
+    );
+    const updates = [];
+    for (const line of result.stdout.split('\n')) {
+      const m = line.match(/^([^\s/]+)\//);
+      if (!m) continue;
+      const verMatch = line.match(/^\S+\s+(\S+)\s+\S+\s+\[upgradable from: (\S+)\]/);
+      updates.push({
+        name: m[1],
+        newVer: verMatch ? verMatch[1] : '?',
+        oldVer: verMatch ? verMatch[2] : '?',
+        isKernel: KERNEL_PACKAGE_RE.test(m[1])
+      });
+    }
+    const kernelCount = updates.filter(u => u.isKernel).length;
+    return { ok: true, updates, count: updates.length, kernelCount };
+  } catch (err) {
+    return { ok: false, error: err.message, updates: [], count: 0, kernelCount: 0 };
+  }
+});
+
 // Run apt upgrade
 ipcMain.handle('cx:upgrade', async (_evt, opts) => {
   const { host, password, port, packages, proxyHost, proxyPort } = opts;
@@ -1072,6 +1110,13 @@ _sudo apt $APT_OPTS update -y
 echo "[CX] Running upgrade..."
 _sudo apt $APT_OPTS install -y --only-upgrade ${(packages && packages.length ? packages.join(" ") : "$(apt list --upgradable 2>/dev/null | grep -v Listing | cut -d/ -f1 | tr '\\n' ' ')")}
 echo "[CX] Upgrade complete."
+echo "[CX] Checking whether a reboot is required..."
+NEEDS_REBOOT=no
+if [ -f /var/run/reboot-required ]; then NEEDS_REBOOT=yes; fi
+RUNNING_KERNEL=$(uname -r)
+LATEST_KERNEL_PKG=$(dpkg -l 'linux-image-*' 2>/dev/null | awk '/^ii/{print $2}' | sort -V | tail -1)
+if [ -n "$LATEST_KERNEL_PKG" ] && ! echo "$LATEST_KERNEL_PKG" | grep -q "$RUNNING_KERNEL"; then NEEDS_REBOOT=yes; fi
+echo "[CX] Reboot required: $NEEDS_REBOOT"
 `;
   try {
     const mgr = new SSHManager();
@@ -1079,14 +1124,16 @@ echo "[CX] Upgrade complete."
     sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m Starting upgrade on ${host}...\r\n` });
     await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
     await withTempScript('cx-upgrade', script, (p) => mgr.putFile(p, '/tmp/cx_upgrade.sh'));
+    let fullOutput = '';
     const result = await mgr.execStream('chmod +x /tmp/cx_upgrade.sh && /tmp/cx_upgrade.sh', {
-      onStdout: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() }),
-      onStderr: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() })
+      onStdout: (c) => { fullOutput += c.toString(); sendToRenderer('ssh:output', { sessionId, data: c.toString() }); },
+      onStderr: (c) => { fullOutput += c.toString(); sendToRenderer('ssh:output', { sessionId, data: c.toString() }); }
     });
     mgr.dispose();
     activeSessions.delete(sessionId);
+    const needsReboot = /\[CX\] Reboot required: yes/.test(fullOutput);
     sendToRenderer('ssh:status', { sessionId, status: result.code === 0 ? 'complete' : 'failed', message: result.code === 0 ? 'Upgrade complete' : `Exit ${result.code}` });
-    return { ok: result.code === 0, sessionId };
+    return { ok: result.code === 0, sessionId, needsReboot };
   } catch (err) {
     sendToRenderer('ssh:status', { sessionId, status: 'failed', message: err.message });
     return { ok: false, error: err.message };

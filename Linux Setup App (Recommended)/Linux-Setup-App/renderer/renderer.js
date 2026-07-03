@@ -1356,6 +1356,103 @@ $('btn-upgrade-selected').addEventListener('click', async () => {
   if (!res.ok) toast('Upgrade failed - see terminal', 'error');
 });
 
+// System updates: full apt upgrade beyond TwinCAT - kernel, systemd, OpenSSH,
+// and everything else. Kept as its own section rather than folded into the
+// TwinCAT one above since the risk profile is different (reboot required for
+// kernel/bootloader, possible SSH drop for openssh-server/systemd) and this
+// is meant to be a deliberate maintenance action, not a routine one.
+let _sysUpdates = []; // [{name, oldVer, newVer, isKernel}]
+
+function renderSysUpdatesTable() {
+  const rows = $('sys-updates-rows');
+  rows.innerHTML = _sysUpdates.map(p => `
+    <div class="upd-row" style="display:grid;grid-template-columns:1fr auto auto 36px;gap:.5rem;padding:.35rem .6rem;border-bottom:1px solid var(--tc-border);align-items:center">
+      <span class="upd-name">${escapeHtml(p.name)}${p.isKernel ? ' <span style="color:var(--tc-warn);font-size:9px;font-weight:700;border:1px solid var(--tc-warn);border-radius:3px;padding:0 4px;margin-left:.3rem">KERNEL</span>' : ''}</span>
+      <span class="upd-old">${escapeHtml(p.oldVer)}</span>
+      <span class="upd-new">→ ${escapeHtml(p.newVer)}</span>
+      <span><input type="checkbox" class="sysupd-chk" data-pkg="${escapeHtml(p.name)}" data-kernel="${p.isKernel ? '1' : '0'}" checked style="cursor:pointer"></span>
+    </div>`).join('');
+  $('btn-upgrade-sys').style.display = _sysUpdates.length ? '' : 'none';
+  $('btn-upgrade-sys').disabled = !_sysUpdates.length;
+  const chkAll = $('chk-select-all-sys-updates');
+  if (chkAll) {
+    chkAll.checked = true;
+    chkAll.addEventListener('change', function() {
+      $('sys-updates-rows').querySelectorAll('.sysupd-chk').forEach(c => c.checked = this.checked);
+    });
+  }
+}
+
+$('btn-fetch-sys-updates').addEventListener('click', async () => {
+  const conn = getCxMgmtConn();
+  if (!conn.host) { toast('Enter CX IP address', 'warn'); return; }
+  const proxyDecision = await ensureProxyDecision(conn.host, conn.password);
+  if (proxyDecision.cancelled) return;
+  $('btn-fetch-sys-updates').disabled = true;
+  $('btn-fetch-sys-updates').textContent = '⟳ CHECKING...';
+  const res = await window.api.fetchSystemUpdates({ ...conn, proxyHost: proxyDecision.proxyHost, proxyPort: proxyDecision.proxyPort }).catch(e => ({ ok: false, error: String((e && e.message) || e) }));
+  $('btn-fetch-sys-updates').disabled = false;
+  $('btn-fetch-sys-updates').textContent = '⟳ CHECK FOR SYSTEM UPDATES';
+  if (!res.ok) { toast('Failed to check system updates - ' + (res.error || 'see terminal'), 'error'); return; }
+  _sysUpdates = res.updates;
+  $('sys-updates-result').style.display = res.updates.length ? 'block' : 'none';
+  $('sys-updates-count').textContent = `${res.count} update${res.count !== 1 ? 's' : ''} available` + (res.kernelCount ? ` · ${res.kernelCount} kernel/bootloader` : '');
+  renderSysUpdatesTable();
+  if (res.count === 0) toast('System is fully up to date', 'success');
+  else if (res.kernelCount) toast(`${res.kernelCount} kernel/bootloader update(s) found - reboot will be required after upgrading`, 'warn');
+});
+
+$('btn-upgrade-sys').addEventListener('click', async () => {
+  const conn = getCxMgmtConn();
+  if (!conn.host) { toast('Enter CX IP address', 'warn'); return; }
+  const selectedChks = [...document.querySelectorAll('.sysupd-chk:checked')];
+  const selected = selectedChks.map(c => c.dataset.pkg);
+  if (!selected.length) { toast('No packages selected', 'warn'); return; }
+  const selectedHasKernel = selectedChks.some(c => c.dataset.kernel === '1');
+
+  let confirmMsg = `Upgrade ${selected.length} system package(s) on ${conn.host}?`;
+  if (selectedHasKernel) {
+    confirmMsg += `\n\nThis includes a kernel or bootloader update. The CX will need a reboot afterward for it to take effect - TwinCAT and EtherCAT keep running on the OLD kernel until then.\n\nUpgrading openssh-server may also briefly drop this SSH session - that's expected, just reconnect.\n\nRecommended: do this during a maintenance window, not while the CX is running live machinery.`;
+  } else if (selected.some(n => /^(openssh|sudo|systemd)/.test(n))) {
+    confirmMsg += `\n\nThis includes core system services (SSH/sudo/systemd). The SSH session may briefly drop when they restart - that's expected, just reconnect.`;
+  }
+  if (!confirm(confirmMsg)) return;
+
+  const proxyDecision = await ensureProxyDecision(conn.host, conn.password);
+  if (proxyDecision.cancelled) return;
+
+  $('btn-upgrade-sys').disabled = true;
+  $('sys-reboot-banner').style.display = 'none';
+  goToTerminal(null);
+  const res = await window.api.runUpgrade({ ...conn, packages: selected, proxyHost: proxyDecision.proxyHost, proxyPort: proxyDecision.proxyPort }).catch(e => ({ ok: false, error: String((e && e.message) || e) }));
+  $('btn-upgrade-sys').disabled = false;
+
+  if (!res.ok) {
+    toast('System upgrade failed - see terminal', 'error');
+    return;
+  }
+  toast('System upgrade complete', 'success');
+  if (res.needsReboot) {
+    $('sys-reboot-banner').style.display = 'block';
+    $('sys-reboot-banner').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+});
+
+$('btn-sys-reboot-now').addEventListener('click', async () => {
+  const conn = getCxMgmtConn();
+  if (!conn.host) { toast('Enter CX IP address', 'warn'); return; }
+  if (!confirm(`Reboot ${conn.host} now? The SSH session will drop and the CX will be unreachable for about a minute while it restarts.`)) return;
+  $('btn-sys-reboot-now').disabled = true;
+  const res = await window.api.power({ ...conn, action: 'restart' }).catch(e => ({ ok: false, error: String((e && e.message) || e) }));
+  $('btn-sys-reboot-now').disabled = false;
+  if (res.ok) {
+    toast('Reboot command sent', 'success');
+    $('sys-reboot-banner').style.display = 'none';
+  } else {
+    toast('Could not send reboot command - see terminal', 'error');
+  }
+});
+
 
 // MyBeckhoff Credential Validator - i am stupid 
 $('btn-validate-creds').addEventListener('click', async () => {
@@ -1840,6 +1937,40 @@ $('btn-validate-creds').addEventListener('click', async () => {
   window._maybeAutoReadInfo = maybeAutoReadInfo;
   tabAutoRefresh.dashboard = maybeAutoReadInfo;
 })();
+
+// Dashboard image/kernel update check - separate deliberate action, not run
+// automatically with the rest of the Dashboard refresh, since it needs a real
+// apt update against the network (and possibly the laptop proxy) rather than
+// just reading local system state.
+$('btn-check-image')?.addEventListener('click', async () => {
+  const conn = getCxMgmtConn();
+  if (!conn.host) { toast('Connect to a CX first', 'warn'); return; }
+  const proxyDecision = await ensureProxyDecision(conn.host, conn.password);
+  if (proxyDecision.cancelled) return;
+
+  const btn = $('btn-check-image');
+  const statusEl = $('image-update-status');
+  btn.disabled = true; btn.textContent = 'CHECKING...';
+  statusEl.textContent = 'checking...';
+  statusEl.style.color = 'var(--tc-muted)';
+
+  const res = await window.api.fetchSystemUpdates({ ...conn, proxyHost: proxyDecision.proxyHost, proxyPort: proxyDecision.proxyPort }).catch(e => ({ ok: false, error: String((e && e.message) || e) }));
+  btn.disabled = false; btn.textContent = '⟳ CHECK FOR IMAGE UPDATE';
+
+  if (!res.ok) {
+    statusEl.textContent = 'check failed - ' + (res.error || 'see terminal');
+    statusEl.style.color = 'var(--tc-danger)';
+    return;
+  }
+  const kernelUpdates = res.updates.filter(u => u.isKernel);
+  if (kernelUpdates.length) {
+    statusEl.innerHTML = `⬆ Update available: <strong>${escapeHtml(kernelUpdates[0].newVer)}</strong> - see Packages &rarr; System Updates`;
+    statusEl.style.color = 'var(--tc-warn)';
+  } else {
+    statusEl.textContent = '✓ Running the latest available kernel/image';
+    statusEl.style.color = 'var(--tc-accent2)';
+  }
+});
 
 // APT feed manager and MyBeckhoff credential auto-read
 

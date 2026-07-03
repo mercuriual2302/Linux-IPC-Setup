@@ -135,6 +135,10 @@
 
           <div id="info-body" style="display:none">
             <div class="info-metrics" id="info-metrics"></div>
+            <div id="image-update-bar" style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin:-.4rem 0 .75rem;padding:.5rem .7rem;background:var(--tc-surface2);border:1px solid var(--tc-border);border-radius:4px">
+              <button class="sel-btn" id="btn-check-image" style="font-size:10px;padding:.25rem .6rem">⟳ CHECK FOR IMAGE UPDATE</button>
+              <span id="image-update-status" style="font-family:var(--tc-mono);font-size:11px;color:var(--tc-muted)">not checked yet</span>
+            </div>
             <div class="info-cards">
               <div class="info-card">
                 <div class="info-card-title">storage</div>
@@ -605,6 +609,32 @@
             <div id="updates-select-all-row" style="display:none;margin-top:.4rem;font-family:var(--tc-mono);font-size:10px;color:var(--tc-muted)">
               <label style="cursor:pointer"><input type="checkbox" id="chk-select-all-updates" style="margin-right:.4rem">Select all upgradable</label>
             </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-label">system updates <span style="color:var(--tc-warn);font-weight:600">(OS, kernel, security)</span></div>
+          <div class="section-subtitle">Full Debian package upgrades beyond TwinCAT - kernel, systemd, OpenSSH, and other OS packages. <strong>Kernel and bootloader updates always require a reboot to take effect.</strong> Upgrading openssh-server may briefly drop this SSH session - that's expected, just reconnect once the CX is back.</div>
+          <div class="btn-row" style="margin-bottom:.75rem;gap:.5rem">
+            <button class="btn-run secondary" id="btn-fetch-sys-updates">⟳ CHECK FOR SYSTEM UPDATES</button>
+            <button class="btn-run" id="btn-upgrade-sys" disabled style="display:none">▲ UPGRADE SELECTED</button>
+          </div>
+          <div id="sys-updates-result" style="display:none">
+            <div id="sys-updates-count" style="font-family:var(--tc-mono);font-size:11px;color:var(--tc-muted);margin-bottom:.5rem"></div>
+            <div id="sys-updates-table" style="background:var(--tc-surface2);border:1px solid var(--tc-border);border-radius:4px;overflow:hidden;font-family:var(--tc-mono);font-size:11px;max-height:300px;overflow-y:auto">
+              <div style="display:grid;grid-template-columns:1fr auto auto 36px;gap:.5rem;padding:.4rem .6rem;background:var(--tc-surface);font-size:10px;color:var(--tc-muted);font-weight:600;border-bottom:1px solid var(--tc-border)">
+                <span>PACKAGE</span><span>INSTALLED</span><span>AVAILABLE</span><span></span>
+              </div>
+              <div id="sys-updates-rows"></div>
+            </div>
+            <div style="margin-top:.4rem;font-family:var(--tc-mono);font-size:10px;color:var(--tc-muted)">
+              <label style="cursor:pointer"><input type="checkbox" id="chk-select-all-sys-updates" style="margin-right:.4rem">Select all upgradable</label>
+            </div>
+          </div>
+          <div id="sys-reboot-banner" style="display:none;margin-top:.75rem;background:var(--tc-surface2);border:1px solid var(--tc-warn);border-radius:4px;padding:.6rem .75rem">
+            <div style="color:var(--tc-warn);font-weight:600;margin-bottom:.4rem">⚠ Reboot required to finish this upgrade</div>
+            <div class="hint" style="margin-bottom:.5rem">The kernel or bootloader was updated. TwinCAT and EtherCAT will keep running on the old kernel until the CX is rebooted.</div>
+            <button class="btn-run secondary" id="btn-sys-reboot-now">⟲ REBOOT NOW</button>
           </div>
         </div>
       </div>

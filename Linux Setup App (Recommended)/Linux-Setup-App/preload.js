@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld('api', {
   serviceMgmt:    (opts) => ipcRenderer.invoke('cx:service-mgmt', opts),
   power:          (opts) => ipcRenderer.invoke('cx:power', opts),
   fetchUpdates:   (opts) => ipcRenderer.invoke('cx:fetch-updates', opts),
+  fetchSystemUpdates: (opts) => ipcRenderer.invoke('cx:fetch-system-updates', opts),
   runUpgrade:     (opts) => ipcRenderer.invoke('cx:upgrade', opts),
   runVerify:      (opts) => ipcRenderer.invoke('cx:verify', opts),
   discoverDevices:   ()     => ipcRenderer.invoke('cx:discover'),
