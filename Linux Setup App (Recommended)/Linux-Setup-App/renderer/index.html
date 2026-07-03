@@ -91,6 +91,7 @@
 
       <div class="nav-group">Provision</div>
       <div class="nav-item tab" data-tab="setup"><span class="nav-ic">▼</span>Setup</div>
+      <div class="nav-item tab" data-tab="recipes"><span class="nav-ic">▤</span>Recipes</div>
 
       <div class="nav-group">Manage</div>
       <div class="nav-item tab" data-tab="services"><span class="nav-ic">≣</span>Services</div>
@@ -134,6 +135,10 @@
 
           <div id="info-body" style="display:none">
             <div class="info-metrics" id="info-metrics"></div>
+            <div id="image-update-bar" style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;margin:-.4rem 0 .75rem;padding:.5rem .7rem;background:var(--tc-surface2);border:1px solid var(--tc-border);border-radius:4px">
+              <button class="sel-btn" id="btn-check-image" style="font-size:10px;padding:.25rem .6rem">⟳ CHECK FOR IMAGE UPDATE</button>
+              <span id="image-update-status" style="font-family:var(--tc-mono);font-size:11px;color:var(--tc-muted)">not checked yet</span>
+            </div>
             <div class="info-cards">
               <div class="info-card">
                 <div class="info-card-title">storage</div>
@@ -232,6 +237,94 @@
         <div class="btn-row">
           <button class="btn-run" id="btn-run-setup">▶ RUN SETUP LIVE (SSH)</button>
           <button class="btn-run secondary" id="btn-gen-setup">GENERATE SCRIPT</button>
+        </div>
+      </div>
+
+      <!-- VIEW: RECIPES -->
+      <div class="page" id="page-recipes">
+        <div class="view-title">Recipes</div>
+
+        <div class="section">
+          <div class="section-label">capture from cx</div>
+          <div class="section-subtitle">Read a known-good CX's full desired state (feed, TwinCAT packages with pinned versions, firewall rules, TF1200 config) into a portable recipe. Network settings are captured for reference only and are never cloned across devices.</div>
+
+          <div class="field" style="margin-bottom:.6rem">
+            <label>RECIPE NAME</label>
+            <input type="text" id="recipe-name" placeholder="e.g. F1 cell golden image" style="width:100%;max-width:420px;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)">
+          </div>
+
+          <div style="display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:.4rem">
+            <div class="field" style="flex:1;min-width:200px">
+              <label>MYBECKHOFF USERNAME</label>
+              <input type="text" id="recipe-bk-user" placeholder="user@company.com" style="width:100%;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)">
+            </div>
+            <div class="field" style="flex:1;min-width:200px">
+              <label>MYBECKHOFF PASSWORD</label>
+              <input type="password" id="recipe-bk-pass" placeholder="•••••••" style="width:100%;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)">
+            </div>
+            <div class="field" style="flex:1;min-width:200px">
+              <label>TF2000 INIT PASSWORD (if applicable)</label>
+              <input type="password" id="recipe-tf2000-pass" placeholder="•••••••" style="width:100%;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)">
+            </div>
+          </div>
+          <div class="hint" style="margin-bottom:.6rem">Saved with this recipe in your local library so it never needs re-typing on repeat applies. Automatically removed if you export the recipe to share it - whoever imports it types their own.</div>
+
+          <div class="btn-row" style="gap:.5rem">
+            <button class="btn-run" id="btn-recipe-capture">CAPTURE FROM CX</button>
+          </div>
+          <div class="hint" id="recipe-capture-status" style="margin-top:.4rem">Connect to a CX, name the recipe, then capture.</div>
+
+          <div id="recipe-capture-preview" style="display:none;margin-top:.75rem;background:var(--tc-surface2);border:1px solid var(--tc-border);border-radius:4px;padding:.6rem .75rem">
+            <div style="font-family:var(--tc-mono);font-size:10px;color:var(--tc-muted);font-weight:600;margin-bottom:.4rem">CAPTURED SECTIONS</div>
+            <div id="recipe-capture-sections" style="font-family:var(--tc-mono);font-size:11px;color:var(--tc-text)"></div>
+            <div class="btn-row" style="gap:.5rem;margin-top:.6rem">
+              <button class="btn-run" id="btn-recipe-save">SAVE TO LIBRARY</button>
+              <button class="btn-run secondary" id="btn-recipe-export">EXPORT .json</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-label">recipe library</div>
+          <div class="section-subtitle">Saved recipes. Apply one to the currently connected CX, or import a recipe file shared by a colleague.</div>
+
+          <div class="btn-row" style="gap:.5rem;margin-bottom:.75rem">
+            <button class="btn-run secondary" id="btn-recipe-refresh">REFRESH</button>
+            <button class="btn-run secondary" id="btn-recipe-import">IMPORT .json</button>
+          </div>
+
+          <div id="recipe-list" style="font-family:var(--tc-mono);font-size:12px"></div>
+        </div>
+
+        <div class="section" id="recipe-apply-panel" style="display:none">
+          <div class="section-label">apply recipe</div>
+          <div class="section-subtitle" id="recipe-apply-subtitle">Select which sections to apply to the connected CX. Identity settings (network) are off by default and left to the Network view.</div>
+
+          <div id="recipe-apply-sections" style="margin-bottom:.75rem"></div>
+
+          <div id="recipe-apply-creds" style="display:none;margin-bottom:.75rem">
+            <div style="display:flex;gap:.6rem;flex-wrap:wrap">
+              <div class="field" style="flex:1;min-width:200px">
+                <label>MYBECKHOFF USERNAME</label>
+                <input type="text" id="recipe-apply-bk-user" placeholder="user@company.com" style="width:100%;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)">
+              </div>
+              <div class="field" style="flex:1;min-width:200px">
+                <label>MYBECKHOFF PASSWORD</label>
+                <input type="password" id="recipe-apply-bk-pass" placeholder="•••••••" style="width:100%;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)">
+              </div>
+              <div class="field" style="flex:1;min-width:200px">
+                <label>TF2000 INIT PASSWORD</label>
+                <input type="password" id="recipe-apply-tf2000-pass" placeholder="•••••••" style="width:100%;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)">
+              </div>
+            </div>
+            <div class="hint" id="recipe-apply-creds-hint" style="margin-top:.35rem"></div>
+          </div>
+
+          <div class="btn-row" style="gap:.5rem">
+            <button class="btn-run" id="btn-recipe-apply-run">APPLY TO CONNECTED CX</button>
+            <button class="btn-run secondary" id="btn-recipe-apply-cancel">CANCEL</button>
+          </div>
+          <div class="hint" id="recipe-apply-status" style="margin-top:.4rem"></div>
         </div>
       </div>
 
@@ -516,6 +609,32 @@
             <div id="updates-select-all-row" style="display:none;margin-top:.4rem;font-family:var(--tc-mono);font-size:10px;color:var(--tc-muted)">
               <label style="cursor:pointer"><input type="checkbox" id="chk-select-all-updates" style="margin-right:.4rem">Select all upgradable</label>
             </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-label">system updates <span style="color:var(--tc-warn);font-weight:600">(OS, kernel, security)</span></div>
+          <div class="section-subtitle">Full Debian package upgrades beyond TwinCAT - kernel, systemd, OpenSSH, and other OS packages. <strong>Kernel and bootloader updates always require a reboot to take effect.</strong> Upgrading openssh-server may briefly drop this SSH session - that's expected, just reconnect once the CX is back.</div>
+          <div class="btn-row" style="margin-bottom:.75rem;gap:.5rem">
+            <button class="btn-run secondary" id="btn-fetch-sys-updates">⟳ CHECK FOR SYSTEM UPDATES</button>
+            <button class="btn-run" id="btn-upgrade-sys" disabled style="display:none">▲ UPGRADE SELECTED</button>
+          </div>
+          <div id="sys-updates-result" style="display:none">
+            <div id="sys-updates-count" style="font-family:var(--tc-mono);font-size:11px;color:var(--tc-muted);margin-bottom:.5rem"></div>
+            <div id="sys-updates-table" style="background:var(--tc-surface2);border:1px solid var(--tc-border);border-radius:4px;overflow:hidden;font-family:var(--tc-mono);font-size:11px;max-height:300px;overflow-y:auto">
+              <div style="display:grid;grid-template-columns:1fr auto auto 36px;gap:.5rem;padding:.4rem .6rem;background:var(--tc-surface);font-size:10px;color:var(--tc-muted);font-weight:600;border-bottom:1px solid var(--tc-border)">
+                <span>PACKAGE</span><span>INSTALLED</span><span>AVAILABLE</span><span></span>
+              </div>
+              <div id="sys-updates-rows"></div>
+            </div>
+            <div style="margin-top:.4rem;font-family:var(--tc-mono);font-size:10px;color:var(--tc-muted)">
+              <label style="cursor:pointer"><input type="checkbox" id="chk-select-all-sys-updates" style="margin-right:.4rem">Select all upgradable</label>
+            </div>
+          </div>
+          <div id="sys-reboot-banner" style="display:none;margin-top:.75rem;background:var(--tc-surface2);border:1px solid var(--tc-warn);border-radius:4px;padding:.6rem .75rem">
+            <div style="color:var(--tc-warn);font-weight:600;margin-bottom:.4rem">⚠ Reboot required to finish this upgrade</div>
+            <div class="hint" style="margin-bottom:.5rem">The kernel or bootloader was updated. TwinCAT and EtherCAT will keep running on the old kernel until the CX is rebooted.</div>
+            <button class="btn-run secondary" id="btn-sys-reboot-now">⟲ REBOOT NOW</button>
           </div>
         </div>
       </div>

@@ -10,6 +10,7 @@ const ScriptBuilder = require('./src/script-builder');
 const discovery = require('./src/discovery');
 const sftpManager = require('./src/sftp-manager');
 const socksProxy = require('./src/socks-proxy');
+const recipe = require('./src/recipe');
 
 // Suppress uncaught ECONNRESET errors - these are expected when the CX drops
 // the SSH connection mid-operation (network reload, reboot, poweroff). The
@@ -1014,13 +1015,14 @@ echo "[CX] Password changed successfully for $TARGET."
 
 // Package update checker
 ipcMain.handle('cx:fetch-updates', async (_evt, opts) => {
-  const { host, password, port, checkUpdates } = opts;
+  const { host, password, port, checkUpdates, proxyHost, proxyPort } = opts;
   try {
     if (checkUpdates) {
       // Run apt update then list upgradable TwinCAT packages
       const pw = (password || '').replace(/'/g, "'\\''");
+      const proxyOpts = buildProxyAptOpts(proxyHost, proxyPort);
       const result = await sshExec({ host, password, port },
-        `echo '${pw}' | sudo -S -p '' apt-get update -qq 2>/dev/null; ` +
+        `echo '${pw}' | sudo -S -p '' apt-get${proxyOpts} update -qq 2>/dev/null; ` +
         `apt list --upgradable 2>/dev/null | grep -v '^Listing'`
       );
       const updates = [];
@@ -1051,15 +1053,54 @@ ipcMain.handle('cx:fetch-updates', async (_evt, opts) => {
   }
 });
 
+// Kernel/bootloader packages always need a reboot to actually take effect -
+// an apt upgrade alone leaves the old kernel running until then. Shared by
+// the system-updates listing (to flag rows) and the upgrade handler (to
+// decide whether to report needsReboot even if /var/run/reboot-required
+// isn't populated on this image).
+const KERNEL_PACKAGE_RE = /^(linux-image|linux-headers|linux-base|linux-sysctl-defaults|systemd-boot)/i;
+
+// Full system update check - every upgradable package, not just TwinCAT/
+// Beckhoff ones. This is what surfaces kernel, systemd, OpenSSH, and other
+// OS-level updates that the TwinCAT-scoped check above deliberately hides.
+ipcMain.handle('cx:fetch-system-updates', async (_evt, opts) => {
+  const { host, password, port, proxyHost, proxyPort } = opts || {};
+  try {
+    const pw = (password || '').replace(/'/g, "'\\''");
+    const proxyOpts = buildProxyAptOpts(proxyHost, proxyPort);
+    const result = await sshExec({ host, password, port },
+      `echo '${pw}' | sudo -S -p '' apt-get${proxyOpts} update -qq 2>/dev/null; ` +
+      `apt list --upgradable 2>/dev/null | grep -v '^Listing'`
+    );
+    const updates = [];
+    for (const line of result.stdout.split('\n')) {
+      const m = line.match(/^([^\s/]+)\//);
+      if (!m) continue;
+      const verMatch = line.match(/^\S+\s+(\S+)\s+\S+\s+\[upgradable from: (\S+)\]/);
+      updates.push({
+        name: m[1],
+        newVer: verMatch ? verMatch[1] : '?',
+        oldVer: verMatch ? verMatch[2] : '?',
+        isKernel: KERNEL_PACKAGE_RE.test(m[1])
+      });
+    }
+    const kernelCount = updates.filter(u => u.isKernel).length;
+    return { ok: true, updates, count: updates.length, kernelCount };
+  } catch (err) {
+    return { ok: false, error: err.message, updates: [], count: 0, kernelCount: 0 };
+  }
+});
+
 // Run apt upgrade
 ipcMain.handle('cx:upgrade', async (_evt, opts) => {
-  const { host, password, port, packages } = opts;
+  const { host, password, port, packages, proxyHost, proxyPort } = opts;
   const sessionId = `upgrade-${Date.now()}`;
+  const proxyOpts = buildProxyAptOpts(proxyHost, proxyPort);
   const script = `#!/bin/bash
 set -e
 export TERM=dumb
 export DEBIAN_FRONTEND=noninteractive
-APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Quiet::NoUpdate=true'
+APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Quiet::NoUpdate=true${proxyOpts}'
 SUDO_PASS='${password.replace(/'/g, "'\\''")}'
 _sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
 _sudo -v
@@ -1069,6 +1110,13 @@ _sudo apt $APT_OPTS update -y
 echo "[CX] Running upgrade..."
 _sudo apt $APT_OPTS install -y --only-upgrade ${(packages && packages.length ? packages.join(" ") : "$(apt list --upgradable 2>/dev/null | grep -v Listing | cut -d/ -f1 | tr '\\n' ' ')")}
 echo "[CX] Upgrade complete."
+echo "[CX] Checking whether a reboot is required..."
+NEEDS_REBOOT=no
+if [ -f /var/run/reboot-required ]; then NEEDS_REBOOT=yes; fi
+RUNNING_KERNEL=$(uname -r)
+LATEST_KERNEL_PKG=$(dpkg -l 'linux-image-*' 2>/dev/null | awk '/^ii/{print $2}' | sort -V | tail -1)
+if [ -n "$LATEST_KERNEL_PKG" ] && ! echo "$LATEST_KERNEL_PKG" | grep -q "$RUNNING_KERNEL"; then NEEDS_REBOOT=yes; fi
+echo "[CX] Reboot required: $NEEDS_REBOOT"
 `;
   try {
     const mgr = new SSHManager();
@@ -1076,14 +1124,16 @@ echo "[CX] Upgrade complete."
     sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m Starting upgrade on ${host}...\r\n` });
     await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
     await withTempScript('cx-upgrade', script, (p) => mgr.putFile(p, '/tmp/cx_upgrade.sh'));
+    let fullOutput = '';
     const result = await mgr.execStream('chmod +x /tmp/cx_upgrade.sh && /tmp/cx_upgrade.sh', {
-      onStdout: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() }),
-      onStderr: (c) => sendToRenderer('ssh:output', { sessionId, data: c.toString() })
+      onStdout: (c) => { fullOutput += c.toString(); sendToRenderer('ssh:output', { sessionId, data: c.toString() }); },
+      onStderr: (c) => { fullOutput += c.toString(); sendToRenderer('ssh:output', { sessionId, data: c.toString() }); }
     });
     mgr.dispose();
     activeSessions.delete(sessionId);
+    const needsReboot = /\[CX\] Reboot required: yes/.test(fullOutput);
     sendToRenderer('ssh:status', { sessionId, status: result.code === 0 ? 'complete' : 'failed', message: result.code === 0 ? 'Upgrade complete' : `Exit ${result.code}` });
-    return { ok: result.code === 0, sessionId };
+    return { ok: result.code === 0, sessionId, needsReboot };
   } catch (err) {
     sendToRenderer('ssh:status', { sessionId, status: 'failed', message: err.message });
     return { ok: false, error: err.message };
@@ -1520,16 +1570,17 @@ ipcMain.handle('cx:read-apt-creds', async (_evt, opts) => {
 
 // APT feed - switch channel and run apt update
 ipcMain.handle('cx:switch-feed', async (_evt, opts) => {
-  const { host, password, port, feed } = opts || {};
+  const { host, password, port, feed, proxyHost, proxyPort } = opts || {};
   const sessionId = `switchfeed-${Date.now()}`;
   const escPass = String(password || '').replace(/'/g, "'\\''");
   const channel = feed === 'trixie-unstable' ? 'trixie-unstable' : 'trixie-stable';
+  const proxyOpts = buildProxyAptOpts(proxyHost, proxyPort);
 
   const script = `#!/bin/bash
 set -e
 export TERM=dumb
 export DEBIAN_FRONTEND=noninteractive
-APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Quiet::NoUpdate=true'
+APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Quiet::NoUpdate=true${proxyOpts}'
 SUDO_PASS='${escPass}'
 _sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
 _sudo -v
@@ -1565,15 +1616,16 @@ echo "[CX] Done. Feed is now ${channel}."
 
 // APT feed - run apt update only
 ipcMain.handle('cx:update-feed', async (_evt, opts) => {
-  const { host, password, port } = opts || {};
+  const { host, password, port, proxyHost, proxyPort } = opts || {};
   const sessionId = `updatefeed-${Date.now()}`;
   const escPass = String(password || '').replace(/'/g, "'\\''");
+  const proxyOpts = buildProxyAptOpts(proxyHost, proxyPort);
 
   const script = `#!/bin/bash
 set -e
 export TERM=dumb
 export DEBIAN_FRONTEND=noninteractive
-APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Quiet::NoUpdate=true'
+APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Quiet::NoUpdate=true${proxyOpts}'
 SUDO_PASS='${escPass}'
 _sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
 _sudo -v
@@ -1821,3 +1873,562 @@ ipcMain.handle('cx:resolve-direct', async (_evt, opts) => {
     return { ok: false, error: err.message || String(err) };
   }
 });
+// ===========================================================================
+// Provisioning recipes (phase 1)
+// ---------------------------------------------------------------------------
+// recipe:capture   - read a CX's full state into a recipe object (no file yet)
+// recipe:save      - write a recipe to the recipes folder
+// recipe:load-all  - list saved recipes
+// recipe:delete    - remove a saved recipe
+// recipe:export    - Save-As a recipe to any path the user picks
+// recipe:import    - Open a .json recipe from disk, validated before returning
+// recipe:apply     - run a recipe's apply plan against one connected CX,
+//                    streaming per-step progress to the renderer
+//
+// Recipes live next to profiles in userData, one JSON file per recipe.
+// ===========================================================================
+
+function recipesDir() {
+  return path.join(app.getPath('userData'), 'recipes');
+}
+
+async function ensureRecipesDir() {
+  const dir = recipesDir();
+  await fs.promises.mkdir(dir, { recursive: true });
+  return dir;
+}
+
+// filename-safe slug from a recipe name, so files are human-identifiable on disk
+function recipeSlug(name) {
+  const base = String(name || 'recipe').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
+  return base || 'recipe';
+}
+
+// Capture: reads feed/packages/firewall/tf1200 off a CX using the same
+// commands the individual views use, then folds them into a recipe. Any piece
+// that fails to read is simply omitted (partial capture is still useful), and
+// the per-section read errors are reported back so the UI can note them.
+ipcMain.handle('recipe:capture', async (_evt, opts) => {
+  const { host, password, port, name, beckhoffUser, beckhoffPass, tf2000Pass } = opts || {};
+  const escPass = String(password || '').replace(/'/g, "'\\''");
+  const mgr = new SSHManager();
+  const sessionId = `capture-${Date.now()}`;
+  activeSessions.set(sessionId, mgr);
+  const warnings = [];
+
+  try {
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+
+    // 1. System info (feed, tc version, interfaces, AMS NetID) - one compound command
+    let info = {}, ifaces = [], amsNetIdHex = null;
+    try {
+      const infoCmd = `
+_sudo() { echo '${escPass}' | sudo -S -p '' "$@"; }
+echo "HOSTNAME|||$(hostname)"
+echo "OS|||$(grep PRETTY_NAME /etc/os-release | cut -d= -f2 | tr -d '"')"
+echo "TC_VER|||$(dpkg-query -W -f='\${Version}' tc31-xar-um 2>/dev/null || echo unknown)"
+echo "FEED|||$(grep -oE 'trixie-[a-z]+' /etc/apt/sources.list.d/bhf.list 2>/dev/null | head -1 || echo unknown)"
+echo "AMSNETID|||$(_sudo grep -oE 'Name=\\"AmsNetId\\"[^>]*>[0-9A-Fa-f]+' /etc/TwinCAT/3.1/TcRegistry.xml 2>/dev/null | grep -oE '[0-9A-Fa-f]+$' || true)"
+ip -o addr show | awk '/inet / && !/127.0.0.1/{split($4,a,"/"); gsub("\r","",a[1]); n=$2; gsub("\r","",n); print "IFACE|||"n"|||"$4}'
+`;
+      const infoRes = await mgr.exec(infoCmd);
+      const ifaceMap = {};
+      String(infoRes.stdout || '').split(/\r?\n/).forEach(line => {
+        const parts = line.trim().replace(/\r/g, '').split('|||');
+        if (parts.length < 2) return;
+        if (parts[0] === 'IFACE') { ifaceMap[parts[1]] = { name: parts[1], ip: parts[2], state: 'up' }; }
+        else if (parts[0] === 'AMSNETID') { amsNetIdHex = parts[1] || null; }
+        else info[parts[0]] = parts[1];
+      });
+      ifaces = Object.values(ifaceMap);
+    } catch (e) { warnings.push('Could not read system info: ' + e.message); }
+
+    // AMS NetID on the wire is 6 hex bytes (e.g. 053B151A0101) - manual section
+    // 8.5 shows it dotted-decimal (5.59.21.26.1.1), one decimal per hex byte.
+    let amsNetId = null;
+    if (amsNetIdHex && /^[0-9A-Fa-f]{12}$/.test(amsNetIdHex)) {
+      amsNetId = amsNetIdHex.match(/.{2}/g).map(h => parseInt(h, 16)).join('.');
+    } else if (amsNetIdHex) {
+      warnings.push('AMS NetID found but not in the expected 6-byte format - skipped');
+    }
+
+    // 2. Installed TwinCAT packages with their versions
+    let packages = [];
+    try {
+      const pkgCmd = `dpkg-query -W -f='\${Package} \${Version}\n' 2>/dev/null | grep -iE '^(tc[0-9]+|tf[0-9]+|te[0-9]+|mdp-bhf|adstool|tcusbsrv|twincat-)' | sort -u`;
+      const pkgRes = await mgr.exec(pkgCmd);
+      String(pkgRes.stdout || '').split(/\r?\n/).forEach(line => {
+        const m = line.trim().replace(/\r/g, '').match(/^([A-Za-z0-9._+-]+)\s+(.+)$/);
+        if (m) packages.push({ name: m[1], version: m[2] });
+      });
+    } catch (e) { warnings.push('Could not read packages: ' + e.message); }
+
+    // 3. Firewall state (reuse the read-firewall parsing shape)
+    let firewall = null;
+    try {
+      const fwCmd = `
+_sudo() { echo '${escPass}' | sudo -S -p '' "$@"; }
+ENABLED=$(_sudo systemctl is-enabled nftables 2>/dev/null || true); ENABLED=\${ENABLED:-disabled}
+echo "___ENABLED___$ENABLED"
+echo "___RULESET___"
+_sudo nft list ruleset 2>/dev/null || true
+`;
+      const fwRes = await mgr.exec(fwCmd);
+      const out = (fwRes.stdout || '').replace(/\r/g, '');
+      const enabledMatch = out.match(/___ENABLED___(\S+)/);
+      const enabled = enabledMatch ? enabledMatch[1] === 'enabled' : false;
+      const marker = '___RULESET___';
+      const idx = out.indexOf(marker);
+      const rulesetText = idx !== -1 ? out.slice(idx + marker.length) : '';
+      const ports = [];
+      const lineRe = /^\s*(tcp|udp)\s+dport\s+(\d+)\s+accept(?:\s+comment\s+"([^"]*)")?/;
+      rulesetText.split('\n').forEach(line => {
+        const m = line.match(lineRe);
+        if (!m) return;
+        const proto = m[1], dport = parseInt(m[2], 10);
+        if (proto === 'tcp' && dport === 22) return;
+        ports.push({ port: dport, proto, label: m[3] || '' });
+      });
+      firewall = { enabled, ports };
+    } catch (e) { warnings.push('Could not read firewall: ' + e.message); }
+
+    // 4. TF1200 config (optional - many CXs won't have it)
+    let tf1200 = null;
+    try {
+      const tfRes = await mgr.exec(`echo '${escPass}' | sudo -S -p '' cat /home/TF1200/.config/TF1200-UI-Client/config.json 2>/dev/null`);
+      const raw = (tfRes.stdout || '').trim();
+      if (raw) {
+        try { tf1200 = { config: JSON.parse(raw) }; }
+        catch (e) { warnings.push('TF1200 config present but not valid JSON - skipped'); }
+      }
+    } catch (e) { /* no TF1200 - fine, just omit */ }
+
+    mgr.dispose();
+    activeSessions.delete(sessionId);
+
+    // Nudge the user rather than silently capturing an incomplete recipe: if
+    // packages were found but no MyBeckhoff credentials were supplied for
+    // this capture, flag it so they know to add them (or accept the recipe
+    // will require them to be typed in at apply time instead).
+    if (packages.length && !beckhoffUser && !beckhoffPass) {
+      warnings.push('No MyBeckhoff credentials entered for this capture - this recipe will require them to be typed in when applied.');
+    }
+    if (packages.some(p => p.name === 'tf2000-hmi-server') && !tf2000Pass) {
+      warnings.push('tf2000-hmi-server is installed but no TF2000 password was entered - this recipe will require it when applied.');
+    }
+
+    const built = recipe.buildRecipeFromCapture({
+      name, sourceHost: host, info, ifaces, packages, firewall, tf1200,
+      amsNetId, beckhoffUser, beckhoffPass, tf2000Pass
+    });
+    const check = recipe.validateRecipe(built);
+    if (!check.ok) {
+      return { ok: false, error: 'Captured recipe failed validation: ' + check.errors.join('; ') };
+    }
+    return { ok: true, recipe: built, warnings };
+  } catch (err) {
+    mgr.dispose();
+    activeSessions.delete(sessionId);
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+ipcMain.handle('recipe:save', async (_evt, { recipe: rec }) => {
+  const check = recipe.validateRecipe(rec);
+  if (!check.ok) return { ok: false, error: check.errors.join('; ') };
+  try {
+    const dir = await ensureRecipesDir();
+    const file = path.join(dir, `${recipeSlug(rec.name)}.json`);
+    await fs.promises.writeFile(file, JSON.stringify(rec, null, 2), 'utf8');
+    return { ok: true, path: file };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+ipcMain.handle('recipe:load-all', async () => {
+  try {
+    const dir = await ensureRecipesDir();
+    const files = (await fs.promises.readdir(dir)).filter(f => f.endsWith('.json'));
+    const recipes = [];
+    for (const f of files) {
+      try {
+        const raw = await fs.promises.readFile(path.join(dir, f), 'utf8');
+        const rec = JSON.parse(raw);
+        const check = recipe.validateRecipe(rec);
+        recipes.push({ file: f, recipe: rec, valid: check.ok, errors: check.errors });
+      } catch (e) {
+        recipes.push({ file: f, recipe: null, valid: false, errors: [e.message] });
+      }
+    }
+    return { ok: true, recipes };
+  } catch (e) {
+    return { ok: false, error: e.message, recipes: [] };
+  }
+});
+
+ipcMain.handle('recipe:delete', async (_evt, { file }) => {
+  try {
+    // Guard against path traversal - only ever delete inside the recipes dir
+    const dir = await ensureRecipesDir();
+    const target = path.join(dir, path.basename(String(file || '')));
+    if (path.dirname(target) !== dir) return { ok: false, error: 'Invalid recipe path' };
+    await fs.promises.unlink(target);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+ipcMain.handle('recipe:export', async (_evt, { recipe: rec }) => {
+  const check = recipe.validateRecipe(rec);
+  if (!check.ok) return { ok: false, error: check.errors.join('; ') };
+  const win = BrowserWindow.getFocusedWindow();
+  const { canceled, filePath } = await dialog.showSaveDialog(win, {
+    title: 'Export recipe',
+    defaultPath: `${recipeSlug(rec.name)}.json`,
+    filters: [{ name: 'Recipe JSON', extensions: ['json'] }]
+  });
+  if (canceled || !filePath) return { ok: false, canceled: true };
+  try {
+    // Exported recipes are meant to be shared with colleagues - never write
+    // a password to a file that might end up in email, chat, or a shared
+    // drive. Username is kept so whoever imports it knows which account to
+    // supply a password for; passwords are always typed fresh on their end.
+    const shareable = recipe.stripSecretsForExport(rec);
+    await fs.promises.writeFile(filePath, JSON.stringify(shareable, null, 2), 'utf8');
+    return { ok: true, path: filePath };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+ipcMain.handle('recipe:import', async () => {
+  const win = BrowserWindow.getFocusedWindow();
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: 'Import recipe',
+    filters: [{ name: 'Recipe JSON', extensions: ['json'] }],
+    properties: ['openFile']
+  });
+  if (canceled || !filePaths || !filePaths.length) return { ok: false, canceled: true };
+  try {
+    const raw = await fs.promises.readFile(filePaths[0], 'utf8');
+    const rec = JSON.parse(raw);
+    const check = recipe.validateRecipe(rec);
+    if (!check.ok) return { ok: false, error: 'Not a valid recipe: ' + check.errors.join('; ') };
+    return { ok: true, recipe: rec };
+  } catch (e) {
+    return { ok: false, error: 'Could not read recipe: ' + e.message };
+  }
+});
+
+// Apply a recipe to one connected CX. Walks the ordered plan, streaming a
+// per-step status to the renderer. Stops this device's sequence on the first
+// hard failure (fail-fast within a device) rather than compounding errors.
+// Returns a per-step result array the UI (and, in phase 2, fleet mode) uses.
+ipcMain.handle('recipe:apply', async (_evt, opts) => {
+  const { host, password, port, recipe: rec, include, applyNetwork, beckhoffUser, beckhoffPass, tf2000Pass, proxyHost, proxyPort, sessionId: incomingSession } = opts || {};
+
+  const check = recipe.validateRecipe(rec);
+  if (!check.ok) return { ok: false, error: 'Invalid recipe: ' + check.errors.join('; ') };
+
+  const plan = recipe.buildApplyPlan(rec, { include: include || {}, applyNetwork: applyNetwork === true });
+  if (!plan.length) return { ok: false, error: 'Nothing to apply - no sections selected' };
+
+  // Effective credentials: whatever was freshly typed for this run wins, else
+  // fall back to what the recipe itself has stored from capture. Either way,
+  // if what's needed still isn't there, refuse before touching the network -
+  // no connection is opened, nothing partial happens. This is the explicit
+  // "force input" gate: previously a missing credential just logged a warning
+  // and continued, which meant apt sometimes failed later, sometimes silently
+  // succeeded against an unauthenticated feed, and either way the user found
+  // out only after the fact.
+  const effectiveBeckhoffUser = beckhoffUser || (rec.credentials && rec.credentials.beckhoffUsername) || '';
+  const effectiveBeckhoffPass = beckhoffPass || (rec.credentials && rec.credentials.beckhoffPassword) || '';
+  const effectiveTf2000Pass = tf2000Pass || (rec.credentials && rec.credentials.tf2000Password) || '';
+
+  if (recipe.needsBeckhoffAuth(rec, include || {}) && !(effectiveBeckhoffUser && effectiveBeckhoffPass)) {
+    return {
+      ok: false,
+      error: 'This recipe needs MyBeckhoff credentials to switch feeds or install packages. Enter a username and password before applying.',
+      needsCredentials: 'beckhoff'
+    };
+  }
+  if (recipe.needsTf2000Password(rec, include || {}) && !effectiveTf2000Pass) {
+    return {
+      ok: false,
+      error: 'The package list includes tf2000-hmi-server, which needs a password to initialise. Enter one before applying.',
+      needsCredentials: 'tf2000'
+    };
+  }
+
+  const sessionId = incomingSession || `apply-${Date.now()}`;
+  const results = [];
+  const emit = (data) => sendToRenderer('ssh:output', { sessionId, data });
+  const step = (i, status, message) => sendToRenderer('recipe:step', { sessionId, index: i, status, message, total: plan.length });
+
+  emit(`\x1b[0;36m[RECIPE]\x1b[0m Applying "${rec.name}" to ${host} - ${plan.length} step(s)\r\n`);
+
+  for (let i = 0; i < plan.length; i++) {
+    const s = plan[i];
+    step(i, 'running', s.label);
+    emit(`\r\n\x1b[1;37m[STEP ${i + 1}/${plan.length}]\x1b[0m ${s.label}\r\n`);
+
+    try {
+      let stepResult;
+      switch (s.kind) {
+        case 'feed':
+          stepResult = await applyFeedStep(host, password, port, s.data.channel, { beckhoffUser: effectiveBeckhoffUser, beckhoffPass: effectiveBeckhoffPass, proxyHost, proxyPort }, emit);
+          break;
+        case 'packages':
+          stepResult = await applyPackagesStep(host, password, port, s.data.packages, { beckhoffUser: effectiveBeckhoffUser, beckhoffPass: effectiveBeckhoffPass, tf2000Pass: effectiveTf2000Pass, proxyHost, proxyPort }, emit);
+          break;
+        case 'firewall':
+          stepResult = await applyFirewallStep(host, password, port, s.data, emit);
+          break;
+        case 'tf1200':
+          stepResult = await applyTf1200Step(host, password, port, s.data.config, emit);
+          break;
+        case 'network':
+          // Identity step - phase 1 records it but does not auto-push. Applying
+          // network config across devices is a per-device operation and is
+          // handled through the dedicated Network view, not recipe apply.
+          emit(`\x1b[1;33m[SKIP]\x1b[0m Network is per-device identity and is not applied through recipes. Use the Network view.\r\n`);
+          stepResult = { ok: true, skipped: true };
+          break;
+        default:
+          stepResult = { ok: false, error: 'Unknown step kind: ' + s.kind };
+      }
+
+      if (stepResult.ok) {
+        step(i, stepResult.skipped ? 'skipped' : 'done', s.label);
+        results.push({ kind: s.kind, ok: true, skipped: !!stepResult.skipped });
+      } else {
+        step(i, 'failed', stepResult.error || 'failed');
+        emit(`\x1b[0;31m[FAIL]\x1b[0m ${stepResult.error || 'step failed'}\r\n`);
+        results.push({ kind: s.kind, ok: false, error: stepResult.error });
+        // fail-fast within this device
+        return { ok: false, sessionId, results, failedAt: i, error: stepResult.error };
+      }
+    } catch (err) {
+      const msg = err.message || String(err);
+      step(i, 'failed', msg);
+      emit(`\x1b[0;31m[FAIL]\x1b[0m ${msg}\r\n`);
+      results.push({ kind: s.kind, ok: false, error: msg });
+      return { ok: false, sessionId, results, failedAt: i, error: msg };
+    }
+  }
+
+  emit(`\r\n\x1b[0;32m[RECIPE]\x1b[0m All steps complete on ${host}.\r\n`);
+  return { ok: true, sessionId, results };
+});
+
+// -- apply step helpers: each opens its own short-lived connection, runs one
+//    concern, and tears down. Kept small and independent so fleet mode can run
+//    many of these in parallel without shared state. --
+
+// Shared preamble for any apply step that runs apt: writes MyBeckhoff auth
+// (skipping if already present on the CX, exactly like the Setup flow so
+// re-running a recipe never requires retyping the password) and builds the
+// apt proxy options if the caller resolved a laptop-proxy for this CX.
+// escPass is the already-escaped Administrator/sudo password.
+// Only trust a proxy host/port we ourselves started via proxy:start - both
+// must look right or we silently skip proxying rather than build a bad apt
+// option string. socks5h (not socks5) so hostname resolution happens at the
+// proxy - the CX can't resolve deb.beckhoff.com itself, that's the whole
+// reason this exists. Shared by buildAptPreamble and every apt-touching
+// handler below (switch-feed, update-feed, upgrade, fetch-updates) - all of
+// which used to skip this entirely and just fail with a DNS error on any CX
+// with no internet route of its own.
+function buildProxyAptOpts(proxyHost, proxyPort) {
+  const validProxy = proxyHost && Number.isInteger(proxyPort) && /^[0-9.]+$/.test(String(proxyHost));
+  return validProxy
+    ? ` -o Acquire::http::Proxy=socks5h://${proxyHost}:${proxyPort}/ -o Acquire::https::Proxy=socks5h://${proxyHost}:${proxyPort}/`
+    : '';
+}
+
+function buildAptPreamble(escPass, beckhoffUser, beckhoffPass, proxyHost, proxyPort) {
+  const escUser = String(beckhoffUser || '').replace(/'/g, "'\\''");
+  const escBkPass = String(beckhoffPass || '').replace(/'/g, "'\\''");
+  const proxyOpts = buildProxyAptOpts(proxyHost, proxyPort);
+
+  return `SUDO_PASS='${escPass}'
+_sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
+_sudo -v
+BECKHOFF_USER='${escUser}'
+BECKHOFF_PASS='${escBkPass}'
+if _sudo test -s /etc/apt/auth.conf.d/bhf.conf; then
+  echo "[CX] MyBeckhoff auth file already present on CX - reusing existing credentials."
+elif [ -n "$BECKHOFF_USER" ] && [ -n "$BECKHOFF_PASS" ]; then
+  echo "[CX] Creating APT auth file..."
+  AUTH_TMP=$(mktemp)
+  printf 'machine deb.beckhoff.com\\nlogin %s\\npassword %s\\nmachine deb-mirror.beckhoff.com\\nlogin %s\\npassword %s\\n' "$BECKHOFF_USER" "$BECKHOFF_PASS" "$BECKHOFF_USER" "$BECKHOFF_PASS" > "$AUTH_TMP"
+  _sudo mkdir -p /etc/apt/auth.conf.d
+  _sudo mv "$AUTH_TMP" /etc/apt/auth.conf.d/bhf.conf
+  _sudo chmod 600 /etc/apt/auth.conf.d/bhf.conf
+  _sudo chown root:root /etc/apt/auth.conf.d/bhf.conf
+  echo "[CX] Auth file written."
+else
+  echo "[CX] No MyBeckhoff credentials in /etc/apt/auth.conf.d/bhf.conf and none supplied for this run - continuing without writing one. Some packages may require credentials to download."
+fi
+APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0${proxyOpts}'`;
+}
+
+async function applyFeedStep(host, password, port, channel, creds, emit) {
+  if (!/^trixie-(stable|unstable)$/.test(channel)) return { ok: false, error: `Invalid channel ${channel}` };
+  const escPass = String(password || '').replace(/'/g, "'\\''");
+  const { beckhoffUser, beckhoffPass, proxyHost, proxyPort } = creds || {};
+  const mgr = new SSHManager();
+  try {
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+    const script = `#!/bin/bash
+set -e
+trap 'rm -f "$0"' EXIT
+${buildAptPreamble(escPass, beckhoffUser, beckhoffPass, proxyHost, proxyPort)}
+_sudo sed -i -E 's#trixie-(stable|unstable)#${channel}#g' /etc/apt/sources.list.d/bhf.list
+echo "[CX] Feed set to ${channel}"
+_sudo apt $APT_OPTS update -y 2>&1 | tail -5`;
+    await withTempScript('rec-feed', script, (p) => mgr.putFile(p, '/tmp/rec_feed.sh'));
+    const res = await mgr.execStream('chmod +x /tmp/rec_feed.sh && /tmp/rec_feed.sh', {
+      onStdout: (c) => emit(c.toString()), onStderr: (c) => emit(c.toString())
+    });
+    mgr.dispose();
+    return { ok: res.code === 0, error: res.code === 0 ? null : `feed step exit ${res.code}` };
+  } catch (e) { mgr.dispose(); return { ok: false, error: e.message }; }
+}
+
+async function applyPackagesStep(host, password, port, packages, creds, emit) {
+  const escPass = String(password || '').replace(/'/g, "'\\''");
+  const { beckhoffUser, beckhoffPass, tf2000Pass, proxyHost, proxyPort } = creds || {};
+  // Build the install list, honouring version pins where present
+  const installArgs = packages.map(p => {
+    if (!/^[A-Za-z0-9._+-]+$/.test(p.name)) return null;
+    return p.version ? `${p.name}=${p.version}` : p.name;
+  }).filter(Boolean).join(' ');
+  if (!installArgs) return { ok: false, error: 'No valid packages to install' };
+
+  // tf2000-hmi-server needs a one-time initialisation with its own password
+  // after install, same as the main Setup flow and the service reinit action -
+  // otherwise the service is installed but never brought up. Matches
+  // script-builder.js's buildInnerSetupScript hmiBlock exactly.
+  const needsTf2000 = packages.some(p => p.name === 'tf2000-hmi-server');
+  let tf2000Block = '';
+  if (needsTf2000) {
+    const escTf2000Pass = String(tf2000Pass || '').replace(/'/g, "'\\''");
+    tf2000Block = `
+echo "[CX] Checking TF2000 HMI Server..."
+if _sudo test -f /etc/TwinCAT/Functions/TF2000-HMI-Server/TcHmiSrv.cfg 2>/dev/null || _sudo systemctl is-active TcHmiSrv.service &>/dev/null; then
+  echo "[CX] TF2000 already initialized - skipping init, ensuring service is running."
+  _sudo systemctl enable TcHmiSrv.service || true
+  _sudo systemctl start TcHmiSrv.service || true
+else
+  echo "[CX] Initializing TF2000 HMI Server..."
+  _sudo TcHmiSrv --initialize --password='${escTf2000Pass}'
+  _sudo systemctl enable TcHmiSrv.service
+  _sudo systemctl start TcHmiSrv.service
+fi`;
+  }
+
+  const mgr = new SSHManager();
+  try {
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+    const script = `#!/bin/bash
+set -e
+trap 'rm -f "$0"' EXIT
+${buildAptPreamble(escPass, beckhoffUser, beckhoffPass, proxyHost, proxyPort)}
+_sudo apt $APT_OPTS update -y 2>&1 | tail -3
+echo "[CX] Installing: ${installArgs}"
+_sudo DEBIAN_FRONTEND=noninteractive apt $APT_OPTS install -y ${installArgs}
+echo "[CX] Package install complete"
+${tf2000Block}`;
+    await withTempScript('rec-pkgs', script, (p) => mgr.putFile(p, '/tmp/rec_pkgs.sh'));
+    const res = await mgr.execStream('chmod +x /tmp/rec_pkgs.sh && /tmp/rec_pkgs.sh', {
+      onStdout: (c) => emit(c.toString()), onStderr: (c) => emit(c.toString())
+    });
+    mgr.dispose();
+    return { ok: res.code === 0, error: res.code === 0 ? null : `package step exit ${res.code}` };
+  } catch (e) { mgr.dispose(); return { ok: false, error: e.message }; }
+}
+
+
+async function applyFirewallStep(host, password, port, data, emit) {
+  const escPass = String(password || '').replace(/'/g, "'\\''");
+  // Reuse the same validated rule-building the cx:firewall handler uses
+  const cleanPorts = [];
+  for (const p of (data.ports || [])) {
+    const portNum = parseInt(p.port, 10);
+    if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) continue;
+    const proto = p.proto === 'udp' ? 'udp' : 'tcp';
+    const label = String(p.label || '').replace(/[^A-Za-z0-9 ._/-]/g, '').slice(0, 40);
+    cleanPorts.push({ port: portNum, proto, label });
+  }
+  const openRules = cleanPorts.map(p =>
+    p.label
+      ? `_sudo nft add rule inet filter input ${p.proto} dport ${p.port} accept comment '"${p.label}"'`
+      : `_sudo nft add rule inet filter input ${p.proto} dport ${p.port} accept`
+  ).join('\n');
+
+  const mgr = new SSHManager();
+  try {
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+    const enableBlock = data.enable ? `echo "[CX] Configuring nftables firewall..."
+_sudo nft flush ruleset
+_sudo nft add table inet filter
+_sudo nft add chain inet filter input '{ type filter hook input priority 0; policy drop; }'
+_sudo nft add chain inet filter forward '{ type filter hook forward priority 0; policy drop; }'
+_sudo nft add chain inet filter output '{ type filter hook output priority 0; policy accept; }'
+_sudo nft add rule inet filter input ct state established,related accept
+_sudo nft add rule inet filter input iif lo accept
+_sudo nft add rule inet filter input tcp dport 22 accept
+${openRules}
+_sudo systemctl enable nftables
+_sudo systemctl start nftables
+_sudo nft list ruleset | _sudo tee /etc/nftables.conf >/dev/null
+echo "[CX] Firewall configured."` :
+`echo "[CX] Disabling firewall..."
+_sudo systemctl stop nftables || true
+_sudo systemctl disable nftables || true
+echo "[CX] Firewall disabled."`;
+
+    const script = `#!/bin/bash
+set -e
+trap 'rm -f "$0"' EXIT
+SUDO_PASS='${escPass}'
+_sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
+_sudo -v
+${enableBlock}`;
+    await withTempScript('rec-fw', script, (p) => mgr.putFile(p, '/tmp/rec_fw.sh'));
+    const res = await mgr.execStream('chmod +x /tmp/rec_fw.sh && /tmp/rec_fw.sh', {
+      onStdout: (c) => emit(c.toString()), onStderr: (c) => emit(c.toString())
+    });
+    mgr.dispose();
+    return { ok: res.code === 0, error: res.code === 0 ? null : `firewall step exit ${res.code}` };
+  } catch (e) { mgr.dispose(); return { ok: false, error: e.message }; }
+}
+
+async function applyTf1200Step(host, password, port, config, emit) {
+  const escPass = String(password || '').replace(/'/g, "'\\''");
+  const b64 = Buffer.from(JSON.stringify(config, null, 2), 'utf8').toString('base64');
+  const mgr = new SSHManager();
+  try {
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+    const script = `#!/bin/bash
+set -e
+trap 'rm -f "$0"' EXIT
+SUDO_PASS='${escPass}'
+_sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
+_sudo -v
+CFG_DIR=/home/TF1200/.config/TF1200-UI-Client
+CFG=$CFG_DIR/config.json
+_sudo mkdir -p "$CFG_DIR"
+if [ -f "$CFG" ]; then _sudo cp "$CFG" "$CFG.backup.$(date +%Y%m%d_%H%M%S)"; echo "[CX] Backed up existing config"; fi
+printf '%s' '${b64}' | base64 -d | _sudo tee "$CFG" >/dev/null
+echo "[CX] TF1200 config written"`;
+    await withTempScript('rec-tf1200', script, (p) => mgr.putFile(p, '/tmp/rec_tf1200.sh'));
+    const res = await mgr.execStream('chmod +x /tmp/rec_tf1200.sh && /tmp/rec_tf1200.sh', {
+      onStdout: (c) => emit(c.toString()), onStderr: (c) => emit(c.toString())
+    });
+    mgr.dispose();
+    return { ok: res.code === 0, error: res.code === 0 ? null : `tf1200 step exit ${res.code}` };
+  } catch (e) { mgr.dispose(); return { ok: false, error: e.message }; }
+}

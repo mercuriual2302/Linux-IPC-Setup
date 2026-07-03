@@ -1,5 +1,5 @@
 // If you're redaidn this send help... JavaScript will be the end of me... 
-// src/script-builder.js — builds shell scripts for the CX
+// src/script-builder.js - builds shell scripts for the CX
 //
 // Two families of outputs:
 //   • buildFullSetup / buildFullTF1200    → drop-in bash scripts equivalent to
@@ -65,7 +65,7 @@ function buildInnerSetupScript({ feed = 'trixie-stable', packages = [], pkgVersi
     ? `
 echo "[CX] Checking TF2000 HMI Server..."
 if _sudo test -f /etc/TwinCAT/Functions/TF2000-HMI-Server/TcHmiSrv.cfg 2>/dev/null || _sudo systemctl is-active TcHmiSrv.service &>/dev/null; then
-  echo "[CX] TF2000 already initialized — skipping init, ensuring service is running."
+  echo "[CX] TF2000 already initialized - skipping init, ensuring service is running."
   _sudo systemctl enable TcHmiSrv.service || true
   _sudo systemctl start TcHmiSrv.service || true
 else
@@ -91,7 +91,7 @@ _sudo usermod -aG sudo TF1200`
     : '# No optional packages selected';
 
   return `#!/bin/bash
-# Inner setup script — executed by the Electron app over SSH.
+# Inner setup script - executed by the Electron app over SSH.
 # Positional args: $1 = MyBeckhoff username, $2 = MyBeckhoff password,
 #                  $3 = Administrator password (for sudo).
 # $1/$2 may be blank if bhf.conf already exists on the CX - see check below.
@@ -106,7 +106,7 @@ if [ -z "$SUDO_PASS" ]; then
   exit 2
 fi
 
-#  Quiet down apt — suppress the fancy cursor-based progress bar ─
+#  Quiet down apt - suppress the fancy cursor-based progress bar ─
 # Tell apt to skip its ncurses-style progress redraws; tell apt not to emit
 # download-progress bars or dialog frontends. All three combined produce clean
 # line-oriented output that renders cleanly in the Electron terminal pane
@@ -134,7 +134,7 @@ elif [ -n "$BECKHOFF_USER" ] && [ -n "$BECKHOFF_PASS" ]; then
   _sudo mv "$AUTH_TMP" /etc/apt/auth.conf.d/bhf.conf
   _sudo chmod 600 /etc/apt/auth.conf.d/bhf.conf
   _sudo chown root:root /etc/apt/auth.conf.d/bhf.conf
-  # Sanity — print credential lengths so truncation/corruption shows up in logs
+  # Sanity - print credential lengths so truncation/corruption shows up in logs
   echo "[CX] Auth file written: user=\${#BECKHOFF_USER} chars, pass=\${#BECKHOFF_PASS} chars"
   echo "[CX] Auth file preview (password masked):"
   _sudo sed 's/^password .*/password ***MASKED***/' /etc/apt/auth.conf.d/bhf.conf
@@ -155,7 +155,7 @@ echo "[CX] Disabling firewall for setup..."
 _sudo systemctl stop nftables || true
 _sudo systemctl disable nftables || true
 echo "[CX] Installing console-setup..."
-# debconf-set-selections needs data on stdin — but so does sudo -S for the
+# debconf-set-selections needs data on stdin - but so does sudo -S for the
 # password. Wrap both in a single "sh -c" so _sudo's stdin carries only the
 # password, and the debconf data is piped inside the elevated shell.
 _sudo sh -c 'echo "keyboard-configuration keyboard-configuration/layoutcode string us" | debconf-set-selections'
@@ -191,7 +191,7 @@ function buildInnerTF1200Script({ jsonConfig = {}, proxyHost = null, proxyPort =
     : '';
 
   return `#!/bin/bash
-# Inner TF1200 config script — executed over SSH by the Electron app.
+# Inner TF1200 config script - executed over SSH by the Electron app.
 # Positional args: $1 = HMI_URL, $2 = Administrator password (for sudo).
 set -e
 trap 'rm -f "$0"' EXIT
@@ -309,13 +309,13 @@ BECKHOFF_PASS="${beckhoffPass}"
 
 # ── sshpass auto-detection (not available on Windows / Git Bash) ──────────────
 if command -v sshpass &>/dev/null; then
-  log_info "sshpass found — passwords will be supplied automatically"
+  log_info "sshpass found - passwords will be supplied automatically"
   _ssh() { sshpass -p "$CX_PASS" ssh "$@"; }
   _scp() { sshpass -p "$CX_PASS" scp "$@"; }
 else
   log_warn "sshpass not found (Git Bash / Windows detected)"
   log_warn "You will be prompted for the Administrator password: $CX_PASS"
-  log_warn "Enter it each time the prompt appears — it will not echo"
+  log_warn "Enter it each time the prompt appears - it will not echo"
   _ssh() { ssh "$@"; }
   _scp() { scp "$@"; }
 fi
@@ -340,7 +340,7 @@ cat > "$TEMP_SCRIPT" <<'ENDSCRIPT'
 ${inner}ENDSCRIPT
 
 _scp -o StrictHostKeyChecking=no "$TEMP_SCRIPT" Administrator@$CX_IP:/tmp/twincat_setup.sh
-log_info "Executing on CX — this will take 10-15 minutes. Do not interrupt!"
+log_info "Executing on CX - this will take 10-15 minutes. Do not interrupt!"
 _ssh -t -t -o StrictHostKeyChecking=no Administrator@$CX_IP \\
   "chmod +x /tmp/twincat_setup.sh && /tmp/twincat_setup.sh '$BECKHOFF_USER' '$BECKHOFF_PASS' '$CX_PASS'"
 rm "$TEMP_SCRIPT"
@@ -390,13 +390,13 @@ CX_PASS="${cxPass}"
 HMI_URL="${hmiUrl}"
 
 if command -v sshpass &>/dev/null; then
-  log_info "sshpass found — passwords will be supplied automatically"
+  log_info "sshpass found - passwords will be supplied automatically"
   _ssh() { sshpass -p "$CX_PASS" ssh "$@"; }
   _scp() { sshpass -p "$CX_PASS" scp "$@"; }
 else
   log_warn "sshpass not found (Git Bash / Windows detected)"
   log_warn "You will be prompted for the Administrator password: $CX_PASS"
-  log_warn "Enter it each time the prompt appears — it will not echo"
+  log_warn "Enter it each time the prompt appears - it will not echo"
   _ssh() { ssh "$@"; }
   _scp() { scp "$@"; }
 fi
@@ -421,7 +421,7 @@ _ssh -t -t -o StrictHostKeyChecking=no Administrator@$CX_IP \\
   "chmod +x /tmp/tf1200_configure.sh && /tmp/tf1200_configure.sh '$HMI_URL' '$CX_PASS'"
 rm "$TEMP_SCRIPT"
 log_info "Applied all config settings to TF1200."
-log_info "CX rebooting — connect monitor to see TF1200 UI Client load."
+log_info "CX rebooting - connect monitor to see TF1200 UI Client load."
 log_info ""
 log_info "Troubleshooting:"
 log_info "  ssh TF1200@$CX_IP 'cat ~/.config/TF1200-UI-Client/config.json'"

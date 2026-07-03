@@ -385,7 +385,7 @@ function renderVersionList() {
 
 // Tabs
 const tabs = document.querySelectorAll('.tab');
-const pages = { dashboard:'page-dashboard', setup:'page-setup', services:'page-services', network:'page-network', firewall:'page-firewall', users:'page-users', packages:'page-packages', tf1200:'page-tf1200', shell:'page-shell', sftp:'page-sftp' };
+const pages = { dashboard:'page-dashboard', setup:'page-setup', recipes:'page-recipes', services:'page-services', network:'page-network', firewall:'page-firewall', users:'page-users', packages:'page-packages', tf1200:'page-tf1200', shell:'page-shell', sftp:'page-sftp' };
 
 // Registry of "read from CX" refreshers, one per tab, populated by each
 // section below as it initialises. Switching to a tab - or reconnecting via
@@ -663,6 +663,19 @@ function appendTerminal(data) {
 function clearTerminal() {
   terminalBuffer = '';
   $('terminal-output').innerHTML = '<span style="color:var(--tc-muted)">// terminal idle</span>';
+  setTermStatus('idle', 'var(--tc-muted)');
+}
+
+// Small badge next to the "TERMINAL" title, visible even when the drawer is
+// collapsed - this was being set to "idle" once in the HTML and never
+// touched again, so it kept reading "idle" through an entire live run.
+// Wired from ssh:status (Setup/TF1200/Services/etc.) and from the Recipes
+// apply flow, which uses its own recipe:step event instead of ssh:status.
+function setTermStatus(text, colorVar) {
+  const el = $('term-substatus');
+  if (!el) return;
+  el.textContent = text;
+  el.style.color = colorVar || 'var(--tc-muted)';
 }
 
 // Script preview pane
@@ -903,6 +916,7 @@ window.api.on('ssh:status', ({ sessionId, status, message }) => {
   };
   s.style.color = colorByStatus[status] || 'var(--tc-muted)';
   s.textContent = `[${status}] ${message || ''}`;
+  setTermStatus(status, colorByStatus[status]);
 });
 
 // Generate script (copy/download)
@@ -1306,9 +1320,11 @@ $('btn-fetch-installed').addEventListener('click', async () => {
 $('btn-fetch-updates').addEventListener('click', async () => {
   const conn = getCxMgmtConn();
   if (!conn.host) { toast('Enter CX IP address', 'warn'); return; }
+  const proxyDecision = await ensureProxyDecision(conn.host, conn.password);
+  if (proxyDecision.cancelled) return;
   $('btn-fetch-updates').disabled = true;
   $('btn-fetch-updates').textContent = '⟳ CHECKING...';
-  const res = await window.api.fetchUpdates({ ...conn, checkUpdates: true });
+  const res = await window.api.fetchUpdates({ ...conn, checkUpdates: true, proxyHost: proxyDecision.proxyHost, proxyPort: proxyDecision.proxyPort });
   $('btn-fetch-updates').disabled = false;
   $('btn-fetch-updates').textContent = '⟳ CHECK FOR UPDATES';
   if (!res.ok) { toast('Failed to check updates', 'error'); return; }
@@ -1331,11 +1347,110 @@ $('btn-upgrade-selected').addEventListener('click', async () => {
   if (!conn.host) { toast('Enter CX IP address', 'warn'); return; }
   const selected = [...document.querySelectorAll('.upd-chk:checked')].map(c => c.dataset.pkg);
   if (!selected.length) { toast('No packages selected', 'warn'); return; }
+  const proxyDecision = await ensureProxyDecision(conn.host, conn.password);
+  if (proxyDecision.cancelled) return;
   $('btn-upgrade-selected').disabled = true;
   goToTerminal(null);
-  const res = await window.api.runUpgrade({ ...conn, packages: selected });
+  const res = await window.api.runUpgrade({ ...conn, packages: selected, proxyHost: proxyDecision.proxyHost, proxyPort: proxyDecision.proxyPort });
   $('btn-upgrade-selected').disabled = false;
   if (!res.ok) toast('Upgrade failed - see terminal', 'error');
+});
+
+// System updates: full apt upgrade beyond TwinCAT - kernel, systemd, OpenSSH,
+// and everything else. Kept as its own section rather than folded into the
+// TwinCAT one above since the risk profile is different (reboot required for
+// kernel/bootloader, possible SSH drop for openssh-server/systemd) and this
+// is meant to be a deliberate maintenance action, not a routine one.
+let _sysUpdates = []; // [{name, oldVer, newVer, isKernel}]
+
+function renderSysUpdatesTable() {
+  const rows = $('sys-updates-rows');
+  rows.innerHTML = _sysUpdates.map(p => `
+    <div class="upd-row" style="display:grid;grid-template-columns:1fr auto auto 36px;gap:.5rem;padding:.35rem .6rem;border-bottom:1px solid var(--tc-border);align-items:center">
+      <span class="upd-name">${escapeHtml(p.name)}${p.isKernel ? ' <span style="color:var(--tc-warn);font-size:9px;font-weight:700;border:1px solid var(--tc-warn);border-radius:3px;padding:0 4px;margin-left:.3rem">KERNEL</span>' : ''}</span>
+      <span class="upd-old">${escapeHtml(p.oldVer)}</span>
+      <span class="upd-new">→ ${escapeHtml(p.newVer)}</span>
+      <span><input type="checkbox" class="sysupd-chk" data-pkg="${escapeHtml(p.name)}" data-kernel="${p.isKernel ? '1' : '0'}" checked style="cursor:pointer"></span>
+    </div>`).join('');
+  $('btn-upgrade-sys').style.display = _sysUpdates.length ? '' : 'none';
+  $('btn-upgrade-sys').disabled = !_sysUpdates.length;
+  const chkAll = $('chk-select-all-sys-updates');
+  if (chkAll) {
+    chkAll.checked = true;
+    chkAll.addEventListener('change', function() {
+      $('sys-updates-rows').querySelectorAll('.sysupd-chk').forEach(c => c.checked = this.checked);
+    });
+  }
+}
+
+$('btn-fetch-sys-updates').addEventListener('click', async () => {
+  const conn = getCxMgmtConn();
+  if (!conn.host) { toast('Enter CX IP address', 'warn'); return; }
+  const proxyDecision = await ensureProxyDecision(conn.host, conn.password);
+  if (proxyDecision.cancelled) return;
+  $('btn-fetch-sys-updates').disabled = true;
+  $('btn-fetch-sys-updates').textContent = '⟳ CHECKING...';
+  const res = await window.api.fetchSystemUpdates({ ...conn, proxyHost: proxyDecision.proxyHost, proxyPort: proxyDecision.proxyPort }).catch(e => ({ ok: false, error: String((e && e.message) || e) }));
+  $('btn-fetch-sys-updates').disabled = false;
+  $('btn-fetch-sys-updates').textContent = '⟳ CHECK FOR SYSTEM UPDATES';
+  if (!res.ok) { toast('Failed to check system updates - ' + (res.error || 'see terminal'), 'error'); return; }
+  _sysUpdates = res.updates;
+  $('sys-updates-result').style.display = res.updates.length ? 'block' : 'none';
+  $('sys-updates-count').textContent = `${res.count} update${res.count !== 1 ? 's' : ''} available` + (res.kernelCount ? ` · ${res.kernelCount} kernel/bootloader` : '');
+  renderSysUpdatesTable();
+  if (res.count === 0) toast('System is fully up to date', 'success');
+  else if (res.kernelCount) toast(`${res.kernelCount} kernel/bootloader update(s) found - reboot will be required after upgrading`, 'warn');
+});
+
+$('btn-upgrade-sys').addEventListener('click', async () => {
+  const conn = getCxMgmtConn();
+  if (!conn.host) { toast('Enter CX IP address', 'warn'); return; }
+  const selectedChks = [...document.querySelectorAll('.sysupd-chk:checked')];
+  const selected = selectedChks.map(c => c.dataset.pkg);
+  if (!selected.length) { toast('No packages selected', 'warn'); return; }
+  const selectedHasKernel = selectedChks.some(c => c.dataset.kernel === '1');
+
+  let confirmMsg = `Upgrade ${selected.length} system package(s) on ${conn.host}?`;
+  if (selectedHasKernel) {
+    confirmMsg += `\n\nThis includes a kernel or bootloader update. The CX will need a reboot afterward for it to take effect - TwinCAT and EtherCAT keep running on the OLD kernel until then.\n\nUpgrading openssh-server may also briefly drop this SSH session - that's expected, just reconnect.\n\nRecommended: do this during a maintenance window, not while the CX is running live machinery.`;
+  } else if (selected.some(n => /^(openssh|sudo|systemd)/.test(n))) {
+    confirmMsg += `\n\nThis includes core system services (SSH/sudo/systemd). The SSH session may briefly drop when they restart - that's expected, just reconnect.`;
+  }
+  if (!confirm(confirmMsg)) return;
+
+  const proxyDecision = await ensureProxyDecision(conn.host, conn.password);
+  if (proxyDecision.cancelled) return;
+
+  $('btn-upgrade-sys').disabled = true;
+  $('sys-reboot-banner').style.display = 'none';
+  goToTerminal(null);
+  const res = await window.api.runUpgrade({ ...conn, packages: selected, proxyHost: proxyDecision.proxyHost, proxyPort: proxyDecision.proxyPort }).catch(e => ({ ok: false, error: String((e && e.message) || e) }));
+  $('btn-upgrade-sys').disabled = false;
+
+  if (!res.ok) {
+    toast('System upgrade failed - see terminal', 'error');
+    return;
+  }
+  toast('System upgrade complete', 'success');
+  if (res.needsReboot) {
+    $('sys-reboot-banner').style.display = 'block';
+    $('sys-reboot-banner').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+});
+
+$('btn-sys-reboot-now').addEventListener('click', async () => {
+  const conn = getCxMgmtConn();
+  if (!conn.host) { toast('Enter CX IP address', 'warn'); return; }
+  if (!confirm(`Reboot ${conn.host} now? The SSH session will drop and the CX will be unreachable for about a minute while it restarts.`)) return;
+  $('btn-sys-reboot-now').disabled = true;
+  const res = await window.api.power({ ...conn, action: 'restart' }).catch(e => ({ ok: false, error: String((e && e.message) || e) }));
+  $('btn-sys-reboot-now').disabled = false;
+  if (res.ok) {
+    toast('Reboot command sent', 'success');
+    $('sys-reboot-banner').style.display = 'none';
+  } else {
+    toast('Could not send reboot command - see terminal', 'error');
+  }
 });
 
 
@@ -1823,6 +1938,40 @@ $('btn-validate-creds').addEventListener('click', async () => {
   tabAutoRefresh.dashboard = maybeAutoReadInfo;
 })();
 
+// Dashboard image/kernel update check - separate deliberate action, not run
+// automatically with the rest of the Dashboard refresh, since it needs a real
+// apt update against the network (and possibly the laptop proxy) rather than
+// just reading local system state.
+$('btn-check-image')?.addEventListener('click', async () => {
+  const conn = getCxMgmtConn();
+  if (!conn.host) { toast('Connect to a CX first', 'warn'); return; }
+  const proxyDecision = await ensureProxyDecision(conn.host, conn.password);
+  if (proxyDecision.cancelled) return;
+
+  const btn = $('btn-check-image');
+  const statusEl = $('image-update-status');
+  btn.disabled = true; btn.textContent = 'CHECKING...';
+  statusEl.textContent = 'checking...';
+  statusEl.style.color = 'var(--tc-muted)';
+
+  const res = await window.api.fetchSystemUpdates({ ...conn, proxyHost: proxyDecision.proxyHost, proxyPort: proxyDecision.proxyPort }).catch(e => ({ ok: false, error: String((e && e.message) || e) }));
+  btn.disabled = false; btn.textContent = '⟳ CHECK FOR IMAGE UPDATE';
+
+  if (!res.ok) {
+    statusEl.textContent = 'check failed - ' + (res.error || 'see terminal');
+    statusEl.style.color = 'var(--tc-danger)';
+    return;
+  }
+  const kernelUpdates = res.updates.filter(u => u.isKernel);
+  if (kernelUpdates.length) {
+    statusEl.innerHTML = `⬆ Update available: <strong>${escapeHtml(kernelUpdates[0].newVer)}</strong> - see Packages &rarr; System Updates`;
+    statusEl.style.color = 'var(--tc-warn)';
+  } else {
+    statusEl.textContent = '✓ Running the latest available kernel/image';
+    statusEl.style.color = 'var(--tc-accent2)';
+  }
+});
+
 // APT feed manager and MyBeckhoff credential auto-read
 
 // Credential auto-read (tab 01)----------------------------------------
@@ -1963,9 +2112,11 @@ $('btn-validate-creds').addEventListener('click', async () => {
     } else {
       if (!confirm(`Switch feed from ${current} to ${selectedFeed} and run apt update?`)) return;
     }
+    const proxyDecision = await ensureProxyDecision(conn.host, conn.password);
+    if (proxyDecision.cancelled) return;
     openTerminal(); setView('terminal'); clearTerminal();
     $('prog').classList.add('running'); $('prog').style.width = '8%';
-    const res = await window.api.switchFeed({ ...conn, feed: selectedFeed });
+    const res = await window.api.switchFeed({ ...conn, feed: selectedFeed, proxyHost: proxyDecision.proxyHost, proxyPort: proxyDecision.proxyPort });
     $('prog').classList.remove('running'); $('prog').style.width = '100%';
     if (res && res.ok) {
       currentEl.textContent = selectedFeed;
@@ -1980,9 +2131,11 @@ $('btn-validate-creds').addEventListener('click', async () => {
   updateBtn.addEventListener('click', async () => {
     const conn = getCxMgmtConn();
     if (!conn.host) { toast('Enter the CX IP first', 'warn'); return; }
+    const proxyDecision = await ensureProxyDecision(conn.host, conn.password);
+    if (proxyDecision.cancelled) return;
     openTerminal(); setView('terminal'); clearTerminal();
     $('prog').classList.add('running'); $('prog').style.width = '8%';
-    const res = await window.api.updateFeed(conn);
+    const res = await window.api.updateFeed({ ...conn, proxyHost: proxyDecision.proxyHost, proxyPort: proxyDecision.proxyPort });
     $('prog').classList.remove('running'); $('prog').style.width = '100%';
     if (res && res.ok) toast('apt update complete', 'success');
     else toast('apt update failed - see terminal', 'error');
@@ -2900,4 +3053,347 @@ $('btn-validate-creds').addEventListener('click', async () => {
 
   btnConnect.addEventListener('click', connect);
   btnDisconnect.addEventListener('click', disconnect);
+})();
+// ===========================================================================
+// Recipes view (phase 1)
+// Capture a CX's state to a portable recipe, save/export it, and apply a saved
+// recipe back onto a connected CX. Apply streams live output into the terminal
+// drawer and shows per-step status inline.
+// ===========================================================================
+(function initRecipes() {
+  const nameInput   = $('recipe-name');
+  const bkUserInput = $('recipe-bk-user');
+  const bkPassInput = $('recipe-bk-pass');
+  const tf2000Input = $('recipe-tf2000-pass');
+  const captureBtn  = $('btn-recipe-capture');
+  const captureStat = $('recipe-capture-status');
+  const previewBox  = $('recipe-capture-preview');
+  const sectionsEl  = $('recipe-capture-sections');
+  const saveBtn     = $('btn-recipe-save');
+  const exportBtn   = $('btn-recipe-export');
+
+  const listEl      = $('recipe-list');
+  const refreshBtn  = $('btn-recipe-refresh');
+  const importBtn   = $('btn-recipe-import');
+
+  const applyPanel  = $('recipe-apply-panel');
+  const applySubEl  = $('recipe-apply-subtitle');
+  const applySecsEl = $('recipe-apply-sections');
+  const applyCredsBox   = $('recipe-apply-creds');
+  const applyCredsHint  = $('recipe-apply-creds-hint');
+  const applyBkUserInput   = $('recipe-apply-bk-user');
+  const applyBkPassInput   = $('recipe-apply-bk-pass');
+  const applyTf2000Input   = $('recipe-apply-tf2000-pass');
+  const applyRunBtn = $('btn-recipe-apply-run');
+  const applyCancel = $('btn-recipe-apply-cancel');
+  const applyStat   = $('recipe-apply-status');
+
+  if (!captureBtn) return; // page not present
+
+  let capturedRecipe = null;   // the recipe just captured, pending save/export
+  let applyTarget = null;      // the recipe currently staged for apply
+
+  const IDENTITY_KEYS = ['network'];
+
+  // ---- capture ----
+  captureBtn.addEventListener('click', async () => {
+    const conn = getCxMgmtConn();
+    if (!conn.host) { toast('Connect to a CX first', 'warn'); return; }
+    const name = (nameInput.value || '').trim() || `Recipe ${new Date().toISOString().slice(0,10)}`;
+    const beckhoffUser = (bkUserInput.value || '').trim();
+    const beckhoffPass = bkPassInput.value || '';
+    const tf2000Pass = tf2000Input.value || '';
+
+    captureBtn.disabled = true; captureBtn.textContent = 'CAPTURING...';
+    captureStat.textContent = 'Reading state from ' + conn.host + '...';
+    captureStat.style.color = 'var(--tc-muted)';
+    previewBox.style.display = 'none';
+
+    let res;
+    try { res = await window.api.recipeCapture({ ...conn, name, beckhoffUser, beckhoffPass, tf2000Pass }); }
+    catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
+
+    captureBtn.disabled = false; captureBtn.textContent = '⛃ CAPTURE FROM CX';
+
+    if (!res || !res.ok) {
+      captureStat.textContent = 'Capture failed: ' + (res && res.error ? res.error : 'unknown error');
+      captureStat.style.color = 'var(--tc-danger)';
+      return;
+    }
+
+    capturedRecipe = res.recipe;
+    renderCapturePreview(res.recipe, res.warnings || []);
+    captureStat.textContent = 'Captured from ' + conn.host + ' at ' + new Date().toLocaleTimeString();
+    captureStat.style.color = 'var(--tc-accent2)';
+  });
+
+  function renderCapturePreview(rec, warnings) {
+    const sections = rec.sections || {};
+    const rows = Object.keys(sections).map(key => {
+      const identity = IDENTITY_KEYS.includes(key);
+      const summary = summariseSection(key, sections[key]);
+      const tag = identity ? ' <span style="color:var(--tc-warn)">(identity - reference only)</span>' : '';
+      return `<div style="padding:.15rem 0">• <strong>${escapeHtml(key)}</strong>: ${escapeHtml(summary)}${tag}</div>`;
+    }).join('');
+
+    const creds = rec.credentials || {};
+    const credBits = [];
+    credBits.push(creds.beckhoffUsername ? `MyBeckhoff: ${escapeHtml(creds.beckhoffUsername)} (password saved)` : 'MyBeckhoff: not set');
+    if (sections.packages && sections.packages.some(p => p.name === 'tf2000-hmi-server')) {
+      credBits.push(creds.tf2000Password ? 'TF2000 password: saved' : 'TF2000 password: not set');
+    }
+    const credRow = `<div style="padding:.15rem 0;margin-top:.3rem;border-top:1px solid var(--tc-border);padding-top:.4rem">• <strong>credentials</strong>: ${credBits.join(' · ')}</div>`;
+
+    let warnHtml = '';
+    if (warnings.length) {
+      warnHtml = `<div style="margin-top:.5rem;color:var(--tc-warn)">${warnings.map(w => '⚠ ' + escapeHtml(w)).join('<br>')}</div>`;
+    }
+    sectionsEl.innerHTML = rows + credRow + warnHtml;
+    previewBox.style.display = '';
+  }
+
+  function summariseSection(key, val) {
+    switch (key) {
+      case 'feed': return val.channel;
+      case 'packages': return val.length + ' package(s)';
+      case 'firewall': return val.enabled ? (val.ports || []).length + ' port(s), enabled' : 'disabled';
+      case 'network': return (val.interfaces || []).length + ' interface(s)';
+      case 'tf1200': return 'UI Client config';
+      default: return '';
+    }
+  }
+
+  saveBtn.addEventListener('click', async () => {
+    if (!capturedRecipe) return;
+    const res = await window.api.recipeSave(capturedRecipe).catch(e => ({ ok: false, error: String(e) }));
+    if (res.ok) { toast('Recipe saved to library', 'success'); loadLibrary(); }
+    else toast('Save failed: ' + (res.error || 'unknown'), 'error');
+  });
+
+  exportBtn.addEventListener('click', async () => {
+    if (!capturedRecipe) return;
+    const res = await window.api.recipeExport(capturedRecipe).catch(e => ({ ok: false, error: String(e) }));
+    if (res.ok) toast('Exported to ' + res.path, 'success');
+    else if (!res.canceled) toast('Export failed: ' + (res.error || 'unknown'), 'error');
+  });
+
+  // ---- library ----
+  async function loadLibrary() {
+    const res = await window.api.recipeLoadAll().catch(e => ({ ok: false, error: String(e), recipes: [] }));
+    const recipes = (res && res.recipes) || [];
+    if (!recipes.length) {
+      listEl.innerHTML = '<div style="color:var(--tc-muted);padding:.5rem 0">No saved recipes yet. Capture one above, or import a .json file.</div>';
+      return;
+    }
+    listEl.innerHTML = recipes.map((r, i) => {
+      if (!r.valid) {
+        return `<div style="background:var(--tc-surface2);border:1px solid var(--tc-danger);border-radius:4px;padding:.5rem .6rem;margin-bottom:.4rem">
+          <strong>${escapeHtml(r.file)}</strong> <span style="color:var(--tc-danger)">invalid: ${escapeHtml((r.errors||[]).join('; '))}</span>
+        </div>`;
+      }
+      const rec = r.recipe;
+      const secCount = Object.keys(rec.sections || {}).length;
+      const when = rec.capturedAt ? new Date(rec.capturedAt).toLocaleDateString() : '';
+      return `<div class="recipe-row" data-idx="${i}" style="background:var(--tc-surface2);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .6rem;margin-bottom:.4rem;display:flex;align-items:center;gap:.6rem">
+        <div style="flex:1;min-width:0">
+          <div style="color:var(--tc-text);font-weight:600">${escapeHtml(rec.name)}</div>
+          <div style="color:var(--tc-muted);font-size:10px">${secCount} section(s) · ${escapeHtml(rec.sourceHost || 'unknown source')} · ${escapeHtml(when)}</div>
+        </div>
+        <button class="sel-btn recipe-apply-btn" data-idx="${i}" style="font-size:10px;padding:.25rem .6rem">APPLY</button>
+        <button class="sel-btn recipe-del-btn" data-file="${escapeHtml(r.file)}" style="font-size:10px;padding:.25rem .5rem">✕</button>
+      </div>`;
+    }).join('');
+
+    // wire buttons
+    listEl.querySelectorAll('.recipe-apply-btn').forEach(btn => {
+      btn.addEventListener('click', () => stageApply(recipes[parseInt(btn.dataset.idx, 10)].recipe));
+    });
+    listEl.querySelectorAll('.recipe-del-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Delete this recipe?')) return;
+        const res = await window.api.recipeDelete(btn.dataset.file).catch(e => ({ ok: false, error: String(e) }));
+        if (res.ok) { toast('Recipe deleted', 'success'); loadLibrary(); }
+        else toast('Delete failed: ' + (res.error || 'unknown'), 'error');
+      });
+    });
+  }
+
+  refreshBtn.addEventListener('click', loadLibrary);
+
+  importBtn.addEventListener('click', async () => {
+    const res = await window.api.recipeImport().catch(e => ({ ok: false, error: String(e) }));
+    if (res.ok) {
+      // Offer to save the imported recipe into the library
+      const save = await window.api.recipeSave(res.recipe).catch(() => ({ ok: false }));
+      if (save.ok) { toast('Imported "' + res.recipe.name + '"', 'success'); loadLibrary(); }
+      else toast('Imported but could not save to library', 'warn');
+    } else if (!res.canceled) {
+      toast('Import failed: ' + (res.error || 'unknown'), 'error');
+    }
+  });
+
+  // ---- apply ----
+  function stageApply(rec) {
+    applyTarget = rec;
+    applySubEl.textContent = `Applying "${rec.name}". Tick the sections to push to the connected CX. Identity settings are off by default.`;
+    const sections = rec.sections || {};
+    applySecsEl.innerHTML = Object.keys(sections).map(key => {
+      const identity = IDENTITY_KEYS.includes(key);
+      const summary = summariseSection(key, sections[key]);
+      const checked = identity ? '' : 'checked';
+      const disabledNote = identity
+        ? ' <span style="color:var(--tc-warn)">- per-device, handled in the Network view</span>'
+        : '';
+      return `<label style="display:flex;align-items:center;gap:.5rem;padding:.3rem 0;font-family:var(--tc-mono);font-size:12px;cursor:pointer">
+        <input type="checkbox" class="recipe-sec-chk" data-key="${escapeHtml(key)}" ${checked} ${identity ? 'disabled' : ''}>
+        <strong>${escapeHtml(key)}</strong> <span style="color:var(--tc-muted)">${escapeHtml(summary)}</span>${disabledNote}
+      </label>`;
+    }).join('');
+
+    // Prefill from whatever the recipe already has saved - editable, so a
+    // different account or a one-off override is just as easy as accepting
+    // what's stored.
+    const creds = rec.credentials || {};
+    applyBkUserInput.value = creds.beckhoffUsername || '';
+    applyBkPassInput.value = creds.beckhoffPassword || '';
+    applyTf2000Input.value = creds.tf2000Password || '';
+
+    const updateCredsVisibility = () => {
+      const include = currentInclude();
+      const needsBk = recipeNeedsBeckhoffAuth(rec, include);
+      const needsTf = recipeNeedsTf2000Password(rec, include);
+      applyCredsBox.style.display = (needsBk || needsTf) ? '' : 'none';
+      const missing = [];
+      if (needsBk && !(applyBkUserInput.value.trim() && applyBkPassInput.value)) missing.push('MyBeckhoff username/password');
+      if (needsTf && !applyTf2000Input.value) missing.push('TF2000 init password');
+      applyCredsHint.textContent = missing.length
+        ? `Required for this apply: ${missing.join(', ')}.`
+        : (needsBk || needsTf) ? 'Credentials look complete for this apply.' : '';
+      applyCredsHint.style.color = missing.length ? 'var(--tc-warn)' : 'var(--tc-accent2)';
+    };
+    applySecsEl.querySelectorAll('.recipe-sec-chk').forEach(chk => chk.addEventListener('change', updateCredsVisibility));
+    [applyBkUserInput, applyBkPassInput, applyTf2000Input].forEach(inp => inp.addEventListener('input', updateCredsVisibility));
+    updateCredsVisibility();
+
+    applyStat.textContent = '';
+    applyPanel.style.display = '';
+    applyPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  function currentInclude() {
+    const include = {};
+    applySecsEl.querySelectorAll('.recipe-sec-chk').forEach(chk => {
+      if (chk.checked && !chk.disabled) include[chk.dataset.key] = true;
+    });
+    return include;
+  }
+
+  // Mirrors recipe.js's needsBeckhoffAuth/needsTf2000Password exactly (that
+  // module runs in the main process and isn't reachable from the renderer),
+  // so the UI can warn before a wasted round trip - the real gate is still
+  // enforced server-side in recipe:apply regardless of what happens here.
+  function recipeNeedsBeckhoffAuth(rec, include) {
+    const s = (rec && rec.sections) || {};
+    const wants = (key) => include[key] === true;
+    return !!((wants('feed') && s.feed) || (wants('packages') && s.packages && s.packages.length));
+  }
+  function recipeNeedsTf2000Password(rec, include) {
+    const s = (rec && rec.sections) || {};
+    if (include.packages !== true) return false;
+    return !!(s.packages || []).some(p => p && p.name === 'tf2000-hmi-server');
+  }
+
+  applyCancel.addEventListener('click', () => {
+    applyPanel.style.display = 'none';
+    applyTarget = null;
+  });
+
+  applyRunBtn.addEventListener('click', async () => {
+    if (!applyTarget) return;
+    const conn = getCxMgmtConn();
+    if (!conn.host) { toast('Connect to a CX first', 'warn'); return; }
+
+    const include = currentInclude();
+    if (!Object.keys(include).length) { toast('Tick at least one section to apply', 'warn'); return; }
+
+    const beckhoffUser = (applyBkUserInput.value || '').trim();
+    const beckhoffPass = applyBkPassInput.value || '';
+    const tf2000Pass = applyTf2000Input.value || '';
+
+    // Client-side check first so a missing credential doesn't cost a round
+    // trip - the same requirement is enforced again in main.js regardless.
+    if (recipeNeedsBeckhoffAuth(applyTarget, include) && !(beckhoffUser && beckhoffPass)) {
+      toast('Enter MyBeckhoff username and password before applying', 'warn');
+      applyBkUserInput.focus();
+      return;
+    }
+    if (recipeNeedsTf2000Password(applyTarget, include) && !tf2000Pass) {
+      toast('Enter the TF2000 init password before applying', 'warn');
+      applyTf2000Input.focus();
+      return;
+    }
+
+    const targetCount = Object.keys(include).length;
+    if (!confirm(`Apply ${targetCount} section(s) of "${applyTarget.name}" to ${conn.host}?\n\nThis will change the CX's configuration.`)) return;
+
+    // Only feed/packages steps touch apt, so only they need the CX's internet
+    // reachability checked and, if needed, the laptop-proxy offered - same
+    // question Setup asks, asked here too rather than skipped for Recipes.
+    let proxyHost = null, proxyPort = null;
+    if (include.feed || include.packages) {
+      const proxyDecision = await ensureProxyDecision(conn.host, conn.password);
+      if (proxyDecision.cancelled) return;
+      proxyHost = proxyDecision.proxyHost;
+      proxyPort = proxyDecision.proxyPort;
+    }
+
+    applyRunBtn.disabled = true; applyRunBtn.textContent = 'APPLYING...';
+    applyStat.textContent = 'Applying to ' + conn.host + '...';
+    applyStat.style.color = 'var(--tc-muted)';
+    openTerminal();
+
+    const res = await window.api.recipeApply({
+      ...conn,
+      recipe: applyTarget,
+      include,
+      applyNetwork: false, // phase 1: never auto-push network via recipe
+      beckhoffUser,
+      beckhoffPass,
+      tf2000Pass,
+      proxyHost,
+      proxyPort
+    }).catch(e => ({ ok: false, error: String((e && e.message) || e) }));
+
+    applyRunBtn.disabled = false; applyRunBtn.textContent = '▶ APPLY TO CONNECTED CX';
+
+    if (res.ok) {
+      applyStat.textContent = 'Applied successfully. See terminal for detail.';
+      applyStat.style.color = 'var(--tc-accent2)';
+      toast('Recipe applied to ' + conn.host, 'success');
+      setTermStatus('complete', 'var(--tc-accent2)');
+    } else {
+      const suffix = res.needsCredentials ? ' - fill in the credentials above and try again.' : '';
+      applyStat.textContent = 'Apply stopped: ' + (res.error || 'unknown error') + (res.failedAt != null ? ` (step ${res.failedAt + 1})` : '') + suffix;
+      applyStat.style.color = 'var(--tc-danger)';
+      toast('Recipe apply failed - see terminal', 'error');
+      setTermStatus('failed', 'var(--tc-danger)');
+    }
+  });
+
+  // per-step progress from main
+  window.api.on('recipe:step', ({ index, status, message, total }) => {
+    if (!applyStat) return;
+    const label = `Step ${index + 1}/${total}: ${message || ''} [${status}]`;
+    applyStat.textContent = label;
+    applyStat.style.color = status === 'failed' ? 'var(--tc-danger)'
+      : status === 'done' ? 'var(--tc-accent2)' : 'var(--tc-muted)';
+    setTermStatus(status === 'running' ? 'running' : status,
+      status === 'failed' ? 'var(--tc-danger)' : 'var(--tc-accent2)');
+  });
+
+  // refresh library whenever the Recipes tab is opened
+  tabAutoRefresh.recipes = () => { loadLibrary(); };
+
+  // initial load
+  loadLibrary();
 })();
