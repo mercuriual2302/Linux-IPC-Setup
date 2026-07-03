@@ -2153,7 +2153,7 @@ elif [ -n "$BECKHOFF_USER" ] && [ -n "$BECKHOFF_PASS" ]; then
   _sudo chown root:root /etc/apt/auth.conf.d/bhf.conf
   echo "[CX] Auth file written."
 else
-  echo "[CX] WARNING: no MyBeckhoff credentials available and none stored on CX - apt may fail to authenticate." >&2
+  echo "[CX] No MyBeckhoff credentials in /etc/apt/auth.conf.d/bhf.conf and none supplied for this run - continuing without writing one. Some packages may require credentials to download."
 fi
 APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0${proxyOpts}'`;
 }
