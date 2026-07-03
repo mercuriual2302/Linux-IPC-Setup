@@ -1015,13 +1015,14 @@ echo "[CX] Password changed successfully for $TARGET."
 
 // Package update checker
 ipcMain.handle('cx:fetch-updates', async (_evt, opts) => {
-  const { host, password, port, checkUpdates } = opts;
+  const { host, password, port, checkUpdates, proxyHost, proxyPort } = opts;
   try {
     if (checkUpdates) {
       // Run apt update then list upgradable TwinCAT packages
       const pw = (password || '').replace(/'/g, "'\\''");
+      const proxyOpts = buildProxyAptOpts(proxyHost, proxyPort);
       const result = await sshExec({ host, password, port },
-        `echo '${pw}' | sudo -S -p '' apt-get update -qq 2>/dev/null; ` +
+        `echo '${pw}' | sudo -S -p '' apt-get${proxyOpts} update -qq 2>/dev/null; ` +
         `apt list --upgradable 2>/dev/null | grep -v '^Listing'`
       );
       const updates = [];
@@ -1054,13 +1055,14 @@ ipcMain.handle('cx:fetch-updates', async (_evt, opts) => {
 
 // Run apt upgrade
 ipcMain.handle('cx:upgrade', async (_evt, opts) => {
-  const { host, password, port, packages } = opts;
+  const { host, password, port, packages, proxyHost, proxyPort } = opts;
   const sessionId = `upgrade-${Date.now()}`;
+  const proxyOpts = buildProxyAptOpts(proxyHost, proxyPort);
   const script = `#!/bin/bash
 set -e
 export TERM=dumb
 export DEBIAN_FRONTEND=noninteractive
-APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Quiet::NoUpdate=true'
+APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Quiet::NoUpdate=true${proxyOpts}'
 SUDO_PASS='${password.replace(/'/g, "'\\''")}'
 _sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
 _sudo -v
@@ -1521,16 +1523,17 @@ ipcMain.handle('cx:read-apt-creds', async (_evt, opts) => {
 
 // APT feed - switch channel and run apt update
 ipcMain.handle('cx:switch-feed', async (_evt, opts) => {
-  const { host, password, port, feed } = opts || {};
+  const { host, password, port, feed, proxyHost, proxyPort } = opts || {};
   const sessionId = `switchfeed-${Date.now()}`;
   const escPass = String(password || '').replace(/'/g, "'\\''");
   const channel = feed === 'trixie-unstable' ? 'trixie-unstable' : 'trixie-stable';
+  const proxyOpts = buildProxyAptOpts(proxyHost, proxyPort);
 
   const script = `#!/bin/bash
 set -e
 export TERM=dumb
 export DEBIAN_FRONTEND=noninteractive
-APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Quiet::NoUpdate=true'
+APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Quiet::NoUpdate=true${proxyOpts}'
 SUDO_PASS='${escPass}'
 _sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
 _sudo -v
@@ -1566,15 +1569,16 @@ echo "[CX] Done. Feed is now ${channel}."
 
 // APT feed - run apt update only
 ipcMain.handle('cx:update-feed', async (_evt, opts) => {
-  const { host, password, port } = opts || {};
+  const { host, password, port, proxyHost, proxyPort } = opts || {};
   const sessionId = `updatefeed-${Date.now()}`;
   const escPass = String(password || '').replace(/'/g, "'\\''");
+  const proxyOpts = buildProxyAptOpts(proxyHost, proxyPort);
 
   const script = `#!/bin/bash
 set -e
 export TERM=dumb
 export DEBIAN_FRONTEND=noninteractive
-APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Quiet::NoUpdate=true'
+APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Quiet::NoUpdate=true${proxyOpts}'
 SUDO_PASS='${escPass}'
 _sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
 _sudo -v
@@ -2181,17 +2185,25 @@ ipcMain.handle('recipe:apply', async (_evt, opts) => {
 // re-running a recipe never requires retyping the password) and builds the
 // apt proxy options if the caller resolved a laptop-proxy for this CX.
 // escPass is the already-escaped Administrator/sudo password.
+// Only trust a proxy host/port we ourselves started via proxy:start - both
+// must look right or we silently skip proxying rather than build a bad apt
+// option string. socks5h (not socks5) so hostname resolution happens at the
+// proxy - the CX can't resolve deb.beckhoff.com itself, that's the whole
+// reason this exists. Shared by buildAptPreamble and every apt-touching
+// handler below (switch-feed, update-feed, upgrade, fetch-updates) - all of
+// which used to skip this entirely and just fail with a DNS error on any CX
+// with no internet route of its own.
+function buildProxyAptOpts(proxyHost, proxyPort) {
+  const validProxy = proxyHost && Number.isInteger(proxyPort) && /^[0-9.]+$/.test(String(proxyHost));
+  return validProxy
+    ? ` -o Acquire::http::Proxy=socks5h://${proxyHost}:${proxyPort}/ -o Acquire::https::Proxy=socks5h://${proxyHost}:${proxyPort}/`
+    : '';
+}
+
 function buildAptPreamble(escPass, beckhoffUser, beckhoffPass, proxyHost, proxyPort) {
   const escUser = String(beckhoffUser || '').replace(/'/g, "'\\''");
   const escBkPass = String(beckhoffPass || '').replace(/'/g, "'\\''");
-
-  // Only trust a proxy host/port we ourselves started via proxy:start - both
-  // must look right or we silently skip proxying rather than build a bad
-  // apt option string.
-  const validProxy = proxyHost && Number.isInteger(proxyPort) && /^[0-9.]+$/.test(String(proxyHost));
-  const proxyOpts = validProxy
-    ? ` -o Acquire::http::Proxy=socks5h://${proxyHost}:${proxyPort}/ -o Acquire::https::Proxy=socks5h://${proxyHost}:${proxyPort}/`
-    : '';
+  const proxyOpts = buildProxyAptOpts(proxyHost, proxyPort);
 
   return `SUDO_PASS='${escPass}'
 _sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }

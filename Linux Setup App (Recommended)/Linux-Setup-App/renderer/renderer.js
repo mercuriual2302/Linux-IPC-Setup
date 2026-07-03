@@ -1320,9 +1320,11 @@ $('btn-fetch-installed').addEventListener('click', async () => {
 $('btn-fetch-updates').addEventListener('click', async () => {
   const conn = getCxMgmtConn();
   if (!conn.host) { toast('Enter CX IP address', 'warn'); return; }
+  const proxyDecision = await ensureProxyDecision(conn.host, conn.password);
+  if (proxyDecision.cancelled) return;
   $('btn-fetch-updates').disabled = true;
   $('btn-fetch-updates').textContent = '⟳ CHECKING...';
-  const res = await window.api.fetchUpdates({ ...conn, checkUpdates: true });
+  const res = await window.api.fetchUpdates({ ...conn, checkUpdates: true, proxyHost: proxyDecision.proxyHost, proxyPort: proxyDecision.proxyPort });
   $('btn-fetch-updates').disabled = false;
   $('btn-fetch-updates').textContent = '⟳ CHECK FOR UPDATES';
   if (!res.ok) { toast('Failed to check updates', 'error'); return; }
@@ -1345,9 +1347,11 @@ $('btn-upgrade-selected').addEventListener('click', async () => {
   if (!conn.host) { toast('Enter CX IP address', 'warn'); return; }
   const selected = [...document.querySelectorAll('.upd-chk:checked')].map(c => c.dataset.pkg);
   if (!selected.length) { toast('No packages selected', 'warn'); return; }
+  const proxyDecision = await ensureProxyDecision(conn.host, conn.password);
+  if (proxyDecision.cancelled) return;
   $('btn-upgrade-selected').disabled = true;
   goToTerminal(null);
-  const res = await window.api.runUpgrade({ ...conn, packages: selected });
+  const res = await window.api.runUpgrade({ ...conn, packages: selected, proxyHost: proxyDecision.proxyHost, proxyPort: proxyDecision.proxyPort });
   $('btn-upgrade-selected').disabled = false;
   if (!res.ok) toast('Upgrade failed - see terminal', 'error');
 });
@@ -1977,9 +1981,11 @@ $('btn-validate-creds').addEventListener('click', async () => {
     } else {
       if (!confirm(`Switch feed from ${current} to ${selectedFeed} and run apt update?`)) return;
     }
+    const proxyDecision = await ensureProxyDecision(conn.host, conn.password);
+    if (proxyDecision.cancelled) return;
     openTerminal(); setView('terminal'); clearTerminal();
     $('prog').classList.add('running'); $('prog').style.width = '8%';
-    const res = await window.api.switchFeed({ ...conn, feed: selectedFeed });
+    const res = await window.api.switchFeed({ ...conn, feed: selectedFeed, proxyHost: proxyDecision.proxyHost, proxyPort: proxyDecision.proxyPort });
     $('prog').classList.remove('running'); $('prog').style.width = '100%';
     if (res && res.ok) {
       currentEl.textContent = selectedFeed;
@@ -1994,9 +2000,11 @@ $('btn-validate-creds').addEventListener('click', async () => {
   updateBtn.addEventListener('click', async () => {
     const conn = getCxMgmtConn();
     if (!conn.host) { toast('Enter the CX IP first', 'warn'); return; }
+    const proxyDecision = await ensureProxyDecision(conn.host, conn.password);
+    if (proxyDecision.cancelled) return;
     openTerminal(); setView('terminal'); clearTerminal();
     $('prog').classList.add('running'); $('prog').style.width = '8%';
-    const res = await window.api.updateFeed(conn);
+    const res = await window.api.updateFeed({ ...conn, proxyHost: proxyDecision.proxyHost, proxyPort: proxyDecision.proxyPort });
     $('prog').classList.remove('running'); $('prog').style.width = '100%';
     if (res && res.ok) toast('apt update complete', 'success');
     else toast('apt update failed - see terminal', 'error');
