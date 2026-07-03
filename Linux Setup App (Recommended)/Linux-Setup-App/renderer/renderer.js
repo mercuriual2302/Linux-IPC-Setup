@@ -663,6 +663,19 @@ function appendTerminal(data) {
 function clearTerminal() {
   terminalBuffer = '';
   $('terminal-output').innerHTML = '<span style="color:var(--tc-muted)">// terminal idle</span>';
+  setTermStatus('idle', 'var(--tc-muted)');
+}
+
+// Small badge next to the "TERMINAL" title, visible even when the drawer is
+// collapsed - this was being set to "idle" once in the HTML and never
+// touched again, so it kept reading "idle" through an entire live run.
+// Wired from ssh:status (Setup/TF1200/Services/etc.) and from the Recipes
+// apply flow, which uses its own recipe:step event instead of ssh:status.
+function setTermStatus(text, colorVar) {
+  const el = $('term-substatus');
+  if (!el) return;
+  el.textContent = text;
+  el.style.color = colorVar || 'var(--tc-muted)';
 }
 
 // Script preview pane
@@ -903,6 +916,7 @@ window.api.on('ssh:status', ({ sessionId, status, message }) => {
   };
   s.style.color = colorByStatus[status] || 'var(--tc-muted)';
   s.textContent = `[${status}] ${message || ''}`;
+  setTermStatus(status, colorByStatus[status]);
 });
 
 // Generate script (copy/download)
@@ -3217,11 +3231,13 @@ $('btn-validate-creds').addEventListener('click', async () => {
       applyStat.textContent = 'Applied successfully. See terminal for detail.';
       applyStat.style.color = 'var(--tc-accent2)';
       toast('Recipe applied to ' + conn.host, 'success');
+      setTermStatus('complete', 'var(--tc-accent2)');
     } else {
       const suffix = res.needsCredentials ? ' - fill in the credentials above and try again.' : '';
       applyStat.textContent = 'Apply stopped: ' + (res.error || 'unknown error') + (res.failedAt != null ? ` (step ${res.failedAt + 1})` : '') + suffix;
       applyStat.style.color = 'var(--tc-danger)';
       toast('Recipe apply failed - see terminal', 'error');
+      setTermStatus('failed', 'var(--tc-danger)');
     }
   });
 
@@ -3232,6 +3248,8 @@ $('btn-validate-creds').addEventListener('click', async () => {
     applyStat.textContent = label;
     applyStat.style.color = status === 'failed' ? 'var(--tc-danger)'
       : status === 'done' ? 'var(--tc-accent2)' : 'var(--tc-muted)';
+    setTermStatus(status === 'running' ? 'running' : status,
+      status === 'failed' ? 'var(--tc-danger)' : 'var(--tc-accent2)');
   });
 
   // refresh library whenever the Recipes tab is opened
