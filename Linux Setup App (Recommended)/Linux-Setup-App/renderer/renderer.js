@@ -385,7 +385,7 @@ function renderVersionList() {
 
 // Tabs
 const tabs = document.querySelectorAll('.tab');
-const pages = { dashboard:'page-dashboard', setup:'page-setup', services:'page-services', network:'page-network', firewall:'page-firewall', users:'page-users', packages:'page-packages', tf1200:'page-tf1200', shell:'page-shell', sftp:'page-sftp' };
+const pages = { dashboard:'page-dashboard', setup:'page-setup', recipes:'page-recipes', services:'page-services', network:'page-network', firewall:'page-firewall', users:'page-users', packages:'page-packages', tf1200:'page-tf1200', shell:'page-shell', sftp:'page-sftp' };
 
 // Registry of "read from CX" refreshers, one per tab, populated by each
 // section below as it initialises. Switching to a tab - or reconnecting via
@@ -2900,4 +2900,246 @@ $('btn-validate-creds').addEventListener('click', async () => {
 
   btnConnect.addEventListener('click', connect);
   btnDisconnect.addEventListener('click', disconnect);
+})();
+// ===========================================================================
+// Recipes view (phase 1)
+// Capture a CX's state to a portable recipe, save/export it, and apply a saved
+// recipe back onto a connected CX. Apply streams live output into the terminal
+// drawer and shows per-step status inline.
+// ===========================================================================
+(function initRecipes() {
+  const nameInput   = $('recipe-name');
+  const captureBtn  = $('btn-recipe-capture');
+  const captureStat = $('recipe-capture-status');
+  const previewBox  = $('recipe-capture-preview');
+  const sectionsEl  = $('recipe-capture-sections');
+  const saveBtn     = $('btn-recipe-save');
+  const exportBtn   = $('btn-recipe-export');
+
+  const listEl      = $('recipe-list');
+  const refreshBtn  = $('btn-recipe-refresh');
+  const importBtn   = $('btn-recipe-import');
+
+  const applyPanel  = $('recipe-apply-panel');
+  const applySubEl  = $('recipe-apply-subtitle');
+  const applySecsEl = $('recipe-apply-sections');
+  const applyRunBtn = $('btn-recipe-apply-run');
+  const applyCancel = $('btn-recipe-apply-cancel');
+  const applyStat   = $('recipe-apply-status');
+
+  if (!captureBtn) return; // page not present
+
+  let capturedRecipe = null;   // the recipe just captured, pending save/export
+  let applyTarget = null;      // the recipe currently staged for apply
+
+  const IDENTITY_KEYS = ['network'];
+
+  // ---- capture ----
+  captureBtn.addEventListener('click', async () => {
+    const conn = getCxMgmtConn();
+    if (!conn.host) { toast('Connect to a CX first', 'warn'); return; }
+    const name = (nameInput.value || '').trim() || `Recipe ${new Date().toISOString().slice(0,10)}`;
+
+    captureBtn.disabled = true; captureBtn.textContent = 'CAPTURING...';
+    captureStat.textContent = 'Reading state from ' + conn.host + '...';
+    captureStat.style.color = 'var(--tc-muted)';
+    previewBox.style.display = 'none';
+
+    let res;
+    try { res = await window.api.recipeCapture({ ...conn, name }); }
+    catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
+
+    captureBtn.disabled = false; captureBtn.textContent = '⛃ CAPTURE FROM CX';
+
+    if (!res || !res.ok) {
+      captureStat.textContent = 'Capture failed: ' + (res && res.error ? res.error : 'unknown error');
+      captureStat.style.color = 'var(--tc-danger)';
+      return;
+    }
+
+    capturedRecipe = res.recipe;
+    renderCapturePreview(res.recipe, res.warnings || []);
+    captureStat.textContent = 'Captured from ' + conn.host + ' at ' + new Date().toLocaleTimeString();
+    captureStat.style.color = 'var(--tc-accent2)';
+  });
+
+  function renderCapturePreview(rec, warnings) {
+    const sections = rec.sections || {};
+    const rows = Object.keys(sections).map(key => {
+      const identity = IDENTITY_KEYS.includes(key);
+      const summary = summariseSection(key, sections[key]);
+      const tag = identity ? ' <span style="color:var(--tc-warn)">(identity - reference only)</span>' : '';
+      return `<div style="padding:.15rem 0">• <strong>${escapeHtml(key)}</strong>: ${escapeHtml(summary)}${tag}</div>`;
+    }).join('');
+    let warnHtml = '';
+    if (warnings.length) {
+      warnHtml = `<div style="margin-top:.5rem;color:var(--tc-warn)">${warnings.map(w => '⚠ ' + escapeHtml(w)).join('<br>')}</div>`;
+    }
+    sectionsEl.innerHTML = rows + warnHtml;
+    previewBox.style.display = '';
+  }
+
+  function summariseSection(key, val) {
+    switch (key) {
+      case 'feed': return val.channel;
+      case 'packages': return val.length + ' package(s)';
+      case 'firewall': return val.enabled ? (val.ports || []).length + ' port(s), enabled' : 'disabled';
+      case 'network': return (val.interfaces || []).length + ' interface(s)';
+      case 'tf1200': return 'UI Client config';
+      default: return '';
+    }
+  }
+
+  saveBtn.addEventListener('click', async () => {
+    if (!capturedRecipe) return;
+    const res = await window.api.recipeSave(capturedRecipe).catch(e => ({ ok: false, error: String(e) }));
+    if (res.ok) { toast('Recipe saved to library', 'success'); loadLibrary(); }
+    else toast('Save failed: ' + (res.error || 'unknown'), 'error');
+  });
+
+  exportBtn.addEventListener('click', async () => {
+    if (!capturedRecipe) return;
+    const res = await window.api.recipeExport(capturedRecipe).catch(e => ({ ok: false, error: String(e) }));
+    if (res.ok) toast('Exported to ' + res.path, 'success');
+    else if (!res.canceled) toast('Export failed: ' + (res.error || 'unknown'), 'error');
+  });
+
+  // ---- library ----
+  async function loadLibrary() {
+    const res = await window.api.recipeLoadAll().catch(e => ({ ok: false, error: String(e), recipes: [] }));
+    const recipes = (res && res.recipes) || [];
+    if (!recipes.length) {
+      listEl.innerHTML = '<div style="color:var(--tc-muted);padding:.5rem 0">No saved recipes yet. Capture one above, or import a .json file.</div>';
+      return;
+    }
+    listEl.innerHTML = recipes.map((r, i) => {
+      if (!r.valid) {
+        return `<div style="background:var(--tc-surface2);border:1px solid var(--tc-danger);border-radius:4px;padding:.5rem .6rem;margin-bottom:.4rem">
+          <strong>${escapeHtml(r.file)}</strong> <span style="color:var(--tc-danger)">invalid: ${escapeHtml((r.errors||[]).join('; '))}</span>
+        </div>`;
+      }
+      const rec = r.recipe;
+      const secCount = Object.keys(rec.sections || {}).length;
+      const when = rec.capturedAt ? new Date(rec.capturedAt).toLocaleDateString() : '';
+      return `<div class="recipe-row" data-idx="${i}" style="background:var(--tc-surface2);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .6rem;margin-bottom:.4rem;display:flex;align-items:center;gap:.6rem">
+        <div style="flex:1;min-width:0">
+          <div style="color:var(--tc-text);font-weight:600">${escapeHtml(rec.name)}</div>
+          <div style="color:var(--tc-muted);font-size:10px">${secCount} section(s) · ${escapeHtml(rec.sourceHost || 'unknown source')} · ${escapeHtml(when)}</div>
+        </div>
+        <button class="sel-btn recipe-apply-btn" data-idx="${i}" style="font-size:10px;padding:.25rem .6rem">APPLY</button>
+        <button class="sel-btn recipe-del-btn" data-file="${escapeHtml(r.file)}" style="font-size:10px;padding:.25rem .5rem">✕</button>
+      </div>`;
+    }).join('');
+
+    // wire buttons
+    listEl.querySelectorAll('.recipe-apply-btn').forEach(btn => {
+      btn.addEventListener('click', () => stageApply(recipes[parseInt(btn.dataset.idx, 10)].recipe));
+    });
+    listEl.querySelectorAll('.recipe-del-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Delete this recipe?')) return;
+        const res = await window.api.recipeDelete(btn.dataset.file).catch(e => ({ ok: false, error: String(e) }));
+        if (res.ok) { toast('Recipe deleted', 'success'); loadLibrary(); }
+        else toast('Delete failed: ' + (res.error || 'unknown'), 'error');
+      });
+    });
+  }
+
+  refreshBtn.addEventListener('click', loadLibrary);
+
+  importBtn.addEventListener('click', async () => {
+    const res = await window.api.recipeImport().catch(e => ({ ok: false, error: String(e) }));
+    if (res.ok) {
+      // Offer to save the imported recipe into the library
+      const save = await window.api.recipeSave(res.recipe).catch(() => ({ ok: false }));
+      if (save.ok) { toast('Imported "' + res.recipe.name + '"', 'success'); loadLibrary(); }
+      else toast('Imported but could not save to library', 'warn');
+    } else if (!res.canceled) {
+      toast('Import failed: ' + (res.error || 'unknown'), 'error');
+    }
+  });
+
+  // ---- apply ----
+  function stageApply(rec) {
+    applyTarget = rec;
+    applySubEl.textContent = `Applying "${rec.name}". Tick the sections to push to the connected CX. Identity settings are off by default.`;
+    const sections = rec.sections || {};
+    applySecsEl.innerHTML = Object.keys(sections).map(key => {
+      const identity = IDENTITY_KEYS.includes(key);
+      const summary = summariseSection(key, sections[key]);
+      const checked = identity ? '' : 'checked';
+      const disabledNote = identity
+        ? ' <span style="color:var(--tc-warn)">— per-device, handled in the Network view</span>'
+        : '';
+      return `<label style="display:flex;align-items:center;gap:.5rem;padding:.3rem 0;font-family:var(--tc-mono);font-size:12px;cursor:pointer">
+        <input type="checkbox" class="recipe-sec-chk" data-key="${escapeHtml(key)}" ${checked} ${identity ? 'disabled' : ''}>
+        <strong>${escapeHtml(key)}</strong> <span style="color:var(--tc-muted)">${escapeHtml(summary)}</span>${disabledNote}
+      </label>`;
+    }).join('');
+    applyStat.textContent = '';
+    applyPanel.style.display = '';
+    applyPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  applyCancel.addEventListener('click', () => {
+    applyPanel.style.display = 'none';
+    applyTarget = null;
+  });
+
+  applyRunBtn.addEventListener('click', async () => {
+    if (!applyTarget) return;
+    const conn = getCxMgmtConn();
+    if (!conn.host) { toast('Connect to a CX first', 'warn'); return; }
+
+    const include = {};
+    applySecsEl.querySelectorAll('.recipe-sec-chk').forEach(chk => {
+      if (chk.checked && !chk.disabled) include[chk.dataset.key] = true;
+    });
+    if (!Object.keys(include).length) { toast('Tick at least one section to apply', 'warn'); return; }
+
+    const targetCount = Object.keys(include).length;
+    if (!confirm(`Apply ${targetCount} section(s) of "${applyTarget.name}" to ${conn.host}?\n\nThis will change the CX's configuration.`)) return;
+
+    applyRunBtn.disabled = true; applyRunBtn.textContent = 'APPLYING...';
+    applyStat.textContent = 'Applying to ' + conn.host + '...';
+    applyStat.style.color = 'var(--tc-muted)';
+    openTerminal();
+
+    const res = await window.api.recipeApply({
+      ...conn,
+      recipe: applyTarget,
+      include,
+      applyNetwork: false, // phase 1: never auto-push network via recipe
+      beckhoffUser: ($('bk-user') && $('bk-user').value.trim()) || '',
+      beckhoffPass: ($('bk-pass') && $('bk-pass').value.trim()) || '',
+      tf2000Pass: (typeof getTf2000Pass === 'function' ? getTf2000Pass() : '1')
+    }).catch(e => ({ ok: false, error: String((e && e.message) || e) }));
+
+    applyRunBtn.disabled = false; applyRunBtn.textContent = '▶ APPLY TO CONNECTED CX';
+
+    if (res.ok) {
+      applyStat.textContent = 'Applied successfully. See terminal for detail.';
+      applyStat.style.color = 'var(--tc-accent2)';
+      toast('Recipe applied to ' + conn.host, 'success');
+    } else {
+      applyStat.textContent = 'Apply stopped: ' + (res.error || 'unknown error') + (res.failedAt != null ? ` (step ${res.failedAt + 1})` : '');
+      applyStat.style.color = 'var(--tc-danger)';
+      toast('Recipe apply failed - see terminal', 'error');
+    }
+  });
+
+  // per-step progress from main
+  window.api.on('recipe:step', ({ index, status, message, total }) => {
+    if (!applyStat) return;
+    const label = `Step ${index + 1}/${total}: ${message || ''} [${status}]`;
+    applyStat.textContent = label;
+    applyStat.style.color = status === 'failed' ? 'var(--tc-danger)'
+      : status === 'done' ? 'var(--tc-accent2)' : 'var(--tc-muted)';
+  });
+
+  // refresh library whenever the Recipes tab is opened
+  tabAutoRefresh.recipes = () => { loadLibrary(); };
+
+  // initial load
+  loadLibrary();
 })();

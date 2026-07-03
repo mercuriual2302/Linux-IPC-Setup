@@ -91,6 +91,7 @@
 
       <div class="nav-group">Provision</div>
       <div class="nav-item tab" data-tab="setup"><span class="nav-ic">▼</span>Setup</div>
+      <div class="nav-item tab" data-tab="recipes"><span class="nav-ic">▤</span>Recipes</div>
 
       <div class="nav-group">Manage</div>
       <div class="nav-item tab" data-tab="services"><span class="nav-ic">≣</span>Services</div>
@@ -232,6 +233,60 @@
         <div class="btn-row">
           <button class="btn-run" id="btn-run-setup">▶ RUN SETUP LIVE (SSH)</button>
           <button class="btn-run secondary" id="btn-gen-setup">GENERATE SCRIPT</button>
+        </div>
+      </div>
+
+      <!-- VIEW: RECIPES -->
+      <div class="page" id="page-recipes">
+        <div class="view-title">Recipes</div>
+
+        <div class="section">
+          <div class="section-label">capture from cx</div>
+          <div class="section-subtitle">Read a known-good CX's full desired state (feed, TwinCAT packages with pinned versions, firewall rules, TF1200 config) into a portable recipe. Network settings are captured for reference only and are never cloned across devices.</div>
+
+          <div class="field" style="margin-bottom:.6rem">
+            <label>RECIPE NAME</label>
+            <input type="text" id="recipe-name" placeholder="e.g. F1 cell golden image" style="width:100%;max-width:420px;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)">
+          </div>
+
+          <div class="btn-row" style="gap:.5rem">
+            <button class="btn-run" id="btn-recipe-capture">CAPTURE FROM CX</button>
+          </div>
+          <div class="hint" id="recipe-capture-status" style="margin-top:.4rem">Connect to a CX, name the recipe, then capture.</div>
+
+          <div id="recipe-capture-preview" style="display:none;margin-top:.75rem;background:var(--tc-surface2);border:1px solid var(--tc-border);border-radius:4px;padding:.6rem .75rem">
+            <div style="font-family:var(--tc-mono);font-size:10px;color:var(--tc-muted);font-weight:600;margin-bottom:.4rem">CAPTURED SECTIONS</div>
+            <div id="recipe-capture-sections" style="font-family:var(--tc-mono);font-size:11px;color:var(--tc-text)"></div>
+            <div class="btn-row" style="gap:.5rem;margin-top:.6rem">
+              <button class="btn-run" id="btn-recipe-save">SAVE TO LIBRARY</button>
+              <button class="btn-run secondary" id="btn-recipe-export">EXPORT .json</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-label">recipe library</div>
+          <div class="section-subtitle">Saved recipes. Apply one to the currently connected CX, or import a recipe file shared by a colleague.</div>
+
+          <div class="btn-row" style="gap:.5rem;margin-bottom:.75rem">
+            <button class="btn-run secondary" id="btn-recipe-refresh">REFRESH</button>
+            <button class="btn-run secondary" id="btn-recipe-import">IMPORT .json</button>
+          </div>
+
+          <div id="recipe-list" style="font-family:var(--tc-mono);font-size:12px"></div>
+        </div>
+
+        <div class="section" id="recipe-apply-panel" style="display:none">
+          <div class="section-label">apply recipe</div>
+          <div class="section-subtitle" id="recipe-apply-subtitle">Select which sections to apply to the connected CX. Identity settings (network) are off by default and left to the Network view.</div>
+
+          <div id="recipe-apply-sections" style="margin-bottom:.75rem"></div>
+
+          <div class="btn-row" style="gap:.5rem">
+            <button class="btn-run" id="btn-recipe-apply-run">APPLY TO CONNECTED CX</button>
+            <button class="btn-run secondary" id="btn-recipe-apply-cancel">CANCEL</button>
+          </div>
+          <div class="hint" id="recipe-apply-status" style="margin-top:.4rem"></div>
         </div>
       </div>
 

@@ -10,6 +10,7 @@ const ScriptBuilder = require('./src/script-builder');
 const discovery = require('./src/discovery');
 const sftpManager = require('./src/sftp-manager');
 const socksProxy = require('./src/socks-proxy');
+const recipe = require('./src/recipe');
 
 // Suppress uncaught ECONNRESET errors - these are expected when the CX drops
 // the SSH connection mid-operation (network reload, reboot, poweroff). The
@@ -1821,3 +1822,436 @@ ipcMain.handle('cx:resolve-direct', async (_evt, opts) => {
     return { ok: false, error: err.message || String(err) };
   }
 });
+// ===========================================================================
+// Provisioning recipes (phase 1)
+// ---------------------------------------------------------------------------
+// recipe:capture   - read a CX's full state into a recipe object (no file yet)
+// recipe:save      - write a recipe to the recipes folder
+// recipe:load-all  - list saved recipes
+// recipe:delete    - remove a saved recipe
+// recipe:export    - Save-As a recipe to any path the user picks
+// recipe:import    - Open a .json recipe from disk, validated before returning
+// recipe:apply     - run a recipe's apply plan against one connected CX,
+//                    streaming per-step progress to the renderer
+//
+// Recipes live next to profiles in userData, one JSON file per recipe.
+// ===========================================================================
+
+function recipesDir() {
+  return path.join(app.getPath('userData'), 'recipes');
+}
+
+async function ensureRecipesDir() {
+  const dir = recipesDir();
+  await fs.promises.mkdir(dir, { recursive: true });
+  return dir;
+}
+
+// filename-safe slug from a recipe name, so files are human-identifiable on disk
+function recipeSlug(name) {
+  const base = String(name || 'recipe').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48);
+  return base || 'recipe';
+}
+
+// Capture: reads feed/packages/firewall/tf1200 off a CX using the same
+// commands the individual views use, then folds them into a recipe. Any piece
+// that fails to read is simply omitted (partial capture is still useful), and
+// the per-section read errors are reported back so the UI can note them.
+ipcMain.handle('recipe:capture', async (_evt, opts) => {
+  const { host, password, port, name } = opts || {};
+  const escPass = String(password || '').replace(/'/g, "'\\''");
+  const mgr = new SSHManager();
+  const sessionId = `capture-${Date.now()}`;
+  activeSessions.set(sessionId, mgr);
+  const warnings = [];
+
+  try {
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+
+    // 1. System info (feed, tc version, interfaces) - one compound command
+    let info = {}, ifaces = [];
+    try {
+      const infoCmd = `
+_sudo() { echo '${escPass}' | sudo -S -p '' "$@"; }
+echo "HOSTNAME|||$(hostname)"
+echo "OS|||$(grep PRETTY_NAME /etc/os-release | cut -d= -f2 | tr -d '"')"
+echo "TC_VER|||$(dpkg-query -W -f='\${Version}' tc31-xar-um 2>/dev/null || echo unknown)"
+echo "FEED|||$(grep -oE 'trixie-[a-z]+' /etc/apt/sources.list.d/bhf.list 2>/dev/null | head -1 || echo unknown)"
+ip -o addr show | awk '/inet / && !/127.0.0.1/{split($4,a,"/"); gsub("\r","",a[1]); n=$2; gsub("\r","",n); print "IFACE|||"n"|||"$4}'
+`;
+      const infoRes = await mgr.exec(infoCmd);
+      const ifaceMap = {};
+      String(infoRes.stdout || '').split(/\r?\n/).forEach(line => {
+        const parts = line.trim().replace(/\r/g, '').split('|||');
+        if (parts.length < 2) return;
+        if (parts[0] === 'IFACE') { ifaceMap[parts[1]] = { name: parts[1], ip: parts[2], state: 'up' }; }
+        else info[parts[0]] = parts[1];
+      });
+      ifaces = Object.values(ifaceMap);
+    } catch (e) { warnings.push('Could not read system info: ' + e.message); }
+
+    // 2. Installed TwinCAT packages with their versions
+    let packages = [];
+    try {
+      const pkgCmd = `dpkg-query -W -f='\${Package} \${Version}\n' 2>/dev/null | grep -iE '^(tc[0-9]+|tf[0-9]+|te[0-9]+|mdp-bhf|adstool|tcusbsrv|twincat-)' | sort -u`;
+      const pkgRes = await mgr.exec(pkgCmd);
+      String(pkgRes.stdout || '').split(/\r?\n/).forEach(line => {
+        const m = line.trim().replace(/\r/g, '').match(/^([A-Za-z0-9._+-]+)\s+(.+)$/);
+        if (m) packages.push({ name: m[1], version: m[2] });
+      });
+    } catch (e) { warnings.push('Could not read packages: ' + e.message); }
+
+    // 3. Firewall state (reuse the read-firewall parsing shape)
+    let firewall = null;
+    try {
+      const fwCmd = `
+_sudo() { echo '${escPass}' | sudo -S -p '' "$@"; }
+ENABLED=$(_sudo systemctl is-enabled nftables 2>/dev/null || true); ENABLED=\${ENABLED:-disabled}
+echo "___ENABLED___$ENABLED"
+echo "___RULESET___"
+_sudo nft list ruleset 2>/dev/null || true
+`;
+      const fwRes = await mgr.exec(fwCmd);
+      const out = (fwRes.stdout || '').replace(/\r/g, '');
+      const enabledMatch = out.match(/___ENABLED___(\S+)/);
+      const enabled = enabledMatch ? enabledMatch[1] === 'enabled' : false;
+      const marker = '___RULESET___';
+      const idx = out.indexOf(marker);
+      const rulesetText = idx !== -1 ? out.slice(idx + marker.length) : '';
+      const ports = [];
+      const lineRe = /^\s*(tcp|udp)\s+dport\s+(\d+)\s+accept(?:\s+comment\s+"([^"]*)")?/;
+      rulesetText.split('\n').forEach(line => {
+        const m = line.match(lineRe);
+        if (!m) return;
+        const proto = m[1], dport = parseInt(m[2], 10);
+        if (proto === 'tcp' && dport === 22) return;
+        ports.push({ port: dport, proto, label: m[3] || '' });
+      });
+      firewall = { enabled, ports };
+    } catch (e) { warnings.push('Could not read firewall: ' + e.message); }
+
+    // 4. TF1200 config (optional - many CXs won't have it)
+    let tf1200 = null;
+    try {
+      const tfRes = await mgr.exec(`echo '${escPass}' | sudo -S -p '' cat /home/TF1200/.config/TF1200-UI-Client/config.json 2>/dev/null`);
+      const raw = (tfRes.stdout || '').trim();
+      if (raw) {
+        try { tf1200 = { config: JSON.parse(raw) }; }
+        catch (e) { warnings.push('TF1200 config present but not valid JSON - skipped'); }
+      }
+    } catch (e) { /* no TF1200 - fine, just omit */ }
+
+    mgr.dispose();
+    activeSessions.delete(sessionId);
+
+    const built = recipe.buildRecipeFromCapture({ name, sourceHost: host, info, ifaces, packages, firewall, tf1200 });
+    const check = recipe.validateRecipe(built);
+    if (!check.ok) {
+      return { ok: false, error: 'Captured recipe failed validation: ' + check.errors.join('; ') };
+    }
+    return { ok: true, recipe: built, warnings };
+  } catch (err) {
+    mgr.dispose();
+    activeSessions.delete(sessionId);
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+ipcMain.handle('recipe:save', async (_evt, { recipe: rec }) => {
+  const check = recipe.validateRecipe(rec);
+  if (!check.ok) return { ok: false, error: check.errors.join('; ') };
+  try {
+    const dir = await ensureRecipesDir();
+    const file = path.join(dir, `${recipeSlug(rec.name)}.json`);
+    await fs.promises.writeFile(file, JSON.stringify(rec, null, 2), 'utf8');
+    return { ok: true, path: file };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+ipcMain.handle('recipe:load-all', async () => {
+  try {
+    const dir = await ensureRecipesDir();
+    const files = (await fs.promises.readdir(dir)).filter(f => f.endsWith('.json'));
+    const recipes = [];
+    for (const f of files) {
+      try {
+        const raw = await fs.promises.readFile(path.join(dir, f), 'utf8');
+        const rec = JSON.parse(raw);
+        const check = recipe.validateRecipe(rec);
+        recipes.push({ file: f, recipe: rec, valid: check.ok, errors: check.errors });
+      } catch (e) {
+        recipes.push({ file: f, recipe: null, valid: false, errors: [e.message] });
+      }
+    }
+    return { ok: true, recipes };
+  } catch (e) {
+    return { ok: false, error: e.message, recipes: [] };
+  }
+});
+
+ipcMain.handle('recipe:delete', async (_evt, { file }) => {
+  try {
+    // Guard against path traversal - only ever delete inside the recipes dir
+    const dir = await ensureRecipesDir();
+    const target = path.join(dir, path.basename(String(file || '')));
+    if (path.dirname(target) !== dir) return { ok: false, error: 'Invalid recipe path' };
+    await fs.promises.unlink(target);
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+ipcMain.handle('recipe:export', async (_evt, { recipe: rec }) => {
+  const check = recipe.validateRecipe(rec);
+  if (!check.ok) return { ok: false, error: check.errors.join('; ') };
+  const win = BrowserWindow.getFocusedWindow();
+  const { canceled, filePath } = await dialog.showSaveDialog(win, {
+    title: 'Export recipe',
+    defaultPath: `${recipeSlug(rec.name)}.json`,
+    filters: [{ name: 'Recipe JSON', extensions: ['json'] }]
+  });
+  if (canceled || !filePath) return { ok: false, canceled: true };
+  try {
+    await fs.promises.writeFile(filePath, JSON.stringify(rec, null, 2), 'utf8');
+    return { ok: true, path: filePath };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+});
+
+ipcMain.handle('recipe:import', async () => {
+  const win = BrowserWindow.getFocusedWindow();
+  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
+    title: 'Import recipe',
+    filters: [{ name: 'Recipe JSON', extensions: ['json'] }],
+    properties: ['openFile']
+  });
+  if (canceled || !filePaths || !filePaths.length) return { ok: false, canceled: true };
+  try {
+    const raw = await fs.promises.readFile(filePaths[0], 'utf8');
+    const rec = JSON.parse(raw);
+    const check = recipe.validateRecipe(rec);
+    if (!check.ok) return { ok: false, error: 'Not a valid recipe: ' + check.errors.join('; ') };
+    return { ok: true, recipe: rec };
+  } catch (e) {
+    return { ok: false, error: 'Could not read recipe: ' + e.message };
+  }
+});
+
+// Apply a recipe to one connected CX. Walks the ordered plan, streaming a
+// per-step status to the renderer. Stops this device's sequence on the first
+// hard failure (fail-fast within a device) rather than compounding errors.
+// Returns a per-step result array the UI (and, in phase 2, fleet mode) uses.
+ipcMain.handle('recipe:apply', async (_evt, opts) => {
+  const { host, password, port, recipe: rec, include, applyNetwork, beckhoffUser, beckhoffPass, tf2000Pass, sessionId: incomingSession } = opts || {};
+
+  const check = recipe.validateRecipe(rec);
+  if (!check.ok) return { ok: false, error: 'Invalid recipe: ' + check.errors.join('; ') };
+
+  const plan = recipe.buildApplyPlan(rec, { include: include || {}, applyNetwork: applyNetwork === true });
+  if (!plan.length) return { ok: false, error: 'Nothing to apply - no sections selected' };
+
+  const sessionId = incomingSession || `apply-${Date.now()}`;
+  const results = [];
+  const emit = (data) => sendToRenderer('ssh:output', { sessionId, data });
+  const step = (i, status, message) => sendToRenderer('recipe:step', { sessionId, index: i, status, message, total: plan.length });
+
+  emit(`\x1b[0;36m[RECIPE]\x1b[0m Applying "${rec.name}" to ${host} - ${plan.length} step(s)\r\n`);
+
+  for (let i = 0; i < plan.length; i++) {
+    const s = plan[i];
+    step(i, 'running', s.label);
+    emit(`\r\n\x1b[1;37m[STEP ${i + 1}/${plan.length}]\x1b[0m ${s.label}\r\n`);
+
+    try {
+      let stepResult;
+      switch (s.kind) {
+        case 'feed':
+          stepResult = await applyFeedStep(host, password, port, s.data.channel, emit);
+          break;
+        case 'packages':
+          stepResult = await applyPackagesStep(host, password, port, s.data.packages, { beckhoffUser, beckhoffPass, tf2000Pass }, emit);
+          break;
+        case 'firewall':
+          stepResult = await applyFirewallStep(host, password, port, s.data, emit);
+          break;
+        case 'tf1200':
+          stepResult = await applyTf1200Step(host, password, port, s.data.config, emit);
+          break;
+        case 'network':
+          // Identity step - phase 1 records it but does not auto-push. Applying
+          // network config across devices is a per-device operation and is
+          // handled through the dedicated Network view, not recipe apply.
+          emit(`\x1b[1;33m[SKIP]\x1b[0m Network is per-device identity and is not applied through recipes. Use the Network view.\r\n`);
+          stepResult = { ok: true, skipped: true };
+          break;
+        default:
+          stepResult = { ok: false, error: 'Unknown step kind: ' + s.kind };
+      }
+
+      if (stepResult.ok) {
+        step(i, stepResult.skipped ? 'skipped' : 'done', s.label);
+        results.push({ kind: s.kind, ok: true, skipped: !!stepResult.skipped });
+      } else {
+        step(i, 'failed', stepResult.error || 'failed');
+        emit(`\x1b[0;31m[FAIL]\x1b[0m ${stepResult.error || 'step failed'}\r\n`);
+        results.push({ kind: s.kind, ok: false, error: stepResult.error });
+        // fail-fast within this device
+        return { ok: false, sessionId, results, failedAt: i, error: stepResult.error };
+      }
+    } catch (err) {
+      const msg = err.message || String(err);
+      step(i, 'failed', msg);
+      emit(`\x1b[0;31m[FAIL]\x1b[0m ${msg}\r\n`);
+      results.push({ kind: s.kind, ok: false, error: msg });
+      return { ok: false, sessionId, results, failedAt: i, error: msg };
+    }
+  }
+
+  emit(`\r\n\x1b[0;32m[RECIPE]\x1b[0m All steps complete on ${host}.\r\n`);
+  return { ok: true, sessionId, results };
+});
+
+// -- apply step helpers: each opens its own short-lived connection, runs one
+//    concern, and tears down. Kept small and independent so fleet mode can run
+//    many of these in parallel without shared state. --
+
+async function applyFeedStep(host, password, port, channel, emit) {
+  if (!/^trixie-(stable|unstable)$/.test(channel)) return { ok: false, error: `Invalid channel ${channel}` };
+  const escPass = String(password || '').replace(/'/g, "'\\''");
+  const mgr = new SSHManager();
+  try {
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+    const script = `#!/bin/bash
+set -e
+trap 'rm -f "$0"' EXIT
+SUDO_PASS='${escPass}'
+_sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
+_sudo -v
+_sudo sed -i -E 's#trixie-(stable|unstable)#${channel}#g' /etc/apt/sources.list.d/bhf.list
+echo "[CX] Feed set to ${channel}"
+_sudo apt update -y 2>&1 | tail -5`;
+    await withTempScript('rec-feed', script, (p) => mgr.putFile(p, '/tmp/rec_feed.sh'));
+    const res = await mgr.execStream('chmod +x /tmp/rec_feed.sh && /tmp/rec_feed.sh', {
+      onStdout: (c) => emit(c.toString()), onStderr: (c) => emit(c.toString())
+    });
+    mgr.dispose();
+    return { ok: res.code === 0, error: res.code === 0 ? null : `feed step exit ${res.code}` };
+  } catch (e) { mgr.dispose(); return { ok: false, error: e.message }; }
+}
+
+async function applyPackagesStep(host, password, port, packages, creds, emit) {
+  const escPass = String(password || '').replace(/'/g, "'\\''");
+  // Build the install list, honouring version pins where present
+  const installArgs = packages.map(p => {
+    if (!/^[A-Za-z0-9._+-]+$/.test(p.name)) return null;
+    return p.version ? `${p.name}=${p.version}` : p.name;
+  }).filter(Boolean).join(' ');
+  if (!installArgs) return { ok: false, error: 'No valid packages to install' };
+
+  const mgr = new SSHManager();
+  try {
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+    const script = `#!/bin/bash
+set -e
+trap 'rm -f "$0"' EXIT
+SUDO_PASS='${escPass}'
+_sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
+_sudo -v
+_sudo apt update -y 2>&1 | tail -3
+echo "[CX] Installing: ${installArgs}"
+_sudo DEBIAN_FRONTEND=noninteractive apt install -y ${installArgs}
+echo "[CX] Package install complete"`;
+    await withTempScript('rec-pkgs', script, (p) => mgr.putFile(p, '/tmp/rec_pkgs.sh'));
+    const res = await mgr.execStream('chmod +x /tmp/rec_pkgs.sh && /tmp/rec_pkgs.sh', {
+      onStdout: (c) => emit(c.toString()), onStderr: (c) => emit(c.toString())
+    });
+    mgr.dispose();
+    return { ok: res.code === 0, error: res.code === 0 ? null : `package step exit ${res.code}` };
+  } catch (e) { mgr.dispose(); return { ok: false, error: e.message }; }
+}
+
+async function applyFirewallStep(host, password, port, data, emit) {
+  const escPass = String(password || '').replace(/'/g, "'\\''");
+  // Reuse the same validated rule-building the cx:firewall handler uses
+  const cleanPorts = [];
+  for (const p of (data.ports || [])) {
+    const portNum = parseInt(p.port, 10);
+    if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) continue;
+    const proto = p.proto === 'udp' ? 'udp' : 'tcp';
+    const label = String(p.label || '').replace(/[^A-Za-z0-9 ._/-]/g, '').slice(0, 40);
+    cleanPorts.push({ port: portNum, proto, label });
+  }
+  const openRules = cleanPorts.map(p =>
+    p.label
+      ? `_sudo nft add rule inet filter input ${p.proto} dport ${p.port} accept comment '"${p.label}"'`
+      : `_sudo nft add rule inet filter input ${p.proto} dport ${p.port} accept`
+  ).join('\n');
+
+  const mgr = new SSHManager();
+  try {
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+    const enableBlock = data.enable ? `echo "[CX] Configuring nftables firewall..."
+_sudo nft flush ruleset
+_sudo nft add table inet filter
+_sudo nft add chain inet filter input '{ type filter hook input priority 0; policy drop; }'
+_sudo nft add chain inet filter forward '{ type filter hook forward priority 0; policy drop; }'
+_sudo nft add chain inet filter output '{ type filter hook output priority 0; policy accept; }'
+_sudo nft add rule inet filter input ct state established,related accept
+_sudo nft add rule inet filter input iif lo accept
+_sudo nft add rule inet filter input tcp dport 22 accept
+${openRules}
+_sudo systemctl enable nftables
+_sudo systemctl start nftables
+_sudo nft list ruleset | _sudo tee /etc/nftables.conf >/dev/null
+echo "[CX] Firewall configured."` :
+`echo "[CX] Disabling firewall..."
+_sudo systemctl stop nftables || true
+_sudo systemctl disable nftables || true
+echo "[CX] Firewall disabled."`;
+
+    const script = `#!/bin/bash
+set -e
+trap 'rm -f "$0"' EXIT
+SUDO_PASS='${escPass}'
+_sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
+_sudo -v
+${enableBlock}`;
+    await withTempScript('rec-fw', script, (p) => mgr.putFile(p, '/tmp/rec_fw.sh'));
+    const res = await mgr.execStream('chmod +x /tmp/rec_fw.sh && /tmp/rec_fw.sh', {
+      onStdout: (c) => emit(c.toString()), onStderr: (c) => emit(c.toString())
+    });
+    mgr.dispose();
+    return { ok: res.code === 0, error: res.code === 0 ? null : `firewall step exit ${res.code}` };
+  } catch (e) { mgr.dispose(); return { ok: false, error: e.message }; }
+}
+
+async function applyTf1200Step(host, password, port, config, emit) {
+  const escPass = String(password || '').replace(/'/g, "'\\''");
+  const b64 = Buffer.from(JSON.stringify(config, null, 2), 'utf8').toString('base64');
+  const mgr = new SSHManager();
+  try {
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+    const script = `#!/bin/bash
+set -e
+trap 'rm -f "$0"' EXIT
+SUDO_PASS='${escPass}'
+_sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
+_sudo -v
+CFG_DIR=/home/TF1200/.config/TF1200-UI-Client
+CFG=$CFG_DIR/config.json
+_sudo mkdir -p "$CFG_DIR"
+if [ -f "$CFG" ]; then _sudo cp "$CFG" "$CFG.backup.$(date +%Y%m%d_%H%M%S)"; echo "[CX] Backed up existing config"; fi
+printf '%s' '${b64}' | base64 -d | _sudo tee "$CFG" >/dev/null
+echo "[CX] TF1200 config written"`;
+    await withTempScript('rec-tf1200', script, (p) => mgr.putFile(p, '/tmp/rec_tf1200.sh'));
+    const res = await mgr.execStream('chmod +x /tmp/rec_tf1200.sh && /tmp/rec_tf1200.sh', {
+      onStdout: (c) => emit(c.toString()), onStderr: (c) => emit(c.toString())
+    });
+    mgr.dispose();
+    return { ok: res.code === 0, error: res.code === 0 ? null : `tf1200 step exit ${res.code}` };
+  } catch (e) { mgr.dispose(); return { ok: false, error: e.message }; }
+}

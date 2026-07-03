@@ -4,7 +4,7 @@
 // preload.js runs in isolated context, bridges renderer ↔ main
 const { contextBridge, ipcRenderer } = require('electron');
 
-const VALID_EVENTS = ['ssh:output', 'ssh:status', 'shell:data', 'shell:exit', 'sftp:progress', 'sftp:connect-stage'];
+const VALID_EVENTS = ['ssh:output', 'ssh:status', 'shell:data', 'shell:exit', 'sftp:progress', 'sftp:connect-stage', 'recipe:step'];
 
 contextBridge.exposeInMainWorld('api', {
   // one-shot invokes - existing
@@ -40,6 +40,15 @@ contextBridge.exposeInMainWorld('api', {
   runVerify:      (opts) => ipcRenderer.invoke('cx:verify', opts),
   discoverDevices:   ()     => ipcRenderer.invoke('cx:discover'),
   resolveDirectLink: (opts) => ipcRenderer.invoke('cx:resolve-direct', opts),
+
+  // Provisioning recipes (phase 1)
+  recipeCapture:  (opts) => ipcRenderer.invoke('recipe:capture', opts),
+  recipeSave:     (recipe) => ipcRenderer.invoke('recipe:save', { recipe }),
+  recipeLoadAll:  ()     => ipcRenderer.invoke('recipe:load-all'),
+  recipeDelete:   (file) => ipcRenderer.invoke('recipe:delete', { file }),
+  recipeExport:   (recipe) => ipcRenderer.invoke('recipe:export', { recipe }),
+  recipeImport:   ()     => ipcRenderer.invoke('recipe:import'),
+  recipeApply:    (opts) => ipcRenderer.invoke('recipe:apply', opts),
 
   // Live shell (interactive PTY) - input/resize are fire-and-forget, no promise round trip
   openShell:      (opts) => ipcRenderer.invoke('shell:open', opts),
