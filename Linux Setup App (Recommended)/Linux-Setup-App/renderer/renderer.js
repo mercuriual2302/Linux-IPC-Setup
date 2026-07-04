@@ -2631,6 +2631,41 @@ $('btn-check-image')?.addEventListener('click', async () => {
   let offShellData = null;
   let offShellExit = null;
 
+  function isMacPlatform() {
+    return /Mac|iPhone|iPod|iPad/.test(navigator.platform || navigator.userAgent || '');
+  }
+
+  // Decide whether a keyboard event is a clipboard shortcut rather than a key
+  // that should go to the PTY. Returns 'copy' | 'paste' | null. Pulled out as
+  // its own function so the decision logic (which modifier on which platform,
+  // and the "only copy if something is actually selected" guard) is testable
+  // on its own rather than buried inside the key event handler.
+  //
+  // Ctrl+C without a selection is deliberately left alone (returns null) so it
+  // still reaches the PTY as SIGINT - that's the one keystroke every terminal
+  // user relies on to interrupt a running command, and silently swallowing it
+  // would be worse than the missing copy/paste this is fixing.
+  function shellClipboardIntent(event, hasSelection, isMac) {
+    if (event.type !== 'keydown') return null;
+    const mod = isMac ? event.metaKey : event.ctrlKey;
+    if (!mod) return null;
+    const key = (event.key || '').toLowerCase();
+    if (key === 'c' && hasSelection) return 'copy';
+    if (key === 'v') return 'paste';
+    return null;
+  }
+
+  function pasteIntoShell() {
+    navigator.clipboard.readText()
+      .then((text) => { if (text && sessionId) window.api.sendShellInput(sessionId, text); })
+      .catch(() => toast('Could not paste - clipboard access blocked', 'warn'));
+  }
+
+  function copySelection() {
+    navigator.clipboard.writeText(term.getSelection())
+      .catch(() => toast('Could not copy - clipboard access blocked', 'warn'));
+  }
+
   function ensureTerm() {
     if (term) return;
     term = new Terminal({
@@ -2645,6 +2680,22 @@ $('btn-check-image')?.addEventListener('click', async () => {
     fitAddon.fit();
     term.onData((data) => {
       if (sessionId) window.api.sendShellInput(sessionId, data);
+    });
+    // Intercept copy/paste shortcuts before xterm forwards them to the PTY.
+    // Returning false here means "handled, don't send this keystroke on" -
+    // returning true means "let xterm process it normally".
+    term.attachCustomKeyEventHandler((event) => {
+      const intent = shellClipboardIntent(event, term.hasSelection(), isMacPlatform());
+      if (intent === 'copy') { copySelection(); return false; }
+      if (intent === 'paste') { pasteIntoShell(); return false; }
+      return true;
+    });
+    // Right-click fallback, the way most terminal emulators behave: copy the
+    // selection if there is one, otherwise paste whatever is on the clipboard.
+    termEl.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      if (term.hasSelection()) copySelection();
+      else pasteIntoShell();
     });
     if (typeof ResizeObserver !== 'undefined') {
       new ResizeObserver(() => {
