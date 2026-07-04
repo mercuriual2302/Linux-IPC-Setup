@@ -385,7 +385,7 @@ function renderVersionList() {
 
 // Tabs
 const tabs = document.querySelectorAll('.tab');
-const pages = { dashboard:'page-dashboard', setup:'page-setup', recipes:'page-recipes', services:'page-services', network:'page-network', firewall:'page-firewall', users:'page-users', packages:'page-packages', tf1200:'page-tf1200', shell:'page-shell', sftp:'page-sftp' };
+const pages = { dashboard:'page-dashboard', setup:'page-setup', recipes:'page-recipes', fleet:'page-fleet', services:'page-services', network:'page-network', firewall:'page-firewall', users:'page-users', packages:'page-packages', tf1200:'page-tf1200', shell:'page-shell', sftp:'page-sftp' };
 
 // Registry of "read from CX" refreshers, one per tab, populated by each
 // section below as it initialises. Switching to a tab - or reconnecting via
@@ -3396,4 +3396,335 @@ $('btn-check-image')?.addEventListener('click', async () => {
 
   // initial load
   loadLibrary();
+})();
+
+// ===========================================================================
+// Fleet view (phase 2)
+// Commission many CXs at once: pick mode, targets, action, run settings, then
+// preflight and run. Reuses discovery, profiles, recipes, and the proxy
+// negotiation already built for single-CX flows.
+// ===========================================================================
+(function initFleet() {
+  if (!$('page-fleet')) return;
+
+  toggleGroupInit('fleet-mode-toggle');
+  toggleGroupInit('fleet-action-toggle');
+  toggleGroupInit('fleet-feed-toggle');
+
+  let mode = 'network';
+  let action = 'recipe';
+  let targets = [];        // [{ host, password, port, label }]
+  let recipesCache = [];   // loaded recipe objects for the dropdown
+  const deviceRows = {};   // index -> row element, during a run
+  const deviceSessions = {}; // index -> sessionId, for routing output
+
+  const el = (id) => $(id);
+
+  // ---- mode ----
+  document.querySelectorAll('#fleet-mode-toggle .toggle-opt').forEach(opt => {
+    opt.addEventListener('click', () => {
+      mode = opt.dataset.val;
+      el('fleet-net-settings').style.display = mode === 'network' ? '' : 'none';
+      el('fleet-seq-settings').style.display = mode === 'sequential' ? '' : 'none';
+    });
+  });
+
+  // ---- action ----
+  document.querySelectorAll('#fleet-action-toggle .toggle-opt').forEach(opt => {
+    opt.addEventListener('click', () => {
+      action = opt.dataset.val;
+      el('fleet-action-recipe').style.display = action === 'recipe' ? '' : 'none';
+      el('fleet-action-feed').style.display = action === 'feed-switch' ? '' : 'none';
+      updateCredsVisibility();
+    });
+  });
+
+  // ---- targets ----
+  function renderTargets() {
+    el('fleet-targets-count').textContent = `${targets.length} target${targets.length !== 1 ? 's' : ''} selected`;
+    el('fleet-targets-list').innerHTML = targets.length
+      ? targets.map((t, i) => `
+        <div style="display:flex;align-items:center;gap:.6rem;background:var(--tc-surface2);border:1px solid var(--tc-border);border-radius:4px;padding:.4rem .6rem;margin-bottom:.35rem">
+          <span style="flex:1;color:var(--tc-text)">${escapeHtml(t.label || t.host)} <span style="color:var(--tc-muted)">${escapeHtml(t.host)}</span></span>
+          <button class="sel-btn fleet-target-del" data-idx="${i}" style="font-size:10px;padding:.2rem .5rem">✕</button>
+        </div>`).join('')
+      : '<div style="color:var(--tc-muted);padding:.3rem 0">No targets yet. Scan, add profiles, or enter an IP.</div>';
+    el('fleet-targets-list').querySelectorAll('.fleet-target-del').forEach(btn => {
+      btn.addEventListener('click', () => { targets.splice(parseInt(btn.dataset.idx, 10), 1); renderTargets(); });
+    });
+  }
+
+  function addTarget(t) {
+    if (!t.host) return;
+    if (targets.some(x => x.host === t.host)) return; // dedupe by host
+    targets.push({ host: t.host, password: t.password || '1', port: t.port || 22, label: t.label || t.host });
+  }
+
+  el('btn-fleet-scan').addEventListener('click', async () => {
+    const btn = el('btn-fleet-scan');
+    btn.disabled = true; btn.textContent = '⟳ SCANNING...';
+    const res = await window.api.discoverDevices().catch(() => null);
+    btn.disabled = false; btn.textContent = '⟳ SCAN NETWORK';
+    if (!res || !res.devices || !res.devices.length) { toast('No CXs found on the network', 'warn'); return; }
+    const linuxDevices = res.devices.filter(d => d.os !== 'windows');
+    let added = 0;
+    linuxDevices.forEach(d => { const before = targets.length; addTarget({ host: d.ip, label: d.type || d.ip }); if (targets.length > before) added++; });
+    renderTargets();
+    toast(`Scan found ${linuxDevices.length} CX(s), added ${added} new`, 'success');
+  });
+
+  el('btn-fleet-add-profiles').addEventListener('click', async () => {
+    const res = await window.api.profilesLoad().catch(() => null);
+    const profiles = (res && res.profiles) || [];
+    if (!profiles.length) { toast('No saved profiles', 'warn'); return; }
+    let added = 0;
+    profiles.forEach(p => { const before = targets.length; addTarget({ host: p.host || p.ip, password: p.password, label: p.name || p.host }); if (targets.length > before) added++; });
+    renderTargets();
+    toast(`Added ${added} profile(s)`, 'success');
+  });
+
+  el('btn-fleet-add-manual').addEventListener('click', () => {
+    const ip = (el('fleet-manual-ip').value || '').trim();
+    const pass = el('fleet-manual-pass').value || '1';
+    if (!ip) { toast('Enter an IP first', 'warn'); return; }
+    if (!/^[0-9]{1,3}(\.[0-9]{1,3}){3}$/.test(ip)) { toast('That does not look like an IPv4 address', 'warn'); return; }
+    const before = targets.length;
+    addTarget({ host: ip, password: pass, label: ip });
+    if (targets.length === before) { toast('That IP is already in the list', 'warn'); return; }
+    el('fleet-manual-ip').value = ''; el('fleet-manual-pass').value = '';
+    renderTargets();
+  });
+
+  // ---- recipe dropdown + credential visibility ----
+  async function loadRecipesForDropdown() {
+    const res = await window.api.recipeLoadAll().catch(() => ({ recipes: [] }));
+    recipesCache = (res.recipes || []).filter(r => r.valid).map(r => r.recipe);
+    const sel = el('fleet-recipe-select');
+    sel.innerHTML = recipesCache.length
+      ? recipesCache.map((r, i) => `<option value="${i}">${escapeHtml(r.name)}</option>`).join('')
+      : '<option value="">No saved recipes - create one in the Recipes tab</option>';
+    updateCredsVisibility();
+  }
+
+  function selectedRecipe() {
+    const idx = parseInt(el('fleet-recipe-select').value, 10);
+    return Number.isInteger(idx) ? recipesCache[idx] : null;
+  }
+
+  // Mirror recipe.js's needs* logic client-side (module runs in main process).
+  function recipeNeedsBeckhoff(rec) {
+    if (!rec) return false;
+    const s = rec.sections || {};
+    return !!(s.feed || (s.packages && s.packages.length));
+  }
+  function recipeNeedsTf2000(rec) {
+    if (!rec) return false;
+    return !!((rec.sections && rec.sections.packages) || []).some(p => p.name === 'tf2000-hmi-server');
+  }
+
+  function updateCredsVisibility() {
+    let needBk = false, needTf = false;
+    if (action === 'recipe') {
+      const rec = selectedRecipe();
+      needBk = recipeNeedsBeckhoff(rec);
+      needTf = recipeNeedsTf2000(rec);
+      // prefill from recipe if it carries creds
+      if (rec && rec.credentials) {
+        if (!el('fleet-bk-user').value) el('fleet-bk-user').value = rec.credentials.beckhoffUsername || '';
+      }
+    } else if (action === 'feed-switch' || action === 'system-upgrade') {
+      needBk = true; // both touch apt
+    }
+    el('fleet-creds').style.display = (needBk || needTf) ? '' : 'none';
+    el('fleet-tf2000-pass').closest('.field').style.display = needTf ? '' : 'none';
+  }
+  el('fleet-recipe-select').addEventListener('change', updateCredsVisibility);
+
+  // ---- concurrency validation with recommend/override ----
+  el('fleet-concurrency').addEventListener('change', async () => {
+    const res = await window.api.fleetValidateConcurrency({ value: el('fleet-concurrency').value, targetCount: targets.length });
+    if (res.clampedToMax) {
+      el('fleet-concurrency').value = res.value;
+      toast(`Capped at the maximum of ${res.max}`, 'warn');
+    }
+    el('fleet-concurrency-hint').textContent = res.aboveRecommended
+      ? `Above the recommended ${res.recommended}. This works but strains the laptop connection and proxy - you'll be asked to confirm.`
+      : `Recommended: ${res.recommended}. Higher works but strains the laptop connection and proxy.`;
+    el('fleet-concurrency-hint').style.color = res.aboveRecommended ? 'var(--tc-warn)' : 'var(--tc-muted)';
+  });
+
+  // ---- preflight ----
+  el('btn-fleet-preflight').addEventListener('click', async () => {
+    if (!targets.length) { toast('Add at least one target', 'warn'); return; }
+    const btn = el('btn-fleet-preflight');
+    btn.disabled = true; btn.textContent = '✓ CHECKING...';
+    el('fleet-preflight-section').style.display = 'block';
+    el('fleet-preflight-table').innerHTML = '<div style="color:var(--tc-muted)">Probing ' + targets.length + ' device(s)...</div>';
+    const res = await window.api.fleetPreflight({ targets }).catch(e => ({ ok: false, error: String(e) }));
+    btn.disabled = false; btn.textContent = '✓ PREFLIGHT CHECK';
+    if (!res.ok) { toast('Preflight failed: ' + (res.error || 'unknown'), 'error'); return; }
+
+    let reachableCount = 0;
+    el('fleet-preflight-table').innerHTML = res.results.map(r => {
+      const ok = r.reachable && r.authOk;
+      if (ok) reachableCount++;
+      const dot = ok ? '<span style="color:var(--tc-accent2)">●</span>' : '<span style="color:var(--tc-danger)">●</span>';
+      const detail = ok ? (r.hostname || 'reachable') : (r.error || 'unreachable');
+      return `<div style="display:flex;align-items:center;gap:.6rem;padding:.3rem .5rem;border-bottom:1px solid var(--tc-border)">
+        ${dot}<span style="flex:1">${escapeHtml(r.host)}</span><span style="color:${ok ? 'var(--tc-muted)' : 'var(--tc-danger)'}">${escapeHtml(detail)}</span></div>`;
+    }).join('');
+
+    el('btn-fleet-run').disabled = reachableCount === 0;
+    el('fleet-run-status').textContent = `${reachableCount}/${targets.length} device(s) ready`;
+    el('fleet-run-status').style.color = reachableCount === targets.length ? 'var(--tc-accent2)' : 'var(--tc-warn)';
+    if (reachableCount < targets.length) toast(`${targets.length - reachableCount} device(s) not reachable - they'll be skipped`, 'warn');
+  });
+
+  // ---- run ----
+  function buildRunTable() {
+    el('fleet-run-section').style.display = 'block';
+    el('fleet-run-table').innerHTML = targets.map((t, i) => `
+      <div id="fleet-row-${i}" style="display:grid;grid-template-columns:auto 1fr auto;gap:.6rem;align-items:center;padding:.35rem .5rem;border-bottom:1px solid var(--tc-border)">
+        <span class="fleet-dot" style="color:var(--tc-muted)">○</span>
+        <span style="color:var(--tc-text)">${escapeHtml(t.label || t.host)} <span style="color:var(--tc-muted)">${escapeHtml(t.host)}</span></span>
+        <span class="fleet-state" style="color:var(--tc-muted);font-size:11px">queued</span>
+      </div>`).join('');
+    for (let i = 0; i < targets.length; i++) deviceRows[i] = el(`fleet-row-${i}`);
+  }
+
+  function updateRunSummary(devices) {
+    const counts = { done: 0, failed: 0, running: 0, queued: 0, skipped: 0, connecting: 0 };
+    Object.values(devices).forEach(s => { counts[s] = (counts[s] || 0) + 1; });
+    el('fleet-progress-summary').textContent =
+      `${counts.done} done · ${counts.failed} failed · ${(counts.running + counts.connecting)} running · ${counts.queued} queued` +
+      (counts.skipped ? ` · ${counts.skipped} skipped` : '');
+  }
+
+  const liveStates = {};
+  function applyDeviceUpdate(d) {
+    liveStates[d.index] = d.state;
+    const row = deviceRows[d.index];
+    if (!row) return;
+    const dot = row.querySelector('.fleet-dot');
+    const st = row.querySelector('.fleet-state');
+    const colorByState = { queued:'var(--tc-muted)', connecting:'var(--tc-warn)', running:'var(--tc-accent2)', done:'var(--tc-accent2)', failed:'var(--tc-danger)', skipped:'var(--tc-muted)' };
+    const glyphByState = { queued:'○', connecting:'◐', running:'●', done:'✓', failed:'✕', skipped:'–' };
+    dot.style.color = colorByState[d.state] || 'var(--tc-muted)';
+    dot.textContent = glyphByState[d.state] || '○';
+    let label = d.state;
+    if (d.state === 'running' && d.stepIndex != null && d.stepTotal != null) label = `step ${d.stepIndex + 1}/${d.stepTotal}`;
+    if (d.message && (d.state === 'failed' || d.state === 'running')) label += d.state === 'failed' ? `: ${d.message}` : ` · ${d.message}`;
+    st.textContent = label;
+    st.style.color = colorByState[d.state] || 'var(--tc-muted)';
+    updateRunSummary(liveStates);
+  }
+
+  window.api.on('fleet:device', applyDeviceUpdate);
+  window.api.on('fleet:device-session', ({ index, sessionId }) => { deviceSessions[index] = sessionId; });
+
+  window.api.on('fleet:await-next', ({ index, host, label }) => {
+    el('fleet-seq-prompt').style.display = 'block';
+    el('fleet-seq-prompt-text').textContent = `Connect the next CX (${label || host}), then click continue.`;
+  });
+
+  window.api.on('fleet:complete', (summary) => {
+    el('btn-fleet-run').style.display = '';
+    el('btn-fleet-stop').style.display = 'none';
+    el('fleet-seq-prompt').style.display = 'none';
+    const msg = `Fleet run complete: ${summary.done} done, ${summary.failed} failed` + (summary.skipped ? `, ${summary.skipped} skipped` : '') + (summary.aborted ? ` (${summary.abortReason})` : '');
+    el('fleet-run-status').textContent = msg;
+    el('fleet-run-status').style.color = summary.allSucceeded ? 'var(--tc-accent2)' : (summary.failed ? 'var(--tc-danger)' : 'var(--tc-warn)');
+    toast(summary.allSucceeded ? 'All devices commissioned successfully' : msg, summary.allSucceeded ? 'success' : 'warn');
+  });
+
+  el('btn-fleet-seq-continue').addEventListener('click', () => {
+    el('fleet-seq-prompt').style.display = 'none';
+    window.api.fleetNext({});
+  });
+  el('btn-fleet-seq-stop').addEventListener('click', () => {
+    el('fleet-seq-prompt').style.display = 'none';
+    window.api.fleetNext({ stop: true });
+  });
+  el('btn-fleet-stop').addEventListener('click', () => window.api.fleetStop());
+
+  el('btn-fleet-run').addEventListener('click', async () => {
+    if (!targets.length) { toast('Add targets first', 'warn'); return; }
+
+    // Gather action config + credentials
+    const beckhoffUser = (el('fleet-bk-user').value || '').trim();
+    const beckhoffPass = el('fleet-bk-pass').value || '';
+    const tf2000Pass = el('fleet-tf2000-pass').value || '';
+
+    let rec = null, include = null, channel = null;
+    if (action === 'recipe') {
+      rec = selectedRecipe();
+      if (!rec) { toast('Select a recipe', 'warn'); return; }
+      // Apply all non-identity sections by default in fleet mode
+      include = {};
+      Object.keys(rec.sections || {}).forEach(k => { if (k !== 'network') include[k] = true; });
+      if (recipeNeedsBeckhoff(rec) && !(beckhoffUser && beckhoffPass)) { toast('Enter MyBeckhoff credentials', 'warn'); el('fleet-bk-user').focus(); return; }
+      if (recipeNeedsTf2000(rec) && !tf2000Pass) { toast('Enter the TF2000 password', 'warn'); el('fleet-tf2000-pass').focus(); return; }
+    } else if (action === 'feed-switch') {
+      channel = document.querySelector('#fleet-feed-toggle .toggle-opt.active').dataset.val;
+      if (!(beckhoffUser && beckhoffPass)) { toast('Enter MyBeckhoff credentials', 'warn'); return; }
+    } else if (action === 'system-upgrade') {
+      if (!(beckhoffUser && beckhoffPass)) { toast('Enter MyBeckhoff credentials', 'warn'); return; }
+    }
+
+    // Concurrency + override gate (network mode)
+    let concurrency = 5, circuitBreakerThreshold = 0;
+    if (mode === 'network') {
+      const cv = await window.api.fleetValidateConcurrency({ value: el('fleet-concurrency').value, targetCount: targets.length });
+      concurrency = cv.value;
+      if (cv.aboveRecommended) {
+        if (!confirm(`You've set concurrency to ${cv.value}, above the recommended ${cv.recommended}.\n\nRunning this many at once can strain the laptop's connection pool and the proxy, and makes the run harder to watch. Continue anyway?`)) return;
+      }
+      if (el('fleet-breaker-enable').checked) {
+        circuitBreakerThreshold = Math.max(1, parseInt(el('fleet-breaker-threshold').value, 10) || 3);
+      }
+    }
+
+    // Proxy: ask once for the whole fleet, same decision flow as single-CX.
+    // We offer it if any device might need internet (recipe touching apt, or a
+    // bulk apt action). Use the first target to probe reachability.
+    let useProxy = false;
+    const actionTouchesApt = action !== 'recipe' || recipeNeedsBeckhoff(rec);
+    if (actionTouchesApt) {
+      const decision = await ensureProxyDecision(targets[0].host, targets[0].password);
+      if (decision.cancelled) return;
+      useProxy = !!(decision.proxyHost && decision.proxyPort);
+    }
+
+    // Confirm the run
+    const actionLabel = action === 'recipe' ? `apply recipe "${rec.name}"` : action === 'feed-switch' ? `switch feed to ${channel}` : 'run a full system upgrade';
+    if (!confirm(`Run fleet: ${actionLabel} on ${targets.length} CX(s) in ${mode} mode?\n\nThis will change configuration on every reachable device.`)) return;
+
+    // Reset live state and build the run table
+    Object.keys(liveStates).forEach(k => delete liveStates[k]);
+    buildRunTable();
+    el('btn-fleet-run').style.display = 'none';
+    el('btn-fleet-stop').style.display = '';
+    el('fleet-run-status').textContent = 'Running...';
+    el('fleet-run-status').style.color = 'var(--tc-muted)';
+
+    const res = await window.api.fleetRun({
+      mode, targets, action,
+      recipe: rec, include, applyNetwork: false,
+      channel, concurrency, circuitBreakerThreshold,
+      beckhoffUser, beckhoffPass, tf2000Pass, useProxy
+    }).catch(e => ({ ok: false, error: String((e && e.message) || e) }));
+
+    if (!res.ok) {
+      el('btn-fleet-run').style.display = '';
+      el('btn-fleet-stop').style.display = 'none';
+      el('fleet-run-status').textContent = 'Run failed to start: ' + (res.error || 'unknown');
+      el('fleet-run-status').style.color = 'var(--tc-danger)';
+      toast('Fleet run failed to start - ' + (res.error || ''), 'error');
+    }
+  });
+
+  // Refresh recipe dropdown + concurrency default whenever the tab opens
+  tabAutoRefresh.fleet = () => { loadRecipesForDropdown(); renderTargets(); };
+  loadRecipesForDropdown();
+  renderTargets();
 })();

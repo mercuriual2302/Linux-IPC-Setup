@@ -11,6 +11,7 @@ const discovery = require('./src/discovery');
 const sftpManager = require('./src/sftp-manager');
 const socksProxy = require('./src/socks-proxy');
 const recipe = require('./src/recipe');
+const fleet = require('./src/fleet');
 
 // Suppress uncaught ECONNRESET errors - these are expected when the CX drops
 // the SSH connection mid-operation (network reload, reboot, poweroff). The
@@ -609,13 +610,19 @@ ipcMain.handle('cx:check-internet', async (_evt, { host, username, password, por
 // of this laptop's addresses is actually reachable by the CX with a throwaway
 // TCP probe to its SSH port - lets the OS routing table answer that instead of
 // us guessing which adapter is the right one.
-ipcMain.handle('proxy:start', async (_evt, { host, port }) => {
+ipcMain.handle('proxy:start', async (_evt, { host, hosts, port }) => {
   try {
+    // Fleet runs pass an array of target hosts; single-CX flows pass one host.
+    // Either way we end up with a list the SOCKS server allowlists - only our
+    // actual targets can route through the proxy, never the whole network.
+    const targetHosts = Array.isArray(hosts) && hosts.length ? hosts : [host];
+    const probeHost = targetHosts[0];
+
     // which of this laptop's addresses the CX can actually reach - redone every
     // call since a different target CX may sit on a different adapter/subnet,
     // even though the SOCKS server itself is a singleton reused across targets.
     const localAddress = await new Promise((resolve, reject) => {
-      const probe = net.connect(port || 22, host, () => {
+      const probe = net.connect(port || 22, probeHost, () => {
         const addr = probe.localAddress;
         probe.destroy();
         resolve(addr);
@@ -623,17 +630,19 @@ ipcMain.handle('proxy:start', async (_evt, { host, port }) => {
       probe.on('error', reject);
     });
     // If a proxy is already running but bound to a different adapter (a new
-    // target CX on another subnet), tear it down and rebind on the right one
-    if (activeProxy && activeProxy.host !== localAddress) {
+    // target CX on another subnet) or for a different target set, tear it down
+    // and rebind. The allowKey captures both so we rebind when either changes.
+    const allowKey = targetHosts.slice().sort().join(',');
+    if (activeProxy && (activeProxy.host !== localAddress || activeProxy.allowKey !== allowKey)) {
       await socksProxy.stopSocksServer(activeProxy.server);
       activeProxy = null;
     }
     if (!activeProxy) {
       const { server, port: proxyPort } = await socksProxy.startSocksServer({
         bindHost: localAddress,
-        allowFrom: [host]
+        allowFrom: targetHosts
       });
-      activeProxy = { server, port: proxyPort, host: localAddress };
+      activeProxy = { server, port: proxyPort, host: localAddress, allowKey };
     }
     return { ok: true, proxyHost: localAddress, proxyPort: activeProxy.port };
   } catch (err) {
@@ -2126,7 +2135,11 @@ ipcMain.handle('recipe:import', async () => {
 // per-step status to the renderer. Stops this device's sequence on the first
 // hard failure (fail-fast within a device) rather than compounding errors.
 // Returns a per-step result array the UI (and, in phase 2, fleet mode) uses.
-ipcMain.handle('recipe:apply', async (_evt, opts) => {
+// Core recipe-apply logic, callable both from the recipe:apply IPC handler
+// (single CX) and from the fleet runner (one call per device, in parallel).
+// Returns { ok, sessionId, results, failedAt?, error?, needsCredentials? }.
+// Never throws for a normal device failure - fleet relies on that.
+async function applyRecipeToDevice(opts) {
   const { host, password, port, recipe: rec, include, applyNetwork, beckhoffUser, beckhoffPass, tf2000Pass, proxyHost, proxyPort, sessionId: incomingSession } = opts || {};
 
   const check = recipe.validateRecipe(rec);
@@ -2135,31 +2148,15 @@ ipcMain.handle('recipe:apply', async (_evt, opts) => {
   const plan = recipe.buildApplyPlan(rec, { include: include || {}, applyNetwork: applyNetwork === true });
   if (!plan.length) return { ok: false, error: 'Nothing to apply - no sections selected' };
 
-  // Effective credentials: whatever was freshly typed for this run wins, else
-  // fall back to what the recipe itself has stored from capture. Either way,
-  // if what's needed still isn't there, refuse before touching the network -
-  // no connection is opened, nothing partial happens. This is the explicit
-  // "force input" gate: previously a missing credential just logged a warning
-  // and continued, which meant apt sometimes failed later, sometimes silently
-  // succeeded against an unauthenticated feed, and either way the user found
-  // out only after the fact.
   const effectiveBeckhoffUser = beckhoffUser || (rec.credentials && rec.credentials.beckhoffUsername) || '';
   const effectiveBeckhoffPass = beckhoffPass || (rec.credentials && rec.credentials.beckhoffPassword) || '';
   const effectiveTf2000Pass = tf2000Pass || (rec.credentials && rec.credentials.tf2000Password) || '';
 
   if (recipe.needsBeckhoffAuth(rec, include || {}) && !(effectiveBeckhoffUser && effectiveBeckhoffPass)) {
-    return {
-      ok: false,
-      error: 'This recipe needs MyBeckhoff credentials to switch feeds or install packages. Enter a username and password before applying.',
-      needsCredentials: 'beckhoff'
-    };
+    return { ok: false, error: 'This recipe needs MyBeckhoff credentials to switch feeds or install packages. Enter a username and password before applying.', needsCredentials: 'beckhoff' };
   }
   if (recipe.needsTf2000Password(rec, include || {}) && !effectiveTf2000Pass) {
-    return {
-      ok: false,
-      error: 'The package list includes tf2000-hmi-server, which needs a password to initialise. Enter one before applying.',
-      needsCredentials: 'tf2000'
-    };
+    return { ok: false, error: 'The package list includes tf2000-hmi-server, which needs a password to initialise. Enter one before applying.', needsCredentials: 'tf2000' };
   }
 
   const sessionId = incomingSession || `apply-${Date.now()}`;
@@ -2190,9 +2187,6 @@ ipcMain.handle('recipe:apply', async (_evt, opts) => {
           stepResult = await applyTf1200Step(host, password, port, s.data.config, emit);
           break;
         case 'network':
-          // Identity step - phase 1 records it but does not auto-push. Applying
-          // network config across devices is a per-device operation and is
-          // handled through the dedicated Network view, not recipe apply.
           emit(`\x1b[1;33m[SKIP]\x1b[0m Network is per-device identity and is not applied through recipes. Use the Network view.\r\n`);
           stepResult = { ok: true, skipped: true };
           break;
@@ -2207,7 +2201,6 @@ ipcMain.handle('recipe:apply', async (_evt, opts) => {
         step(i, 'failed', stepResult.error || 'failed');
         emit(`\x1b[0;31m[FAIL]\x1b[0m ${stepResult.error || 'step failed'}\r\n`);
         results.push({ kind: s.kind, ok: false, error: stepResult.error });
-        // fail-fast within this device
         return { ok: false, sessionId, results, failedAt: i, error: stepResult.error };
       }
     } catch (err) {
@@ -2221,6 +2214,10 @@ ipcMain.handle('recipe:apply', async (_evt, opts) => {
 
   emit(`\r\n\x1b[0;32m[RECIPE]\x1b[0m All steps complete on ${host}.\r\n`);
   return { ok: true, sessionId, results };
+}
+
+ipcMain.handle('recipe:apply', async (_evt, opts) => {
+  return applyRecipeToDevice(opts);
 });
 
 // -- apply step helpers: each opens its own short-lived connection, runs one
@@ -2432,3 +2429,277 @@ echo "[CX] TF1200 config written"`;
     return { ok: res.code === 0, error: res.code === 0 ? null : `tf1200 step exit ${res.code}` };
   } catch (e) { mgr.dispose(); return { ok: false, error: e.message }; }
 }
+
+// ===========================================================================
+// Fleet mode (phase 2)
+// ---------------------------------------------------------------------------
+// Apply one action (a recipe, or a plain bulk op) to many CXs at once. The
+// scheduling/failure/circuit-breaker logic lives in src/fleet.js (pure and
+// unit-tested); this layer does the SSH-side work per device and streams
+// per-device progress to the renderer via 'fleet:device' events.
+//
+// fleet:validate-concurrency - normalise a user-entered concurrency value
+// fleet:preflight            - probe every target's reachability before a run
+// fleet:run                  - run the fleet (network parallel OR sequential)
+// fleet:stop                 - abort a running fleet (in-flight devices finish)
+// fleet:next                 - resolve the pause between sequential devices
+// ===========================================================================
+
+let activeFleetRun = null;   // { signal } while a run is in progress
+let fleetNextResolver = null; // resolves the sequential between-devices pause
+
+ipcMain.handle('fleet:validate-concurrency', async (_evt, { value, targetCount }) => {
+  return fleet.validateConcurrency(value, targetCount);
+});
+
+// Probe each target: can we open a TCP connection to its SSH port, and what
+// hostname does it report. Runs in parallel (bounded) so preflight on 30
+// devices is quick. Never changes anything on the CX - purely a reachability
+// and identity check so the preflight table can show green/red before the run.
+ipcMain.handle('fleet:preflight', async (_evt, { targets }) => {
+  const results = await runPooled(targets || [], 8, async (t) => {
+    const host = t.host, port = t.port || 22, password = t.password;
+    // TCP reachability first - cheap and catches the common "not plugged in / wrong IP" case
+    const reachable = await new Promise((resolve) => {
+      const sock = net.connect({ host, port, timeout: 4000 }, () => { sock.destroy(); resolve(true); });
+      sock.on('error', () => resolve(false));
+      sock.on('timeout', () => { sock.destroy(); resolve(false); });
+    });
+    if (!reachable) return { host, reachable: false, hostname: null, error: 'No SSH on ' + host + ':' + port };
+    // Then a quick hostname read to confirm creds work and show identity
+    let hostname = null, authOk = false;
+    try {
+      const mgr = new SSHManager();
+      await mgr.connect({ host, username: 'Administrator', password, port });
+      const r = await mgr.exec('hostname');
+      hostname = (r.stdout || '').trim().replace(/\r/g, '') || null;
+      authOk = true;
+      mgr.dispose();
+    } catch (e) {
+      return { host, reachable: true, authOk: false, hostname: null, error: 'SSH auth failed: ' + (e.message || e) };
+    }
+    return { host, reachable: true, authOk, hostname, error: null };
+  });
+  return { ok: true, results };
+});
+
+// Small bounded-parallel helper (used by preflight). Distinct from the fleet
+// runner - no state machine, just "run these async fns N at a time".
+async function runPooled(items, poolSize, fn) {
+  const out = new Array(items.length);
+  let idx = 0;
+  async function worker() {
+    while (idx < items.length) {
+      const i = idx++;
+      try { out[i] = await fn(items[i]); }
+      catch (e) { out[i] = { error: (e && e.message) || String(e) }; }
+    }
+  }
+  const workers = [];
+  for (let i = 0; i < Math.min(poolSize, items.length); i++) workers.push(worker());
+  await Promise.all(workers);
+  return out;
+}
+
+// One device's work for a plain bulk action (no recipe). Mirrors the relevant
+// single-CX handler but as a reusable async fn returning {ok,error} and
+// streaming to the given sessionId. action: 'system-upgrade' | 'feed-switch'.
+async function runBulkActionOnDevice(device, action, actionOpts, proxy, sessionId) {
+  const { host, password, port } = device;
+  const emit = (data) => sendToRenderer('ssh:output', { sessionId, data });
+  const proxyOpts = buildProxyAptOpts(proxy.proxyHost, proxy.proxyPort);
+  const escPass = String(password || '').replace(/'/g, "'\\''");
+
+  let script;
+  if (action === 'feed-switch') {
+    const channel = actionOpts.channel === 'trixie-unstable' ? 'trixie-unstable' : 'trixie-stable';
+    script = `#!/bin/bash
+set -e
+export TERM=dumb
+export DEBIAN_FRONTEND=noninteractive
+APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Quiet::NoUpdate=true${proxyOpts}'
+SUDO_PASS='${escPass}'
+_sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
+_sudo -v
+trap 'rm -f "$0"' EXIT
+echo "[CX] Switching feed to ${channel}"
+_sudo bash -c 'printf "deb [signed-by=/usr/share/keyrings/bhf.asc] https://deb.beckhoff.com/debian ${channel} main\\n" > /etc/apt/sources.list.d/bhf.list'
+_sudo apt $APT_OPTS update -y
+echo "[CX] Feed set to ${channel}."
+`;
+  } else { // system-upgrade
+    script = `#!/bin/bash
+set -e
+export TERM=dumb
+export DEBIAN_FRONTEND=noninteractive
+APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0 -o Quiet::NoUpdate=true${proxyOpts}'
+SUDO_PASS='${escPass}'
+_sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
+_sudo -v
+trap 'rm -f "$0"' EXIT
+echo "[CX] Running apt update..."
+_sudo apt $APT_OPTS update -y
+echo "[CX] Running full upgrade..."
+_sudo apt $APT_OPTS full-upgrade -y
+echo "[CX] Upgrade complete."
+`;
+  }
+
+  const mgr = new SSHManager();
+  try {
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+    await withTempScript('fleet-bulk', script, (p) => mgr.putFile(p, '/tmp/fleet_bulk.sh'));
+    const res = await mgr.execStream('chmod +x /tmp/fleet_bulk.sh && /tmp/fleet_bulk.sh', {
+      onStdout: (c) => emit(c.toString()), onStderr: (c) => emit(c.toString())
+    });
+    mgr.dispose();
+    return { ok: res.code === 0, error: res.code === 0 ? null : `exit ${res.code}` };
+  } catch (e) {
+    mgr.dispose();
+    return { ok: false, error: (e && e.message) || String(e) };
+  }
+}
+
+// The main fleet run. opts:
+//   mode: 'network' | 'sequential'
+//   targets: [{ host, password, port, label }]
+//   action: 'recipe' | 'system-upgrade' | 'feed-switch'
+//   recipe, include, applyNetwork (when action==='recipe')
+//   channel (when action==='feed-switch')
+//   concurrency (network mode)
+//   circuitBreakerThreshold
+//   beckhoffUser/beckhoffPass/tf2000Pass (fleet-wide credentials)
+//   useProxy: whether to stand up the shared laptop proxy for the run
+ipcMain.handle('fleet:run', async (_evt, opts) => {
+  const {
+    mode = 'network', targets = [], action = 'recipe',
+    recipe: rec, include, applyNetwork,
+    channel, concurrency, circuitBreakerThreshold = 0,
+    beckhoffUser, beckhoffPass, tf2000Pass, useProxy
+  } = opts || {};
+
+  if (!targets.length) return { ok: false, error: 'No targets selected' };
+
+  // Validate credentials ONCE for the whole fleet, before touching anything.
+  if (action === 'recipe') {
+    const check = recipe.validateRecipe(rec);
+    if (!check.ok) return { ok: false, error: 'Invalid recipe: ' + check.errors.join('; ') };
+    const effUser = beckhoffUser || (rec.credentials && rec.credentials.beckhoffUsername) || '';
+    const effPass = beckhoffPass || (rec.credentials && rec.credentials.beckhoffPassword) || '';
+    const effTf = tf2000Pass || (rec.credentials && rec.credentials.tf2000Password) || '';
+    if (recipe.needsBeckhoffAuth(rec, include || {}) && !(effUser && effPass)) {
+      return { ok: false, error: 'This recipe needs MyBeckhoff credentials. Enter them before running the fleet.', needsCredentials: 'beckhoff' };
+    }
+    if (recipe.needsTf2000Password(rec, include || {}) && !effTf) {
+      return { ok: false, error: 'This recipe installs tf2000-hmi-server and needs its password. Enter it before running the fleet.', needsCredentials: 'tf2000' };
+    }
+  }
+
+  // Stand up the shared proxy for the whole target set if requested. One proxy,
+  // allowlisted to exactly these hosts, reused by every device.
+  let proxy = { proxyHost: null, proxyPort: null };
+  if (useProxy) {
+    try {
+      const hosts = targets.map(t => t.host);
+      const localAddress = await new Promise((resolve, reject) => {
+        const probe = net.connect(targets[0].port || 22, targets[0].host, () => { const a = probe.localAddress; probe.destroy(); resolve(a); });
+        probe.on('error', reject);
+      });
+      const allowKey = hosts.slice().sort().join(',');
+      if (activeProxy && (activeProxy.host !== localAddress || activeProxy.allowKey !== allowKey)) {
+        await socksProxy.stopSocksServer(activeProxy.server); activeProxy = null;
+      }
+      if (!activeProxy) {
+        const { server, port: proxyPort } = await socksProxy.startSocksServer({ bindHost: localAddress, allowFrom: hosts });
+        activeProxy = { server, port: proxyPort, host: localAddress, allowKey };
+      }
+      proxy = { proxyHost: localAddress, proxyPort: activeProxy.port };
+    } catch (e) {
+      return { ok: false, error: 'Could not start laptop proxy for the fleet: ' + (e.message || e) };
+    }
+  }
+
+  const devices = fleet.initDevices(targets);
+  const signal = fleet.makeAbortSignal();
+  activeFleetRun = { signal };
+
+  const onDeviceUpdate = (dev) => {
+    sendToRenderer('fleet:device', {
+      index: dev.index, host: dev.host, label: dev.label,
+      state: dev.state, message: dev.message,
+      stepIndex: dev.stepIndex, stepTotal: dev.stepTotal, error: dev.error
+    });
+  };
+
+  // The per-device work function, shared by both run modes.
+  const runOne = async (dev, onProgress) => {
+    const sessionId = `fleet-${dev.index}-${Date.now()}`;
+    // Tell the renderer which session belongs to which device, so it can route
+    // this device's recipe:step / ssh:output events (both tagged with this
+    // sessionId) into the right fleet row and the terminal.
+    sendToRenderer('fleet:device-session', { index: dev.index, sessionId });
+    if (action === 'recipe') {
+      onProgress({ state: 'running', message: 'Applying recipe' });
+      return applyRecipeToDevice({
+        host: dev.host, password: dev.password, port: dev.port,
+        recipe: rec, include, applyNetwork,
+        beckhoffUser, beckhoffPass, tf2000Pass,
+        proxyHost: proxy.proxyHost, proxyPort: proxy.proxyPort,
+        sessionId
+      });
+    } else {
+      onProgress({ state: 'running', message: action === 'feed-switch' ? 'Switching feed' : 'Upgrading system' });
+      return runBulkActionOnDevice(dev, action, { channel }, proxy, sessionId);
+    }
+  };
+
+  let summary;
+  try {
+    if (mode === 'sequential') {
+      summary = await fleet.runSequential(devices, runOne, {
+        onDeviceUpdate,
+        signal,
+        onBetween: (nextDev) => new Promise((resolve) => {
+          // Ask the renderer to prompt the operator to swap devices, then wait
+          // for fleet:next to resolve this.
+          fleetNextResolver = resolve;
+          sendToRenderer('fleet:await-next', { index: nextDev.index, host: nextDev.host, label: nextDev.label });
+        })
+      });
+    } else {
+      const conc = fleet.validateConcurrency(concurrency, targets.length).effective;
+      summary = await fleet.runFleet(devices, conc, runOne, {
+        circuitBreakerThreshold, onDeviceUpdate, signal
+      });
+    }
+  } finally {
+    activeFleetRun = null;
+    fleetNextResolver = null;
+  }
+
+  sendToRenderer('fleet:complete', summary);
+  return { ok: true, summary };
+});
+
+// Renderer resolves the sequential pause (operator connected the next CX, or
+// chose to stop). payload: { stop?: boolean }
+ipcMain.handle('fleet:next', async (_evt, payload) => {
+  if (fleetNextResolver) {
+    const r = fleetNextResolver;
+    fleetNextResolver = null;
+    r(payload || {});
+    return { ok: true };
+  }
+  return { ok: false, error: 'No fleet run waiting to continue' };
+});
+
+ipcMain.handle('fleet:stop', async () => {
+  if (activeFleetRun && activeFleetRun.signal) {
+    activeFleetRun.signal.aborted = true;
+    activeFleetRun.signal.reason = 'Stopped by user';
+    // If we're paused between sequential devices, release that pause with a stop
+    if (fleetNextResolver) { const r = fleetNextResolver; fleetNextResolver = null; r({ stop: true }); }
+    return { ok: true };
+  }
+  return { ok: false, error: 'No fleet run in progress' };
+});

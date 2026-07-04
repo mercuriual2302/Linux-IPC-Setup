@@ -4,7 +4,7 @@
 // preload.js runs in isolated context, bridges renderer ↔ main
 const { contextBridge, ipcRenderer } = require('electron');
 
-const VALID_EVENTS = ['ssh:output', 'ssh:status', 'shell:data', 'shell:exit', 'sftp:progress', 'sftp:connect-stage', 'recipe:step'];
+const VALID_EVENTS = ['ssh:output', 'ssh:status', 'shell:data', 'shell:exit', 'sftp:progress', 'sftp:connect-stage', 'recipe:step', 'fleet:device', 'fleet:device-session', 'fleet:await-next', 'fleet:complete'];
 
 contextBridge.exposeInMainWorld('api', {
   // one-shot invokes - existing
@@ -50,6 +50,13 @@ contextBridge.exposeInMainWorld('api', {
   recipeExport:   (recipe) => ipcRenderer.invoke('recipe:export', { recipe }),
   recipeImport:   ()     => ipcRenderer.invoke('recipe:import'),
   recipeApply:    (opts) => ipcRenderer.invoke('recipe:apply', opts),
+
+  // Fleet mode (phase 2)
+  fleetValidateConcurrency: (opts) => ipcRenderer.invoke('fleet:validate-concurrency', opts),
+  fleetPreflight: (opts) => ipcRenderer.invoke('fleet:preflight', opts),
+  fleetRun:       (opts) => ipcRenderer.invoke('fleet:run', opts),
+  fleetNext:      (opts) => ipcRenderer.invoke('fleet:next', opts),
+  fleetStop:      ()     => ipcRenderer.invoke('fleet:stop'),
 
   // Live shell (interactive PTY) - input/resize are fire-and-forget, no promise round trip
   openShell:      (opts) => ipcRenderer.invoke('shell:open', opts),
