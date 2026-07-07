@@ -3728,7 +3728,7 @@ $('btn-check-image')?.addEventListener('click', async () => {
     if (!res || !res.devices || !res.devices.length) { toast('No CXs found on the network', 'warn'); return; }
     const linuxDevices = res.devices.filter(d => d.os !== 'windows');
     let added = 0;
-    linuxDevices.forEach(d => { const before = targets.length; addTarget({ host: d.ip, label: d.type || d.ip }); if (targets.length > before) added++; });
+    linuxDevices.forEach(d => { const before = targets.length; addTarget({ host: d.ip, label: d.ip }); if (targets.length > before) added++; });
     renderTargets();
     toast(`Scan found ${linuxDevices.length} CX(s), added ${added} new`, 'success');
   });
