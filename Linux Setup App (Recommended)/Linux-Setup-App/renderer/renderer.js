@@ -976,6 +976,36 @@ async function ensureProxyDecision(ip, cxPass) {
   return { proxyHost: null, proxyPort: null };
 }
 
+// Fleet counterpart to ensureProxyDecision. Deciding proxy need from one
+// representative device is wrong when the fleet is mixed (some CXs reachable,
+// some not), so this checks every target and offers the proxy if any of them
+// lack internet. If accepted, the proxy is started pre-scoped to every target
+// host, so fleet:run reuses it as-is instead of tearing it down and rebinding.
+async function ensureFleetProxyDecision(targets) {
+  const res = await window.api.checkInternetFleet({ targets }).catch(() => null);
+  const results = (res && res.results) || [];
+  // Same philosophy as the single-device check: if nothing came back
+  // unreachable (including checks that themselves failed), let the real
+  // action surface its own error rather than guessing further here.
+  const anyUnreachable = results.some(r => r.ok && r.reachable === false);
+  if (!anyUnreachable) return { proxyHost: null, proxyPort: null };
+
+  const choice = await askProxyChoice();
+  if (choice === 'cancel') return { proxyHost: null, proxyPort: null, cancelled: true };
+  if (choice === 'use') {
+    const hosts = targets.map(t => t.host);
+    const proxyRes = await window.api.startProxy({ hosts, port: 22 });
+    if (!proxyRes.ok) {
+      toast('Could not start the proxy: ' + (proxyRes.error || 'unknown') + ' - continuing without it.', 'error');
+      return { proxyHost: null, proxyPort: null };
+    }
+    toast(`Proxying through ${proxyRes.proxyHost}:${proxyRes.proxyPort} for this fleet run`, 'success');
+    return { proxyHost: proxyRes.proxyHost, proxyPort: proxyRes.proxyPort };
+  }
+  // choice === 'skip'
+  return { proxyHost: null, proxyPort: null };
+}
+
 $('btn-run-setup').addEventListener('click', async () => {
   const ip = $('cx-ip').value.trim();
   const cxPass = $('cx-pass').value;
@@ -4041,7 +4071,7 @@ $('btn-check-image')?.addEventListener('click', async () => {
     let useProxy = false;
     const actionTouchesApt = action !== 'recipe' || recipeNeedsBeckhoff(rec);
     if (actionTouchesApt) {
-      const decision = await ensureProxyDecision(targets[0].host, targets[0].password);
+      const decision = await ensureFleetProxyDecision(targets);
       if (decision.cancelled) return;
       useProxy = !!(decision.proxyHost && decision.proxyPort);
     }

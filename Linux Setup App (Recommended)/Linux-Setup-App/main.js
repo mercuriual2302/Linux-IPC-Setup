@@ -47,7 +47,7 @@ let mainWindow = null;
 const activeSessions = new Map(); // sessionId → SSHManager
 const shellSessions = new Map(); // sessionId → { mgr, stream } - live PTY sessions for the Shell view
 const sftpSessions = new Map(); // sessionId → { mgr, sftp } - persistent SFTP connections for the Files view
-let activeProxy = null; // { server, port } - the laptop-as-proxy SOCKS5 server, one at a time, lives only for a Setup run
+let activeProxy = null; // { server, port, host, allowKey } - laptop-as-proxy SOCKS5 server, one at a time, shared by single-device and fleet runs (see ensureLaptopProxy)
 
 
 // Window creation
@@ -648,18 +648,73 @@ ipcMain.handle('fs:dirname', (_evt, { p }) => ({ ok: true, path: path.dirname(p)
 
 // Internet-access check before a Setup run - bash's /dev/tcp pseudo-device
 // needs no extra tools on the CX (no curl/wget dependency), just bash itself.
-ipcMain.handle('cx:check-internet', async (_evt, { host, username, password, port }) => {
+// Shared by cx:check-internet (single device) and cx:check-internet-fleet
+// (many devices) - one CX, does it have its own route to the Beckhoff feed.
+async function checkInternetOnHost({ host, username, password, port }) {
   const mgr = new SSHManager();
   try {
     await mgr.connect({ host, username: username || 'Administrator', password, port: port || 22 });
     const result = await mgr.exec(`timeout 5 bash -c 'cat < /dev/null > /dev/tcp/deb.beckhoff.com/443' && echo REACHABLE || echo UNREACHABLE`);
     mgr.dispose();
-    return { ok: true, reachable: /REACHABLE/.test(result.stdout) && !/UNREACHABLE/.test(result.stdout) };
+    return { host, ok: true, reachable: /REACHABLE/.test(result.stdout) && !/UNREACHABLE/.test(result.stdout) };
   } catch (err) {
     mgr.dispose();
-    return { ok: false, error: err.message || String(err) };
+    return { host, ok: false, error: err.message || String(err) };
   }
+}
+
+ipcMain.handle('cx:check-internet', async (_evt, opts) => {
+  const r = await checkInternetOnHost(opts || {});
+  return { ok: r.ok, reachable: r.reachable, error: r.error };
 });
+
+// Fleet version: same check across every target, bounded parallel so this
+// doesn't wait on N devices one at a time. Used to decide whether the fleet
+// as a whole needs the laptop proxy, instead of guessing from one device.
+ipcMain.handle('cx:check-internet-fleet', async (_evt, { targets }) => {
+  const results = await runPooled(targets || [], 8, (t) =>
+    checkInternetOnHost({ host: t.host, password: t.password, port: t.port })
+  );
+  return { ok: true, results };
+});
+
+// Start (or reuse) the laptop-as-proxy SOCKS5 server, scoped to exactly the
+// given hosts. Shared by proxy:start (single-device flow) and fleet:run, so
+// there's one place that decides which laptop adapter to bind and when an
+// existing proxy needs tearing down and rebinding for a different target set.
+async function ensureLaptopProxy(hosts, port) {
+  const targetHosts = Array.isArray(hosts) && hosts.length ? hosts : [];
+  if (!targetHosts.length) throw new Error('No target hosts to proxy');
+  const probeHost = targetHosts[0];
+
+  // which of this laptop's addresses the CX can actually reach - redone every
+  // call since a different target CX may sit on a different adapter/subnet,
+  // even though the SOCKS server itself is a singleton reused across targets.
+  const localAddress = await new Promise((resolve, reject) => {
+    const probe = net.connect(port || 22, probeHost, () => {
+      const addr = probe.localAddress;
+      probe.destroy();
+      resolve(addr);
+    });
+    probe.on('error', reject);
+  });
+
+  // If a proxy is already running but bound to a different adapter or a
+  // different target set, tear it down and rebind. allowKey captures both.
+  const allowKey = targetHosts.slice().sort().join(',');
+  if (activeProxy && (activeProxy.host !== localAddress || activeProxy.allowKey !== allowKey)) {
+    await socksProxy.stopSocksServer(activeProxy.server);
+    activeProxy = null;
+  }
+  if (!activeProxy) {
+    const { server, port: proxyPort } = await socksProxy.startSocksServer({
+      bindHost: localAddress,
+      allowFrom: targetHosts
+    });
+    activeProxy = { server, port: proxyPort, host: localAddress, allowKey };
+  }
+  return { proxyHost: localAddress, proxyPort: activeProxy.port };
+}
 
 // Start the laptop-as-proxy SOCKS5 server for one Setup run. Determines which
 // of this laptop's addresses is actually reachable by the CX with a throwaway
@@ -668,38 +723,9 @@ ipcMain.handle('cx:check-internet', async (_evt, { host, username, password, por
 ipcMain.handle('proxy:start', async (_evt, { host, hosts, port }) => {
   try {
     // Fleet runs pass an array of target hosts; single-CX flows pass one host.
-    // Either way we end up with a list the SOCKS server allowlists - only our
-    // actual targets can route through the proxy, never the whole network.
     const targetHosts = Array.isArray(hosts) && hosts.length ? hosts : [host];
-    const probeHost = targetHosts[0];
-
-    // which of this laptop's addresses the CX can actually reach - redone every
-    // call since a different target CX may sit on a different adapter/subnet,
-    // even though the SOCKS server itself is a singleton reused across targets.
-    const localAddress = await new Promise((resolve, reject) => {
-      const probe = net.connect(port || 22, probeHost, () => {
-        const addr = probe.localAddress;
-        probe.destroy();
-        resolve(addr);
-      });
-      probe.on('error', reject);
-    });
-    // If a proxy is already running but bound to a different adapter (a new
-    // target CX on another subnet) or for a different target set, tear it down
-    // and rebind. The allowKey captures both so we rebind when either changes.
-    const allowKey = targetHosts.slice().sort().join(',');
-    if (activeProxy && (activeProxy.host !== localAddress || activeProxy.allowKey !== allowKey)) {
-      await socksProxy.stopSocksServer(activeProxy.server);
-      activeProxy = null;
-    }
-    if (!activeProxy) {
-      const { server, port: proxyPort } = await socksProxy.startSocksServer({
-        bindHost: localAddress,
-        allowFrom: targetHosts
-      });
-      activeProxy = { server, port: proxyPort, host: localAddress, allowKey };
-    }
-    return { ok: true, proxyHost: localAddress, proxyPort: activeProxy.port };
+    const { proxyHost, proxyPort } = await ensureLaptopProxy(targetHosts, port);
+    return { ok: true, proxyHost, proxyPort };
   } catch (err) {
     return { ok: false, error: err.message || String(err) };
   }
@@ -2668,19 +2694,8 @@ ipcMain.handle('fleet:run', async (_evt, opts) => {
   if (useProxy) {
     try {
       const hosts = targets.map(t => t.host);
-      const localAddress = await new Promise((resolve, reject) => {
-        const probe = net.connect(targets[0].port || 22, targets[0].host, () => { const a = probe.localAddress; probe.destroy(); resolve(a); });
-        probe.on('error', reject);
-      });
-      const allowKey = hosts.slice().sort().join(',');
-      if (activeProxy && (activeProxy.host !== localAddress || activeProxy.allowKey !== allowKey)) {
-        await socksProxy.stopSocksServer(activeProxy.server); activeProxy = null;
-      }
-      if (!activeProxy) {
-        const { server, port: proxyPort } = await socksProxy.startSocksServer({ bindHost: localAddress, allowFrom: hosts });
-        activeProxy = { server, port: proxyPort, host: localAddress, allowKey };
-      }
-      proxy = { proxyHost: localAddress, proxyPort: activeProxy.port };
+      const { proxyHost, proxyPort } = await ensureLaptopProxy(hosts, targets[0].port || 22);
+      proxy = { proxyHost, proxyPort };
     } catch (e) {
       return { ok: false, error: 'Could not start laptop proxy for the fleet: ' + (e.message || e) };
     }
