@@ -441,6 +441,11 @@
               <button class="btn-run secondary" id="btn-fleet-seq-stop">■ FINISH HERE</button>
             </div>
           </div>
+          <div id="fleet-reboot-banner" style="display:none;margin-top:.75rem;background:var(--tc-surface2);border:1px solid var(--tc-warn);border-radius:4px;padding:.6rem .75rem">
+            <div id="fleet-reboot-count" style="color:var(--tc-warn);font-weight:600;margin-bottom:.4rem"></div>
+            <div class="hint" style="margin-bottom:.5rem">The kernel or bootloader was updated on these CXs. TwinCAT and EtherCAT will keep running on the old kernel until each one is rebooted.</div>
+            <button class="btn-run secondary" id="btn-fleet-reboot-all">⟲ REBOOT ALL</button>
+          </div>
         </div>
       </div>
 
@@ -963,6 +968,12 @@
         <button class="scan-rescan" id="scan-connect-back">BACK</button>
         <button class="scan-use" id="scan-connect-go">CONNECT</button>
       </div>
+    </div>
+
+    <!-- shown only in fleet mode's multi-select picker -->
+    <div class="scan-actions" id="scan-select-actions" style="display:none">
+      <span id="scan-select-count" class="scan-filter-toggle">0 selected</span>
+      <button class="scan-use" id="scan-select-add" disabled>ADD SELECTED</button>
     </div>
 
     <div class="scan-actions" id="scan-actions">

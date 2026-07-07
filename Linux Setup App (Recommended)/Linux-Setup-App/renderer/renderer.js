@@ -976,6 +976,36 @@ async function ensureProxyDecision(ip, cxPass) {
   return { proxyHost: null, proxyPort: null };
 }
 
+// Fleet counterpart to ensureProxyDecision. Deciding proxy need from one
+// representative device is wrong when the fleet is mixed (some CXs reachable,
+// some not), so this checks every target and offers the proxy if any of them
+// lack internet. If accepted, the proxy is started pre-scoped to every target
+// host, so fleet:run reuses it as-is instead of tearing it down and rebinding.
+async function ensureFleetProxyDecision(targets) {
+  const res = await window.api.checkInternetFleet({ targets }).catch(() => null);
+  const results = (res && res.results) || [];
+  // Same philosophy as the single-device check: if nothing came back
+  // unreachable (including checks that themselves failed), let the real
+  // action surface its own error rather than guessing further here.
+  const anyUnreachable = results.some(r => r.ok && r.reachable === false);
+  if (!anyUnreachable) return { proxyHost: null, proxyPort: null };
+
+  const choice = await askProxyChoice();
+  if (choice === 'cancel') return { proxyHost: null, proxyPort: null, cancelled: true };
+  if (choice === 'use') {
+    const hosts = targets.map(t => t.host);
+    const proxyRes = await window.api.startProxy({ hosts, port: 22 });
+    if (!proxyRes.ok) {
+      toast('Could not start the proxy: ' + (proxyRes.error || 'unknown') + ' - continuing without it.', 'error');
+      return { proxyHost: null, proxyPort: null };
+    }
+    toast(`Proxying through ${proxyRes.proxyHost}:${proxyRes.proxyPort} for this fleet run`, 'success');
+    return { proxyHost: proxyRes.proxyHost, proxyPort: proxyRes.proxyPort };
+  }
+  // choice === 'skip'
+  return { proxyHost: null, proxyPort: null };
+}
+
 $('btn-run-setup').addEventListener('click', async () => {
   const ip = $('cx-ip').value.trim();
   const cxPass = $('cx-pass').value;
@@ -2661,7 +2691,9 @@ $('btn-check-image')?.addEventListener('click', async () => {
   };
 })();
 
-// device discovery (find CX on network or direct cable)
+// device discovery (find CX on network or direct cable). Shared by the
+// header scan (single-select, connects immediately) and fleet mode's scan
+// (multi-select checkboxes via openScanPicker, adds several targets at once).
 (() => {
   const overlay = $('scan-overlay');
   if (!overlay) return;
@@ -2675,7 +2707,11 @@ $('btn-check-image')?.addEventListener('click', async () => {
   let linuxOnly = true;
   let pendingDevice = null; // { ip, mac, type, iface } currently shown in the connect panel
 
-  const close = () => { overlay.classList.remove('open'); };
+  // set only when opened via openScanPicker (fleet mode). null means the
+  // normal header behaviour: click a device, connect to it right away.
+  let selectMode = null; // { selected: Set<idx>, onConfirm(devices) }
+
+  const close = () => { overlay.classList.remove('open'); selectMode = null; };
 
   const btnFilter = $('scan-filter');
 
@@ -2687,6 +2723,9 @@ $('btn-check-image')?.addEventListener('click', async () => {
   const connectGo    = $('scan-connect-go');
   const connectBack  = $('scan-connect-back');
   const actionsRow   = $('scan-actions');
+  const selectRow    = $('scan-select-actions');
+  const selectCount  = $('scan-select-count');
+  const btnSelectAdd = $('scan-select-add');
 
   function showConnectPrompt(d, ip) {
     pendingDevice = { ip, mac: d.mac, type: d.type, iface: d.iface };
@@ -2695,6 +2734,7 @@ $('btn-check-image')?.addEventListener('click', async () => {
     connectPass.value = $('cx-pass').value || '';
     listEl.style.display = 'none';
     if (actionsRow) actionsRow.style.display = 'none';
+    if (selectRow) selectRow.style.display = 'none';
     connectPanel.style.display = 'flex';
     subEl.textContent = 'Enter the Administrator password to connect';
     connectPass.focus();
@@ -2727,6 +2767,23 @@ $('btn-check-image')?.addEventListener('click', async () => {
     run();
   };
 
+  // Fleet mode entry point: opens the same picker in multi-select mode.
+  // onConfirm gets the array of picked devices when ADD SELECTED is clicked.
+  // Direct-link devices need IDENTIFY to resolve one IP at a time, so they
+  // are not selectable here - use the header scan for those.
+  window.openScanPicker = (onConfirm) => {
+    selectMode = { selected: new Set(), onConfirm };
+    open();
+  };
+
+  function updateSelectBar() {
+    if (!selectRow) return;
+    const n = selectMode ? selectMode.selected.size : 0;
+    selectRow.style.display = selectMode ? 'flex' : 'none';
+    if (selectCount) selectCount.textContent = `${n} selected`;
+    if (btnSelectAdd) btnSelectAdd.disabled = n === 0;
+  }
+
   function applyFilter() {
     const visible = linuxOnly
       ? devices.filter(d => d.type === 'direct' || d.os === 'linux')
@@ -2742,6 +2799,7 @@ $('btn-check-image')?.addEventListener('click', async () => {
     }
     const cap = (window._scanCapped) ? ' (large subnet, scan was capped)' : '';
     if (devices.length) subEl.textContent = `Found ${visible.length} of ${devices.length} Beckhoff device${devices.length > 1 ? 's' : ''}${cap}`;
+    updateSelectBar();
   }
 
   function deviceRow(d, idx) {
@@ -2754,16 +2812,28 @@ $('btn-check-image')?.addEventListener('click', async () => {
     const osBadge = d.os === 'linux'   ? `<span class="scan-badge os-linux">LINUX</span>`
                   : d.os === 'windows' ? `<span class="scan-badge os-win">WINDOWS</span>`
                   : '';
-    const btn = isDirect
-      ? `<button class="scan-use" data-act="identify" data-idx="${idx}">IDENTIFY</button>`
-      : `<button class="scan-use" data-act="use" data-idx="${idx}">USE</button>`;
+
+    let control;
+    if (selectMode) {
+      if (isDirect) {
+        control = `<span style="color:var(--tc-muted);font-size:10px;white-space:nowrap">use header scan to add</span>`;
+      } else {
+        const checked = selectMode.selected.has(idx) ? 'checked' : '';
+        control = `<input type="checkbox" class="scan-check" data-idx="${idx}" ${checked}>`;
+      }
+    } else {
+      control = isDirect
+        ? `<button class="scan-use" data-act="identify" data-idx="${idx}">IDENTIFY</button>`
+        : `<button class="scan-use" data-act="use" data-idx="${idx}">USE</button>`;
+    }
+
     return `
       <div class="scan-card">
         <div class="scan-card-main">
           <div class="scan-card-top">${ipLine}${sshBadge}${osBadge}<span class="scan-oui">BECKHOFF</span></div>
           <div class="scan-card-sub">${d.mac} · ${where}</div>
         </div>
-        ${btn}
+        ${control}
       </div>`;
   }
 
@@ -2781,18 +2851,28 @@ $('btn-check-image')?.addEventListener('click', async () => {
     btnRescan.disabled = false;
     if (!res || !res.ok) {
       subEl.textContent = 'Scan failed: ' + ((res && res.error) || 'unknown');
+      updateSelectBar();
       return;
     }
     devices = res.devices || [];
     window._scanCapped = res.capped;
     if (!devices.length) {
       subEl.textContent = 'No Beckhoff devices found. Check the cable, or that the laptop adapter is set to automatic.';
+      updateSelectBar();
       return;
     }
     applyFilter();
   }
 
   listEl.addEventListener('click', async (e) => {
+    const check = e.target.closest('.scan-check');
+    if (check && selectMode) {
+      const idx = parseInt(check.dataset.idx, 10);
+      if (check.checked) selectMode.selected.add(idx); else selectMode.selected.delete(idx);
+      updateSelectBar();
+      return;
+    }
+
     const btn = e.target.closest('.scan-use');
     if (!btn) return;
     const d = devices[parseInt(btn.dataset.idx, 10)];
@@ -2819,7 +2899,15 @@ $('btn-check-image')?.addEventListener('click', async () => {
     }
   });
 
-  if (btnScan)   btnScan.addEventListener('click', open);
+  if (btnSelectAdd) btnSelectAdd.addEventListener('click', () => {
+    if (!selectMode) return;
+    const picked = [...selectMode.selected].map(i => devices[i]).filter(Boolean);
+    const onConfirm = selectMode.onConfirm;
+    close();
+    if (onConfirm) onConfirm(picked);
+  });
+
+  if (btnScan)   btnScan.addEventListener('click', () => { selectMode = null; open(); });
   if (btnClose)  btnClose.addEventListener('click', close);
   if (btnRescan) btnRescan.addEventListener('click', run);
   if (btnFilter) btnFilter.addEventListener('change', () => { linuxOnly = btnFilter.checked; applyFilter(); });
@@ -3720,17 +3808,14 @@ $('btn-check-image')?.addEventListener('click', async () => {
     targets.push({ host: t.host, password: t.password || '1', port: t.port || 22, label: t.label || t.host });
   }
 
-  el('btn-fleet-scan').addEventListener('click', async () => {
-    const btn = el('btn-fleet-scan');
-    btn.disabled = true; btn.textContent = '⟳ SCANNING...';
-    const res = await window.api.discoverDevices().catch(() => null);
-    btn.disabled = false; btn.textContent = '⟳ SCAN NETWORK';
-    if (!res || !res.devices || !res.devices.length) { toast('No CXs found on the network', 'warn'); return; }
-    const linuxDevices = res.devices.filter(d => d.os !== 'windows');
-    let added = 0;
-    linuxDevices.forEach(d => { const before = targets.length; addTarget({ host: d.ip, label: d.type || d.ip }); if (targets.length > before) added++; });
-    renderTargets();
-    toast(`Scan found ${linuxDevices.length} CX(s), added ${added} new`, 'success');
+  el('btn-fleet-scan').addEventListener('click', () => {
+    if (typeof window.openScanPicker !== 'function') { toast('Scan picker unavailable', 'error'); return; }
+    window.openScanPicker((picked) => {
+      let added = 0;
+      picked.forEach(d => { const before = targets.length; addTarget({ host: d.ip, label: d.ip }); if (targets.length > before) added++; });
+      renderTargets();
+      toast(added ? `Added ${added} device(s)` : 'No new devices added', added ? 'success' : 'warn');
+    });
   });
 
   el('btn-fleet-add-profiles').addEventListener('click', async () => {
@@ -3828,11 +3913,18 @@ $('btn-check-image')?.addEventListener('click', async () => {
     el('fleet-preflight-table').innerHTML = res.results.map(r => {
       const ok = r.reachable && r.authOk;
       if (ok) reachableCount++;
+      // preflight already resolves the real hostname over SSH, feed it back
+      // into the target label so the list and later run rows show it too
+      if (r.hostname) {
+        const t = targets.find(x => x.host === r.host);
+        if (t) t.label = r.hostname;
+      }
       const dot = ok ? '<span style="color:var(--tc-accent2)">●</span>' : '<span style="color:var(--tc-danger)">●</span>';
       const detail = ok ? (r.hostname || 'reachable') : (r.error || 'unreachable');
       return `<div style="display:flex;align-items:center;gap:.6rem;padding:.3rem .5rem;border-bottom:1px solid var(--tc-border)">
         ${dot}<span style="flex:1">${escapeHtml(r.host)}</span><span style="color:${ok ? 'var(--tc-muted)' : 'var(--tc-danger)'}">${escapeHtml(detail)}</span></div>`;
     }).join('');
+    renderTargets();
 
     el('btn-fleet-run').disabled = reachableCount === 0;
     el('fleet-run-status').textContent = `${reachableCount}/${targets.length} device(s) ready`;
@@ -3861,8 +3953,10 @@ $('btn-check-image')?.addEventListener('click', async () => {
   }
 
   const liveStates = {};
+  const needsRebootSet = new Set();
   function applyDeviceUpdate(d) {
     liveStates[d.index] = d.state;
+    if (d.needsReboot) needsRebootSet.add(d.index);
     const row = deviceRows[d.index];
     if (!row) return;
     const dot = row.querySelector('.fleet-dot');
@@ -3895,6 +3989,33 @@ $('btn-check-image')?.addEventListener('click', async () => {
     el('fleet-run-status').textContent = msg;
     el('fleet-run-status').style.color = summary.allSucceeded ? 'var(--tc-accent2)' : (summary.failed ? 'var(--tc-danger)' : 'var(--tc-warn)');
     toast(summary.allSucceeded ? 'All devices commissioned successfully' : msg, summary.allSucceeded ? 'success' : 'warn');
+
+    if (needsRebootSet.size) {
+      el('fleet-reboot-banner').style.display = 'block';
+      el('fleet-reboot-count').textContent = `${needsRebootSet.size} device(s) need a reboot to finish the upgrade`;
+      el('fleet-reboot-banner').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  });
+
+  el('btn-fleet-reboot-all').addEventListener('click', async () => {
+    const idxs = [...needsRebootSet];
+    if (!idxs.length) return;
+    if (!confirm(`Reboot ${idxs.length} CX(s) now? Each one will be unreachable for about a minute while it restarts.`)) return;
+    const btn = el('btn-fleet-reboot-all');
+    btn.disabled = true; btn.textContent = 'REBOOTING...';
+    // Same cx:power restart call the single-device Reboot Now button uses,
+    // just looped across the devices that flagged needsReboot.
+    let ok = 0;
+    for (const i of idxs) {
+      const t = targets[i];
+      if (!t) continue;
+      const res = await window.api.power({ host: t.host, password: t.password, port: t.port, action: 'restart' }).catch(() => ({ ok: false }));
+      if (res.ok) ok++;
+    }
+    btn.disabled = false; btn.textContent = '⟲ REBOOT ALL';
+    toast(`Reboot sent to ${ok}/${idxs.length} device(s)`, ok === idxs.length ? 'success' : 'warn');
+    needsRebootSet.clear();
+    el('fleet-reboot-banner').style.display = 'none';
   });
 
   el('btn-fleet-seq-continue').addEventListener('click', () => {
@@ -3950,7 +4071,7 @@ $('btn-check-image')?.addEventListener('click', async () => {
     let useProxy = false;
     const actionTouchesApt = action !== 'recipe' || recipeNeedsBeckhoff(rec);
     if (actionTouchesApt) {
-      const decision = await ensureProxyDecision(targets[0].host, targets[0].password);
+      const decision = await ensureFleetProxyDecision(targets);
       if (decision.cancelled) return;
       useProxy = !!(decision.proxyHost && decision.proxyPort);
     }
@@ -3961,6 +4082,8 @@ $('btn-check-image')?.addEventListener('click', async () => {
 
     // Reset live state and build the run table
     Object.keys(liveStates).forEach(k => delete liveStates[k]);
+    needsRebootSet.clear();
+    el('fleet-reboot-banner').style.display = 'none';
     buildRunTable();
     el('btn-fleet-run').style.display = 'none';
     el('btn-fleet-stop').style.display = '';
