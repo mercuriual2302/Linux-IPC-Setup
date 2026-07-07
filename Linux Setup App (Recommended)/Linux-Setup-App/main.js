@@ -12,6 +12,7 @@ const sftpManager = require('./src/sftp-manager');
 const socksProxy = require('./src/socks-proxy');
 const recipe = require('./src/recipe');
 const fleet = require('./src/fleet');
+const reachability = require('./src/reachability');
 
 // Suppress uncaught ECONNRESET errors - these are expected when the CX drops
 // the SSH connection mid-operation (network reload, reboot, poweroff). The
@@ -63,7 +64,12 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: false,
+      // Keep timers running at full rate when the window is minimised or in the
+      // background. The connection monitor polls on an interval; without this,
+      // Chromium throttles background timers and a dropped CX goes unnoticed
+      // until the window is focused again.
+      backgroundThrottling: false
     },
     autoHideMenuBar: true
   });
@@ -140,6 +146,55 @@ ipcMain.handle('ssh:test', async (_evt, { host, username, password, port }) => {
   } catch (err) {
     mgr.dispose();
     return { ok: false, error: err.message || String(err) };
+  }
+});
+
+
+// IPC: liveness probe for the connection monitor.
+// TCP check always, optional SSH auth check when authCheck is set.
+// Never throws, always resolves { ok, reachable, auth, code, error? }
+ipcMain.handle('cx:ping', async (_evt, opts) => {
+  const o = opts || {};
+  const host = o.host;
+  const port = o.port || 22;
+  if (!host || typeof host !== 'string') {
+    return { ok: false, reachable: false, auth: 'skip', code: 'ENOHOST' };
+  }
+
+  // level 1: is sshd listening
+  const tcp = await reachability.tcpProbe(host, port, o.tcpTimeout || 3000);
+  if (!tcp.open) {
+    return { ok: true, reachable: false, auth: 'skip', code: tcp.code };
+  }
+  if (!o.authCheck) {
+    return { ok: true, reachable: true, auth: 'skip', code: null };
+  }
+
+  // level 2: do the stored credentials still work
+  const mgr = new SSHManager();
+  try {
+    await mgr.connect({
+      host,
+      username: o.username || 'Administrator',
+      password: o.password,
+      port,
+      readyTimeout: o.readyTimeout || 8000
+    });
+    await mgr.exec('true');
+    mgr.dispose();
+    return { ok: true, reachable: true, auth: 'ok', code: null };
+  } catch (err) {
+    mgr.dispose();
+    const msg = String((err && err.message) || err);
+    // auth error means bad creds, a reset/timeout means it dropped
+    if (/authentication|permission denied|all configured authentication methods failed|keyboard-interactive/i.test(msg)) {
+      return { ok: true, reachable: true, auth: 'fail', code: 'EAUTH', error: 'Authentication failed' };
+    }
+    if (/ECONNRESET|ETIMEDOUT|Connection lost|Client network socket disconnected|channel close|ECONNREFUSED|EHOSTUNREACH|ENETUNREACH/i.test(msg)) {
+      return { ok: true, reachable: false, auth: 'skip', code: 'EDROP', error: msg };
+    }
+    // reachable but not an auth failure or a drop
+    return { ok: true, reachable: true, auth: 'error', code: 'ESSH', error: msg };
   }
 });
 
@@ -2460,12 +2515,8 @@ ipcMain.handle('fleet:preflight', async (_evt, { targets }) => {
   const results = await runPooled(targets || [], 8, async (t) => {
     const host = t.host, port = t.port || 22, password = t.password;
     // TCP reachability first - cheap and catches the common "not plugged in / wrong IP" case
-    const reachable = await new Promise((resolve) => {
-      const sock = net.connect({ host, port, timeout: 4000 }, () => { sock.destroy(); resolve(true); });
-      sock.on('error', () => resolve(false));
-      sock.on('timeout', () => { sock.destroy(); resolve(false); });
-    });
-    if (!reachable) return { host, reachable: false, hostname: null, error: 'No SSH on ' + host + ':' + port };
+    const probe = await reachability.tcpProbe(host, port, 4000);
+    if (!probe.open) return { host, reachable: false, hostname: null, error: 'No SSH on ' + host + ':' + port };
     // Then a quick hostname read to confirm creds work and show identity
     let hostname = null, authOk = false;
     try {
