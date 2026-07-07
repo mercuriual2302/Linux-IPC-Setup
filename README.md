@@ -12,7 +12,9 @@ Connects to a target CX over SSH and runs the full provisioning sequence automat
 
 Beyond initial setup there's a full set of post-provisioning tools: network configuration, firewall management, user and password management, SSH key installation, package updates, APT feed switching, a live system info dashboard, a device discovery scanner for finding a CX with no known IP, a live interactive shell, and a dual-pane SFTP file browser.
 
-If the CX itself has no internet access, the app can offer to route package downloads through your own laptop's connection for that run.
+Two provisioning workflows sit on top of that: Recipes capture a known-good CX's state into a portable JSON file and replay it onto a fresh unit, and Fleet mode applies a recipe, a feed switch, or a full system upgrade across many CXs at once instead of one at a time.
+
+If the CX itself has no internet access, the app can offer to route package downloads through your own laptop's connection for that run - in fleet mode this is checked across every target, not just one, and shared by the whole run.
 
 ---
 
@@ -60,10 +62,10 @@ Output goes to `dist/`. The app icon is read from `build/icon.ico`.
 
 ## Layout
 
-The app is one window. A connection bar runs across the top, enter the CX IP and Administrator password once and every view uses it. A Scan button next to it finds a CX on your network or wired directly to your laptop, even if you don't know its IP yet. A sidebar on the left holds every view, grouped by what they're for:
+The app is one window. A connection bar runs across the top, enter the CX IP and Administrator password once and every view uses it. Next to it a live status badge shows CONNECTED, AUTH FAILED, or OFFLINE against whatever CX is currently entered, polling in the background so it stays accurate between actions instead of only reflecting whatever you last ran. A Scan button next to it finds a CX on your network or wired directly to your laptop, even if you don't know its IP yet. A sidebar on the left holds every view, grouped by what they're for:
 
 - **Overview** - Dashboard, a live read-out of the connected CX
-- **Provision** - Setup, the full first-time provisioning run
+- **Provision** - Setup (full first-time provisioning), Recipes (capture and replay a CX's state), Fleet (run an action across many CXs at once)
 - **Manage** - Services, Network, Firewall, Users, Packages
 - **Configure** - TF1200 UI Client
 - **Tools** - Shell, Files
@@ -86,6 +88,12 @@ If the HMI server has already been initialised from a previous run, setup skips 
 
 You can also generate a standalone `.sh` script instead of running live, which works from any bash terminal with `sshpass` installed.
 
+### Recipes
+Captures a known-good CX's desired state - feed channel, TwinCAT packages with pinned versions, firewall rules, TF1200 config - into a portable JSON file, then replays it onto a fresh unit. Network settings (IP, hostname, AMS NetID) are captured for reference only and are never applied automatically, cloning those across devices would hand every CX the same identity. MyBeckhoff and TF2000 credentials are saved locally with the recipe so repeat applies never need retyping, and are stripped out automatically if you export the recipe to share it - whoever imports it types their own.
+
+### Fleet
+Runs one action - apply a recipe, switch feed, or run a full system upgrade - across many CXs at once instead of connecting to each one in turn. Add targets by scanning the network (pick which discovered devices to add with checkboxes, nothing gets added automatically), loading saved profiles, or typing an IP. Preflight checks reachability and reads back each device's real hostname before you run anything. Two modes: network mode runs a configurable number of devices in parallel with a circuit breaker to stop the whole run if too many fail at once, sequential mode walks through devices one at a time for a plug-in-one-swap-the-next workflow. If a system upgrade needs a reboot to take effect, the app tells you which devices and offers to reboot them all in one click. Internet-through-laptop proxying is checked across every target before the run starts, not just one representative device.
+
 ### Services, Network, Firewall, Users, Packages
 Day to day management once a CX is already set up. Restart services, change network settings, manage the firewall, add or remove users, switch the APT feed, and check for package updates, all without running a full setup again.
 
@@ -102,7 +110,7 @@ A dual-pane SFTP browser, your laptop on one side and the CX on the other. Uploa
 Press Scan in the connection bar to find a CX without typing its IP. Works two ways: a CX on the same network as your laptop is found by its MAC address, a CX wired directly to your laptop with no IP assigned yet is found over its link-local address. Devices are tagged Linux or Windows so you don't pick the wrong one, and picking a device asks for its password right there rather than reusing whatever's already in the connection bar.
 
 ### Internet access for the CX
-If Setup or credential validation detects the CX can't reach the Beckhoff package feed, the app offers to route that traffic through your own laptop's internet connection instead. You're always asked first, nothing happens automatically. Once you've answered for a given CX, the same answer is reused for the rest of that session, you won't be asked twice for the same unit.
+If Setup or credential validation detects the CX can't reach the Beckhoff package feed, the app offers to route that traffic through your own laptop's internet connection instead. You're always asked first, nothing happens automatically. Once you've answered for a given CX, the same answer is reused for the rest of that session, you won't be asked twice for the same unit. Fleet mode makes this decision separately, checking every target in the run rather than just one device, since a fleet can be a mix of reachable and isolated CXs.
 
 ---
 
@@ -131,6 +139,9 @@ Linux Setup App (Recommended)/
       sftp-manager.js   -- SFTP listing, mkdir, delete, realpath
       discovery.js      -- network and direct-link device discovery
       socks-proxy.js    -- hand-rolled SOCKS5 server for the laptop-as-proxy option
+      recipe.js         -- recipe schema, capture, and apply-plan logic
+      fleet.js          -- fleet run orchestration (parallel/sequential, circuit breaker)
+      reachability.js   -- TCP liveness probe backing the connection status badge
     renderer/
       index.html        -- app shell and all UI
       renderer.js       -- event handlers and SSH wiring
