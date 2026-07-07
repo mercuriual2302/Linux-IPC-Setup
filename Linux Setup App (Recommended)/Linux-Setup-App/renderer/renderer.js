@@ -3923,8 +3923,10 @@ $('btn-check-image')?.addEventListener('click', async () => {
   }
 
   const liveStates = {};
+  const needsRebootSet = new Set();
   function applyDeviceUpdate(d) {
     liveStates[d.index] = d.state;
+    if (d.needsReboot) needsRebootSet.add(d.index);
     const row = deviceRows[d.index];
     if (!row) return;
     const dot = row.querySelector('.fleet-dot');
@@ -3957,6 +3959,33 @@ $('btn-check-image')?.addEventListener('click', async () => {
     el('fleet-run-status').textContent = msg;
     el('fleet-run-status').style.color = summary.allSucceeded ? 'var(--tc-accent2)' : (summary.failed ? 'var(--tc-danger)' : 'var(--tc-warn)');
     toast(summary.allSucceeded ? 'All devices commissioned successfully' : msg, summary.allSucceeded ? 'success' : 'warn');
+
+    if (needsRebootSet.size) {
+      el('fleet-reboot-banner').style.display = 'block';
+      el('fleet-reboot-count').textContent = `${needsRebootSet.size} device(s) need a reboot to finish the upgrade`;
+      el('fleet-reboot-banner').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  });
+
+  el('btn-fleet-reboot-all').addEventListener('click', async () => {
+    const idxs = [...needsRebootSet];
+    if (!idxs.length) return;
+    if (!confirm(`Reboot ${idxs.length} CX(s) now? Each one will be unreachable for about a minute while it restarts.`)) return;
+    const btn = el('btn-fleet-reboot-all');
+    btn.disabled = true; btn.textContent = 'REBOOTING...';
+    // Same cx:power restart call the single-device Reboot Now button uses,
+    // just looped across the devices that flagged needsReboot.
+    let ok = 0;
+    for (const i of idxs) {
+      const t = targets[i];
+      if (!t) continue;
+      const res = await window.api.power({ host: t.host, password: t.password, port: t.port, action: 'restart' }).catch(() => ({ ok: false }));
+      if (res.ok) ok++;
+    }
+    btn.disabled = false; btn.textContent = '⟲ REBOOT ALL';
+    toast(`Reboot sent to ${ok}/${idxs.length} device(s)`, ok === idxs.length ? 'success' : 'warn');
+    needsRebootSet.clear();
+    el('fleet-reboot-banner').style.display = 'none';
   });
 
   el('btn-fleet-seq-continue').addEventListener('click', () => {
@@ -4023,6 +4052,8 @@ $('btn-check-image')?.addEventListener('click', async () => {
 
     // Reset live state and build the run table
     Object.keys(liveStates).forEach(k => delete liveStates[k]);
+    needsRebootSet.clear();
+    el('fleet-reboot-banner').style.display = 'none';
     buildRunTable();
     el('btn-fleet-run').style.display = 'none';
     el('btn-fleet-stop').style.display = '';

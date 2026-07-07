@@ -56,7 +56,8 @@ function initDevices(targets) {
     message: '',
     stepIndex: null,
     stepTotal: null,
-    error: null
+    error: null,
+    needsReboot: false
   }));
 }
 
@@ -113,7 +114,7 @@ async function runFleet(devices, concurrency, runOne, opts = {}) {
           });
         });
         if (result && result.ok) {
-          update(dev, { state: 'done', message: 'Complete' });
+          update(dev, { state: 'done', message: 'Complete', needsReboot: !!(result && result.needsReboot) });
         } else {
           failed++;
           const e = (result && result.error) || 'Failed';
@@ -173,7 +174,7 @@ async function runSequential(devices, runOne, opts = {}) {
           stepTotal: progress.stepTotal != null ? progress.stepTotal : dev.stepTotal
         });
       });
-      if (result && result.ok) update(dev, { state: 'done', message: 'Complete' });
+      if (result && result.ok) update(dev, { state: 'done', message: 'Complete', needsReboot: !!(result && result.needsReboot) });
       else { const e = (result && result.error) || 'Failed'; update(dev, { state: 'failed', message: e, error: e }); }
     } catch (err) {
       const msg = (err && err.message) || String(err);

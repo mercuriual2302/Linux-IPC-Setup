@@ -1124,6 +1124,24 @@ ipcMain.handle('cx:fetch-updates', async (_evt, opts) => {
 // isn't populated on this image).
 const KERNEL_PACKAGE_RE = /^(linux-image|linux-headers|linux-base|linux-sysctl-defaults|systemd-boot)/i;
 
+// Shared reboot-required check, appended after any apt upgrade. A running
+// kernel or bootloader package needs a reboot to actually take effect even
+// when apt itself reports success - checked two ways since not every image
+// populates /var/run/reboot-required. Used by both the single-device upgrade
+// (cx:upgrade) and the fleet bulk upgrade so they report needsReboot the same
+// way instead of each having their own copy of this logic.
+const REBOOT_CHECK_SNIPPET = `echo "[CX] Checking whether a reboot is required..."
+NEEDS_REBOOT=no
+if [ -f /var/run/reboot-required ]; then NEEDS_REBOOT=yes; fi
+RUNNING_KERNEL=$(uname -r)
+LATEST_KERNEL_PKG=$(dpkg -l 'linux-image-*' 2>/dev/null | awk '/^ii/{print $2}' | sort -V | tail -1)
+if [ -n "$LATEST_KERNEL_PKG" ] && ! echo "$LATEST_KERNEL_PKG" | grep -q "$RUNNING_KERNEL"; then NEEDS_REBOOT=yes; fi
+echo "[CX] Reboot required: $NEEDS_REBOOT"`;
+
+function parseNeedsReboot(output) {
+  return /\[CX\] Reboot required: yes/.test(output);
+}
+
 // Full system update check - every upgradable package, not just TwinCAT/
 // Beckhoff ones. This is what surfaces kernel, systemd, OpenSSH, and other
 // OS-level updates that the TwinCAT-scoped check above deliberately hides.
@@ -1174,13 +1192,7 @@ _sudo apt $APT_OPTS update -y
 echo "[CX] Running upgrade..."
 _sudo apt $APT_OPTS install -y --only-upgrade ${(packages && packages.length ? packages.join(" ") : "$(apt list --upgradable 2>/dev/null | grep -v Listing | cut -d/ -f1 | tr '\\n' ' ')")}
 echo "[CX] Upgrade complete."
-echo "[CX] Checking whether a reboot is required..."
-NEEDS_REBOOT=no
-if [ -f /var/run/reboot-required ]; then NEEDS_REBOOT=yes; fi
-RUNNING_KERNEL=$(uname -r)
-LATEST_KERNEL_PKG=$(dpkg -l 'linux-image-*' 2>/dev/null | awk '/^ii/{print $2}' | sort -V | tail -1)
-if [ -n "$LATEST_KERNEL_PKG" ] && ! echo "$LATEST_KERNEL_PKG" | grep -q "$RUNNING_KERNEL"; then NEEDS_REBOOT=yes; fi
-echo "[CX] Reboot required: $NEEDS_REBOOT"
+${REBOOT_CHECK_SNIPPET}
 `;
   try {
     const mgr = new SSHManager();
@@ -1195,7 +1207,7 @@ echo "[CX] Reboot required: $NEEDS_REBOOT"
     });
     mgr.dispose();
     activeSessions.delete(sessionId);
-    const needsReboot = /\[CX\] Reboot required: yes/.test(fullOutput);
+    const needsReboot = parseNeedsReboot(fullOutput);
     sendToRenderer('ssh:status', { sessionId, status: result.code === 0 ? 'complete' : 'failed', message: result.code === 0 ? 'Upgrade complete' : `Exit ${result.code}` });
     return { ok: result.code === 0, sessionId, needsReboot };
   } catch (err) {
@@ -2593,6 +2605,7 @@ _sudo apt $APT_OPTS update -y
 echo "[CX] Running full upgrade..."
 _sudo apt $APT_OPTS full-upgrade -y
 echo "[CX] Upgrade complete."
+${REBOOT_CHECK_SNIPPET}
 `;
   }
 
@@ -2600,11 +2613,14 @@ echo "[CX] Upgrade complete."
   try {
     await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
     await withTempScript('fleet-bulk', script, (p) => mgr.putFile(p, '/tmp/fleet_bulk.sh'));
+    let fullOutput = '';
     const res = await mgr.execStream('chmod +x /tmp/fleet_bulk.sh && /tmp/fleet_bulk.sh', {
-      onStdout: (c) => emit(c.toString()), onStderr: (c) => emit(c.toString())
+      onStdout: (c) => { fullOutput += c.toString(); emit(c.toString()); },
+      onStderr: (c) => { fullOutput += c.toString(); emit(c.toString()); }
     });
     mgr.dispose();
-    return { ok: res.code === 0, error: res.code === 0 ? null : `exit ${res.code}` };
+    const needsReboot = action === 'system-upgrade' && parseNeedsReboot(fullOutput);
+    return { ok: res.code === 0, error: res.code === 0 ? null : `exit ${res.code}`, needsReboot };
   } catch (e) {
     mgr.dispose();
     return { ok: false, error: (e && e.message) || String(e) };
@@ -2678,7 +2694,8 @@ ipcMain.handle('fleet:run', async (_evt, opts) => {
     sendToRenderer('fleet:device', {
       index: dev.index, host: dev.host, label: dev.label,
       state: dev.state, message: dev.message,
-      stepIndex: dev.stepIndex, stepTotal: dev.stepTotal, error: dev.error
+      stepIndex: dev.stepIndex, stepTotal: dev.stepTotal, error: dev.error,
+      needsReboot: !!dev.needsReboot
     });
   };
 
