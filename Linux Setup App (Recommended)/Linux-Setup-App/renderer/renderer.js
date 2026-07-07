@@ -117,6 +117,7 @@ function propagateCreds(srcIp, srcPass) {
   if (srcIp) { banner.style.display = 'flex'; label.textContent = srcIp; }
   else        { banner.style.display = 'none'; }
   updateConnDots();
+  connMonRetargetSoon();
   _syncLock = false;
 }
 
@@ -171,19 +172,220 @@ function updateConnDots() {
   $('conn-dot2').className = 'status-dot' + (ok2 ? ' ok' : '');
 }
 
-// Global connection status badge
+// Live connection monitor. Polls the current target so the badge reflects
+// real state between actions, not just the last action that ran.
+// TCP check is the heartbeat (works even while an action has sshd busy).
+// Auth check is separate and infrequent, skipped during actions and
+// skipped on retry once a box is auth-failed. Misses need to hit missLimit
+// before we call it offline, so one blip doesn't flap the badge.
+const connMon = {
+  timer: null,
+  tickMs: 5000,
+  tcpTimeoutMs: 3000,
+  missLimit: 2,      // consecutive misses before we call it offline
+  authEvery: 12,     // periodic auth recheck cadence in ticks (about 60s)
+  inFlight: false,
+  running: false,
+  misses: 0,
+  ticks: 0,
+  actions: 0,        // streaming actions in flight, from ssh:status
+  badgeHeld: false,  // true while a button is showing transient feedback
+  target: null,      // { host, password, port }
+  state: 'idle',     // idle | unknown | online | authfail | offline
+  lastSeen: 0
+};
+
+const connActiveSessions = new Set();
+let _connRetargetTimer = null;
+
+function connTargetFromUI() {
+  const o = getConnOpts(1);
+  if (!o || !ipOk(o.host)) return null;
+  return { host: o.host, password: o.password, port: o.port || 22 };
+}
+
+function connSameTarget(a, b) {
+  return !!a && !!b && a.host === b.host && a.password === b.password && a.port === b.port;
+}
+
+// Start or retarget the monitor from the connection bar. Safe to call
+// repeatedly, only reprobes if the target changed or it wasn't running.
+function connMonEnsure() {
+  const t = connTargetFromUI();
+  if (!t) { connMonStop(); connSetState('idle'); return; }
+  const changed = !connSameTarget(t, connMon.target);
+  connMon.target = t;
+  if (changed) {
+    connMon.misses = 0;
+    connMon.ticks = 0;
+    if (connMon.state !== 'online') connSetState('unknown');
+  }
+  if (!connMon.running) {
+    connMon.running = true;
+    if (connMon.timer) clearInterval(connMon.timer);
+    connMon.timer = setInterval(connMonTick, connMon.tickMs);
+  }
+  connMonProbe(true); // probe now, don't wait for the next tick
+}
+
+function connMonStop() {
+  connMon.running = false;
+  if (connMon.timer) { clearInterval(connMon.timer); connMon.timer = null; }
+  connMon.inFlight = false;
+}
+
+// Debounce retargeting so we don't reprobe on every keystroke while typing an IP or password.
+function connMonRetargetSoon() {
+  if (!connMon.running) return;
+  if (_connRetargetTimer) clearTimeout(_connRetargetTimer);
+  _connRetargetTimer = setTimeout(() => { _connRetargetTimer = null; connMonEnsure(); }, 800);
+}
+
+function connMonTick() {
+  connMon.ticks++;
+  // auth-check on first probe, on recovery, or every authEvery ticks
+  // never re-auth an already auth-failed box on the timer
+  const wantAuth = connMon.actions === 0 && (
+    connMon.state === 'unknown' ||
+    connMon.state === 'offline' ||
+    (connMon.state === 'online' && connMon.ticks % connMon.authEvery === 0)
+  );
+  connMonProbe(wantAuth);
+}
+
+async function connMonProbe(withAuth) {
+  if (!connMon.running || connMon.inFlight) return;
+  const t = connMon.target;
+  if (!t) return;
+  // don't auth-probe during an action, would open a second SSH session
+  const authCheck = !!withAuth && connMon.actions === 0;
+  connMon.inFlight = true;
+  let res;
+  try {
+    res = await window.api.pingCx({
+      host: t.host, password: t.password, port: t.port,
+      authCheck, tcpTimeout: connMon.tcpTimeoutMs
+    });
+  } catch (_) {
+    res = { ok: false, reachable: false, auth: 'skip', code: 'EIPC' };
+  }
+  connMon.inFlight = false;
+
+  // target may have changed while this probe was in flight, drop stale result
+  if (!connMon.running || !connSameTarget(t, connMon.target)) return;
+
+  if (res && res.reachable) {
+    connMon.misses = 0;
+    connMon.lastSeen = Date.now();
+    if (res.auth === 'fail') connSetState('authfail');
+    else if (res.auth === 'ok') connSetState('online');
+    else if (connMon.state === 'authfail') connSetState('authfail'); // TCP-only tick, keep last verdict
+    else connSetState('online'); // reachable, and auth was confirmed on an earlier probe
+  } else {
+    connMon.misses++;
+    if (connMon.misses >= connMon.missLimit) connSetState('offline');
+    else connSetState(connMon.state); // hold current, just refresh the sub-line
+  }
+}
+
+function connSetState(state) {
+  connMon.state = state;
+  connRenderBadge();
+}
+
+function connFmtAgo(ms) {
+  if (!ms) return '';
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 5) return 'just now';
+  if (s < 60) return s + 's ago';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm ago';
+  return Math.floor(m / 60) + 'h ago';
+}
+
+// Monitor owns the badge unless a button is holding it or an action is running.
+function connRenderBadge() {
+  if (connMon.badgeHeld || connMon.actions > 0) return;
+  const badge = $('global-conn');
+  const dot = $('global-dot');
+  const text = $('global-conn-text');
+  const sub = $('global-conn-sub');
+  if (!badge || !dot || !text) return;
+  const host = connMon.target ? connMon.target.host : '';
+  badge.classList.remove('ok', 'err', 'warn');
+  dot.classList.remove('ok', 'err', 'warn', 'pulse');
+  let main = 'NOT CONNECTED';
+  let subText = '';
+  switch (connMon.state) {
+    case 'online':
+      badge.classList.add('ok'); dot.classList.add('ok');
+      main = 'CONNECTED · ' + host;
+      subText = connMon.misses > 0 ? 'reconnecting…' : 'live';
+      break;
+    case 'authfail':
+      badge.classList.add('warn'); dot.classList.add('warn');
+      main = 'AUTH FAILED · ' + host;
+      subText = 'reachable, check password';
+      break;
+    case 'offline':
+      badge.classList.add('err'); dot.classList.add('err');
+      main = 'OFFLINE · ' + host;
+      subText = connMon.lastSeen ? 'last seen ' + connFmtAgo(connMon.lastSeen) : 'unreachable';
+      break;
+    case 'unknown':
+      dot.classList.add('warn', 'pulse');
+      main = 'CHECKING… · ' + host;
+      break;
+    default:
+      main = 'NOT CONNECTED';
+  }
+  text.textContent = main;
+  if (sub) sub.textContent = subText;
+}
+
+// Called from ssh:status. Pauses auth probes while an action runs,
+// reconfirms real state when the last one ends.
+function connActionBegin(id) {
+  if (id != null) connActiveSessions.add(id);
+  connMon.actions = connActiveSessions.size;
+}
+function connActionEnd(id) {
+  if (id != null) connActiveSessions.delete(id);
+  connMon.actions = connActiveSessions.size;
+  if (connMon.actions === 0) {
+    connMon.badgeHeld = false;
+    connMon.misses = 0;
+    connMonEnsure();
+  }
+}
+
+// Global connection status badge. Buttons call this for instant feedback,
+// then the live monitor takes it back over.
 function setGlobalConn(state, text) {
   const badge = $('global-conn');
   const dot = $('global-dot');
   const sidebar = $('sidebar');
-  badge.classList.remove('ok', 'err');
+  badge.classList.remove('ok', 'err', 'warn');
   dot.classList.remove('ok', 'err', 'warn', 'pulse');
   if (state === 'ok') { badge.classList.add('ok'); dot.classList.add('ok'); }
   else if (state === 'err') { badge.classList.add('err'); dot.classList.add('err'); }
   else if (state === 'busy') { dot.classList.add('warn', 'pulse'); }
   if (sidebar) sidebar.classList.toggle('connected', state === 'ok');
   $('global-conn-text').textContent = text;
+  const sub = $('global-conn-sub'); if (sub) sub.textContent = '';
+
+  if (state === 'busy') {
+    // action running, hold the badge so the monitor doesn't overwrite it
+    connMon.badgeHeld = true;
+  } else {
+    // ok or err, let the monitor take the badge back
+    connMon.badgeHeld = false;
+    if (state === 'ok') { connMon.state = 'online'; connMon.misses = 0; connMon.lastSeen = Date.now(); }
+    connMonEnsure();
+  }
 }
+
+window.addEventListener('beforeunload', () => { try { connMonStop(); } catch (_) {} });
 
 // Test connection
 $('btn-test').addEventListener('click', async () => {
@@ -905,6 +1107,13 @@ window.api.on('ssh:output', ({ sessionId, data }) => {
 
 window.api.on('ssh:status', ({ sessionId, status, message }) => {
   activeSessionId = sessionId;
+  // Feed the connection monitor: pause its auth probes while an action streams,
+  // and reconfirm the real state once the last one finishes.
+  if (status === 'connecting' || status === 'connected' || status === 'running') {
+    connActionBegin(sessionId);
+  } else if (status === 'complete' || status === 'failed' || status === 'cancelled') {
+    connActionEnd(sessionId);
+  }
   const s = $('session-status');
   const colorByStatus = {
     connecting: 'var(--tc-warn)',

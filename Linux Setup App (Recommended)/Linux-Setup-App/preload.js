@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld('api', {
   userMgmt:       (opts) => ipcRenderer.invoke('cx:user-mgmt', opts),
   readTF1200Config: (opts) => ipcRenderer.invoke('cx:read-tf1200-config', opts),
   cxInfo:           (opts) => ipcRenderer.invoke('cx:info', opts),
+  pingCx:           (opts) => ipcRenderer.invoke('cx:ping', opts),
   readAptCreds:     (opts) => ipcRenderer.invoke('cx:read-apt-creds', opts),
   switchFeed:       (opts) => ipcRenderer.invoke('cx:switch-feed', opts),
   updateFeed:       (opts) => ipcRenderer.invoke('cx:update-feed', opts),
