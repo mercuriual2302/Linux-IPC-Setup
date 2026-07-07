@@ -2661,7 +2661,9 @@ $('btn-check-image')?.addEventListener('click', async () => {
   };
 })();
 
-// device discovery (find CX on network or direct cable)
+// device discovery (find CX on network or direct cable). Shared by the
+// header scan (single-select, connects immediately) and fleet mode's scan
+// (multi-select checkboxes via openScanPicker, adds several targets at once).
 (() => {
   const overlay = $('scan-overlay');
   if (!overlay) return;
@@ -2675,7 +2677,11 @@ $('btn-check-image')?.addEventListener('click', async () => {
   let linuxOnly = true;
   let pendingDevice = null; // { ip, mac, type, iface } currently shown in the connect panel
 
-  const close = () => { overlay.classList.remove('open'); };
+  // set only when opened via openScanPicker (fleet mode). null means the
+  // normal header behaviour: click a device, connect to it right away.
+  let selectMode = null; // { selected: Set<idx>, onConfirm(devices) }
+
+  const close = () => { overlay.classList.remove('open'); selectMode = null; };
 
   const btnFilter = $('scan-filter');
 
@@ -2687,6 +2693,9 @@ $('btn-check-image')?.addEventListener('click', async () => {
   const connectGo    = $('scan-connect-go');
   const connectBack  = $('scan-connect-back');
   const actionsRow   = $('scan-actions');
+  const selectRow    = $('scan-select-actions');
+  const selectCount  = $('scan-select-count');
+  const btnSelectAdd = $('scan-select-add');
 
   function showConnectPrompt(d, ip) {
     pendingDevice = { ip, mac: d.mac, type: d.type, iface: d.iface };
@@ -2695,6 +2704,7 @@ $('btn-check-image')?.addEventListener('click', async () => {
     connectPass.value = $('cx-pass').value || '';
     listEl.style.display = 'none';
     if (actionsRow) actionsRow.style.display = 'none';
+    if (selectRow) selectRow.style.display = 'none';
     connectPanel.style.display = 'flex';
     subEl.textContent = 'Enter the Administrator password to connect';
     connectPass.focus();
@@ -2727,6 +2737,23 @@ $('btn-check-image')?.addEventListener('click', async () => {
     run();
   };
 
+  // Fleet mode entry point: opens the same picker in multi-select mode.
+  // onConfirm gets the array of picked devices when ADD SELECTED is clicked.
+  // Direct-link devices need IDENTIFY to resolve one IP at a time, so they
+  // are not selectable here - use the header scan for those.
+  window.openScanPicker = (onConfirm) => {
+    selectMode = { selected: new Set(), onConfirm };
+    open();
+  };
+
+  function updateSelectBar() {
+    if (!selectRow) return;
+    const n = selectMode ? selectMode.selected.size : 0;
+    selectRow.style.display = selectMode ? 'flex' : 'none';
+    if (selectCount) selectCount.textContent = `${n} selected`;
+    if (btnSelectAdd) btnSelectAdd.disabled = n === 0;
+  }
+
   function applyFilter() {
     const visible = linuxOnly
       ? devices.filter(d => d.type === 'direct' || d.os === 'linux')
@@ -2742,6 +2769,7 @@ $('btn-check-image')?.addEventListener('click', async () => {
     }
     const cap = (window._scanCapped) ? ' (large subnet, scan was capped)' : '';
     if (devices.length) subEl.textContent = `Found ${visible.length} of ${devices.length} Beckhoff device${devices.length > 1 ? 's' : ''}${cap}`;
+    updateSelectBar();
   }
 
   function deviceRow(d, idx) {
@@ -2754,16 +2782,28 @@ $('btn-check-image')?.addEventListener('click', async () => {
     const osBadge = d.os === 'linux'   ? `<span class="scan-badge os-linux">LINUX</span>`
                   : d.os === 'windows' ? `<span class="scan-badge os-win">WINDOWS</span>`
                   : '';
-    const btn = isDirect
-      ? `<button class="scan-use" data-act="identify" data-idx="${idx}">IDENTIFY</button>`
-      : `<button class="scan-use" data-act="use" data-idx="${idx}">USE</button>`;
+
+    let control;
+    if (selectMode) {
+      if (isDirect) {
+        control = `<span style="color:var(--tc-muted);font-size:10px;white-space:nowrap">use header scan to add</span>`;
+      } else {
+        const checked = selectMode.selected.has(idx) ? 'checked' : '';
+        control = `<input type="checkbox" class="scan-check" data-idx="${idx}" ${checked}>`;
+      }
+    } else {
+      control = isDirect
+        ? `<button class="scan-use" data-act="identify" data-idx="${idx}">IDENTIFY</button>`
+        : `<button class="scan-use" data-act="use" data-idx="${idx}">USE</button>`;
+    }
+
     return `
       <div class="scan-card">
         <div class="scan-card-main">
           <div class="scan-card-top">${ipLine}${sshBadge}${osBadge}<span class="scan-oui">BECKHOFF</span></div>
           <div class="scan-card-sub">${d.mac} · ${where}</div>
         </div>
-        ${btn}
+        ${control}
       </div>`;
   }
 
@@ -2781,18 +2821,28 @@ $('btn-check-image')?.addEventListener('click', async () => {
     btnRescan.disabled = false;
     if (!res || !res.ok) {
       subEl.textContent = 'Scan failed: ' + ((res && res.error) || 'unknown');
+      updateSelectBar();
       return;
     }
     devices = res.devices || [];
     window._scanCapped = res.capped;
     if (!devices.length) {
       subEl.textContent = 'No Beckhoff devices found. Check the cable, or that the laptop adapter is set to automatic.';
+      updateSelectBar();
       return;
     }
     applyFilter();
   }
 
   listEl.addEventListener('click', async (e) => {
+    const check = e.target.closest('.scan-check');
+    if (check && selectMode) {
+      const idx = parseInt(check.dataset.idx, 10);
+      if (check.checked) selectMode.selected.add(idx); else selectMode.selected.delete(idx);
+      updateSelectBar();
+      return;
+    }
+
     const btn = e.target.closest('.scan-use');
     if (!btn) return;
     const d = devices[parseInt(btn.dataset.idx, 10)];
@@ -2819,7 +2869,15 @@ $('btn-check-image')?.addEventListener('click', async () => {
     }
   });
 
-  if (btnScan)   btnScan.addEventListener('click', open);
+  if (btnSelectAdd) btnSelectAdd.addEventListener('click', () => {
+    if (!selectMode) return;
+    const picked = [...selectMode.selected].map(i => devices[i]).filter(Boolean);
+    const onConfirm = selectMode.onConfirm;
+    close();
+    if (onConfirm) onConfirm(picked);
+  });
+
+  if (btnScan)   btnScan.addEventListener('click', () => { selectMode = null; open(); });
   if (btnClose)  btnClose.addEventListener('click', close);
   if (btnRescan) btnRescan.addEventListener('click', run);
   if (btnFilter) btnFilter.addEventListener('change', () => { linuxOnly = btnFilter.checked; applyFilter(); });
@@ -3720,17 +3778,14 @@ $('btn-check-image')?.addEventListener('click', async () => {
     targets.push({ host: t.host, password: t.password || '1', port: t.port || 22, label: t.label || t.host });
   }
 
-  el('btn-fleet-scan').addEventListener('click', async () => {
-    const btn = el('btn-fleet-scan');
-    btn.disabled = true; btn.textContent = '⟳ SCANNING...';
-    const res = await window.api.discoverDevices().catch(() => null);
-    btn.disabled = false; btn.textContent = '⟳ SCAN NETWORK';
-    if (!res || !res.devices || !res.devices.length) { toast('No CXs found on the network', 'warn'); return; }
-    const linuxDevices = res.devices.filter(d => d.os !== 'windows');
-    let added = 0;
-    linuxDevices.forEach(d => { const before = targets.length; addTarget({ host: d.ip, label: d.ip }); if (targets.length > before) added++; });
-    renderTargets();
-    toast(`Scan found ${linuxDevices.length} CX(s), added ${added} new`, 'success');
+  el('btn-fleet-scan').addEventListener('click', () => {
+    if (typeof window.openScanPicker !== 'function') { toast('Scan picker unavailable', 'error'); return; }
+    window.openScanPicker((picked) => {
+      let added = 0;
+      picked.forEach(d => { const before = targets.length; addTarget({ host: d.ip, label: d.ip }); if (targets.length > before) added++; });
+      renderTargets();
+      toast(added ? `Added ${added} device(s)` : 'No new devices added', added ? 'success' : 'warn');
+    });
   });
 
   el('btn-fleet-add-profiles').addEventListener('click', async () => {

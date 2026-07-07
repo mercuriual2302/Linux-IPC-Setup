@@ -432,6 +432,7 @@ html:not([data-theme="dark"]) .apt-creds-banner{background:rgba(0,120,80,.06);bo
 .scan-use:hover{background:var(--tc-accent2);color:#000}
 .scan-use:disabled{opacity:.5;cursor:not-allowed}
 .scan-actions{display:flex;align-items:center;justify-content:space-between;gap:1rem;padding:.9rem 1.25rem;border-top:1px solid var(--tc-border)}
+.scan-check{width:16px;height:16px;accent-color:var(--tc-accent2);cursor:pointer;flex-shrink:0}
 .scan-rescan{background:var(--tc-surface2);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem 1rem;font-family:var(--tc-mono);font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--tc-muted);cursor:pointer;transition:all .15s}
 .scan-rescan:hover{border-color:var(--tc-accent2);color:var(--tc-accent2)}
 .scan-rescan:disabled{opacity:.5;cursor:not-allowed}
