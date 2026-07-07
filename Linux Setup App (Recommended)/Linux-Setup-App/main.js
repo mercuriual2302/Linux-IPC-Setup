@@ -1975,20 +1975,9 @@ ipcMain.handle('cx:resolve-direct', async (_evt, opts) => {
     return { ok: false, error: err.message || String(err) };
   }
 });
-// ===========================================================================
-// Provisioning recipes (phase 1)
-// ---------------------------------------------------------------------------
-// recipe:capture   - read a CX's full state into a recipe object (no file yet)
-// recipe:save      - write a recipe to the recipes folder
-// recipe:load-all  - list saved recipes
-// recipe:delete    - remove a saved recipe
-// recipe:export    - Save-As a recipe to any path the user picks
-// recipe:import    - Open a .json recipe from disk, validated before returning
-// recipe:apply     - run a recipe's apply plan against one connected CX,
-//                    streaming per-step progress to the renderer
-//
-// Recipes live next to profiles in userData, one JSON file per recipe.
-// ===========================================================================
+// Provisioning recipes: capture a CX's state into a recipe object, save/load/
+// delete/export/import it, and apply it back to a connected CX (streams
+// per-step progress to the renderer). Recipes live next to profiles in userData.
 
 function recipesDir() {
   return path.join(app.getPath('userData'), 'recipes');
@@ -2523,20 +2512,10 @@ echo "[CX] TF1200 config written"`;
   } catch (e) { mgr.dispose(); return { ok: false, error: e.message }; }
 }
 
-// ===========================================================================
-// Fleet mode (phase 2)
-// ---------------------------------------------------------------------------
-// Apply one action (a recipe, or a plain bulk op) to many CXs at once. The
-// scheduling/failure/circuit-breaker logic lives in src/fleet.js (pure and
+// Fleet mode: apply one action (a recipe, or a plain bulk op) to many CXs at
+// once. Scheduling/failure/circuit-breaker logic lives in src/fleet.js (pure,
 // unit-tested); this layer does the SSH-side work per device and streams
-// per-device progress to the renderer via 'fleet:device' events.
-//
-// fleet:validate-concurrency - normalise a user-entered concurrency value
-// fleet:preflight            - probe every target's reachability before a run
-// fleet:run                  - run the fleet (network parallel OR sequential)
-// fleet:stop                 - abort a running fleet (in-flight devices finish)
-// fleet:next                 - resolve the pause between sequential devices
-// ===========================================================================
+// progress to the renderer via fleet:device events.
 
 let activeFleetRun = null;   // { signal } while a run is in progress
 let fleetNextResolver = null; // resolves the sequential between-devices pause

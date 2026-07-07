@@ -1277,6 +1277,69 @@ function goToTerminal(sessionId) {
 })();
 
 // Network configurator
+// Network tab: interfaces are read live from whatever CX is connected rather
+// than assumed. Different Beckhoff models expose different ports (a CX9240
+// has two independent NICs, a CX8290's second port is actually a switch pair
+// tied to real-time protocols, not a plain second NIC) so a hardcoded end0/
+// end1 picker was actively wrong on hardware other than what it was written
+// for. Reuses cx:info, the exact same call Dashboard already makes, no new
+// IPC needed.
+
+function renderNetIfaceToggle(ifaces) {
+  const grp = $('net-iface-toggle');
+  if (!grp) return;
+  if (!ifaces || !ifaces.length) {
+    grp.innerHTML = `<div class="toggle-opt" data-val="" style="opacity:.6;pointer-events:none">none found</div>`;
+    toggleGroupInit('net-iface-toggle');
+    return;
+  }
+  grp.innerHTML = ifaces.map((f, i) => {
+    const label = f.ip && f.ip !== '-' ? `${f.name} (${f.ip})` : f.name;
+    return `<div class="toggle-opt${i === 0 ? ' active' : ''}" data-val="${f.name}" title="${f.state || 'unknown'}">${label}</div>`;
+  }).join('');
+  toggleGroupInit('net-iface-toggle');
+}
+
+async function readNetworkInterfaces() {
+  const conn = getCxMgmtConn();
+  if (!conn.host) { $('net-iface-note').textContent = 'Enter a CX IP first.'; return; }
+  const btn = $('btn-net-read-ifaces');
+  const note = $('net-iface-note');
+  if (btn) { btn.disabled = true; btn.textContent = '...'; }
+  if (note) note.textContent = 'Reading interfaces from the CX...';
+  let res;
+  try { res = await window.api.cxInfo(conn); }
+  catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
+  if (btn) { btn.disabled = false; btn.textContent = '↻ READ INTERFACES'; }
+  if (!res || !res.ok) {
+    if (note) note.textContent = 'Could not read interfaces (' + ((res && res.error) || 'unknown error') + '). Type the interface name manually below.';
+    return;
+  }
+  renderNetIfaceToggle(res.ifaces);
+  const n = (res.ifaces || []).length;
+  if (note) note.textContent = n
+    ? `Found ${n} interface${n > 1 ? 's' : ''} on this CX. Pick one above, or type a name manually if you need a different one.`
+    : `No interfaces matched. This CX may expose them under a name this app doesn't recognise yet, type one manually below.`;
+}
+
+(() => {
+  const link = $('net-iface-manual-link');
+  const row = $('net-iface-manual-row');
+  const input = $('net-iface-manual');
+  if (link) link.addEventListener('click', (e) => {
+    e.preventDefault();
+    row.style.display = row.style.display === 'none' ? 'block' : 'none';
+    if (row.style.display === 'block') input.focus();
+  });
+  if (input) input.addEventListener('input', () => {
+    const grp = $('net-iface-toggle');
+    if (!grp || !input.value.trim()) return;
+    grp.querySelectorAll('.toggle-opt').forEach(o => o.classList.remove('active'));
+  });
+  if ($('btn-net-read-ifaces')) $('btn-net-read-ifaces').addEventListener('click', readNetworkInterfaces);
+  tabAutoRefresh.network = () => { readNetworkInterfaces(); };
+})();
+
 toggleGroupInit('net-iface-toggle');
 toggleGroupInit('net-mode-toggle');
 
@@ -1297,7 +1360,8 @@ function toggleGroupInit(id) {
 $('btn-apply-network').addEventListener('click', async () => {
   const conn = getCxMgmtConn();
   if (!conn.host) { toast('Enter CX IP address', 'warn'); return; }
-  const iface = document.querySelector('#net-iface-toggle .toggle-opt.active')?.dataset.val || 'end0';
+  const manualIface = $('net-iface-manual') ? $('net-iface-manual').value.trim() : '';
+  const iface = manualIface || document.querySelector('#net-iface-toggle .toggle-opt.active')?.dataset.val || 'end0';
   const mode  = document.querySelector('#net-mode-toggle .toggle-opt.active')?.dataset.val || 'dhcp';
   const opts = { ...conn, iface, mode };
   if (mode === 'static') {
@@ -3402,12 +3466,8 @@ $('btn-check-image')?.addEventListener('click', async () => {
   btnConnect.addEventListener('click', connect);
   btnDisconnect.addEventListener('click', disconnect);
 })();
-// ===========================================================================
-// Recipes view (phase 1)
-// Capture a CX's state to a portable recipe, save/export it, and apply a saved
-// recipe back onto a connected CX. Apply streams live output into the terminal
-// drawer and shows per-step status inline.
-// ===========================================================================
+// Recipes view: capture a CX's state to a portable recipe, save/export it,
+// and apply a saved recipe back onto a connected CX.
 (function initRecipes() {
   const nameInput   = $('recipe-name');
   const bkUserInput = $('recipe-bk-user');
@@ -3746,12 +3806,8 @@ $('btn-check-image')?.addEventListener('click', async () => {
   loadLibrary();
 })();
 
-// ===========================================================================
-// Fleet view (phase 2)
-// Commission many CXs at once: pick mode, targets, action, run settings, then
-// preflight and run. Reuses discovery, profiles, recipes, and the proxy
-// negotiation already built for single-CX flows.
-// ===========================================================================
+// Fleet view: commission many CXs at once. Pick mode, targets, action, run
+// settings, then preflight and run.
 (function initFleet() {
   if (!$('page-fleet')) return;
 

@@ -480,13 +480,12 @@
         <div class="view-title">Network</div>
         <div class="section">
           <div class="section-label">network configurator</div>
-          <div class="section-subtitle">Writes a systemd-networkd unit file to the CX and reloads immediately. The CX9240 has two independent Ethernet interfaces - <code style="color:var(--tc-warn)">end0</code> (X000) and <code style="color:var(--tc-warn)">end1</code> (X001).</div>
-          <div class="row-inline" style="margin-bottom:.75rem;gap:.75rem">
-            <div class="field" style="margin-bottom:0;max-width:140px">
+          <div class="section-subtitle">Writes a systemd-networkd unit file to the CX and reloads immediately. Interfaces below are read live from the connected CX, since different Beckhoff models expose different ports.</div>
+          <div class="row-inline" style="margin-bottom:.4rem;gap:.75rem;align-items:flex-end">
+            <div class="field" style="margin-bottom:0;min-width:220px">
               <label>INTERFACE</label>
               <div class="toggle-group" id="net-iface-toggle">
-                <div class="toggle-opt active" data-val="end0">end0 (X000)</div>
-                <div class="toggle-opt" data-val="end1">end1 (X001)</div>
+                <div class="toggle-opt" data-val="" style="opacity:.6;pointer-events:none">not read yet</div>
               </div>
             </div>
             <div class="field" style="margin-bottom:0;max-width:180px">
@@ -495,6 +494,14 @@
                 <div class="toggle-opt active" data-val="dhcp">DHCP</div>
                 <div class="toggle-opt" data-val="static">STATIC</div>
               </div>
+            </div>
+            <button class="btn-run secondary" id="btn-net-read-ifaces" style="height:38px">↻ READ INTERFACES</button>
+          </div>
+          <div id="net-iface-note" class="hint" style="margin-bottom:.6rem">Click Read Interfaces, or switch to this tab while connected, to see what's actually on this CX.</div>
+          <div style="margin-bottom:.75rem">
+            <a href="#" id="net-iface-manual-link" class="hint" style="text-decoration:underline">Can't see the interface you want? Type its name manually</a>
+            <div id="net-iface-manual-row" style="display:none;margin-top:.4rem;max-width:220px">
+              <input type="text" id="net-iface-manual" placeholder="e.g. end0" autocomplete="off">
             </div>
           </div>
           <div id="net-static-fields" style="display:none">
