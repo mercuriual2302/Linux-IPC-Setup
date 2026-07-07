@@ -24,8 +24,11 @@ function execP(cmd) {
   });
 }
 
-// connect primes the ARP cache for in-subnet hosts; result also flags if SSH is up
-function tcpProbe(host, port, timeoutMs) {
+// connect primes the ARP cache for in-subnet hosts; result also flags if SSH is up.
+// localAddress, when given, binds the outgoing socket to that adapter instead of
+// letting the OS routing table pick one - needed once more than one 169.254.x.x
+// adapter is active at the same time (two direct-link CXs plugged in at once).
+function tcpProbe(host, port, timeoutMs, localAddress) {
   return new Promise(resolve => {
     const sock = new net.Socket();
     let done = false;
@@ -34,7 +37,8 @@ function tcpProbe(host, port, timeoutMs) {
     sock.once('connect', () => finish(true));
     sock.once('timeout', () => finish(false));
     sock.once('error', () => finish(false));
-    sock.connect(port, host);
+    if (localAddress) sock.connect({ port, host, localAddress });
+    else sock.connect(port, host);
   });
 }
 
@@ -111,25 +115,36 @@ async function readArp() {
   return rows;
 }
 
-// ping populates the v6 neighbour table, then read it back
+// ping populates the v6 neighbour table, then read it back. One retry if the
+// first pass comes back empty - a CX that's slower to answer the multicast
+// ping can otherwise look like it isn't there at all.
 async function readNeighbors6(adapter) {
-  if (process.platform === 'win32') {
-    await execP(`ping -6 ff02::1%${adapter.scopeid} -n 2`);
-    const out = await execP(`netsh interface ipv6 show neighbors interface=${adapter.scopeid}`);
+  const readOnce = async () => {
+    if (process.platform === 'win32') {
+      await execP(`ping -6 ff02::1%${adapter.scopeid} -n 3`);
+      const out = await execP(`netsh interface ipv6 show neighbors interface=${adapter.scopeid}`);
+      const rows = [];
+      out.split(/\r?\n/).forEach(line => {
+        const m = line.match(/^\s*(fe80::[0-9a-fA-F:]+)\s+([0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5})\s+\w+/);
+        if (m) rows.push({ fe80: m[1], mac: m[2] });
+      });
+      return rows;
+    }
+    await execP(`ping -6 -c 3 ff02::1%${adapter.name}`);
+    const out = await execP(`ip -6 neigh show dev ${adapter.name}`);
     const rows = [];
     out.split(/\r?\n/).forEach(line => {
-      const m = line.match(/^\s*(fe80::[0-9a-fA-F:]+)\s+([0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5})\s+\w+/);
+      const m = line.match(/^(fe80::[0-9a-fA-F:]+)\s+.*lladdr\s+([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})/);
       if (m) rows.push({ fe80: m[1], mac: m[2] });
     });
     return rows;
+  };
+
+  let rows = await readOnce();
+  if (!rows.length) {
+    await new Promise(r => setTimeout(r, 600));
+    rows = await readOnce();
   }
-  await execP(`ping -6 -c 2 ff02::1%${adapter.name}`);
-  const out = await execP(`ip -6 neigh show dev ${adapter.name}`);
-  const rows = [];
-  out.split(/\r?\n/).forEach(line => {
-    const m = line.match(/^(fe80::[0-9a-fA-F:]+)\s+.*lladdr\s+([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})/);
-    if (m) rows.push({ fe80: m[1], mac: m[2] });
-  });
   return rows;
 }
 
@@ -179,14 +194,19 @@ async function scanDirectLink(adapter) {
 // the sweep's TCP probes trigger OS ARP requests for each host as a side effect.
 // even when individual probes time out, those ARP entries persist in the OS cache.
 // we check ARP one final time after the sweep - this is what catches the CX on first press.
+//
+// Both steps are bound to laptopIp, the specific adapter this device was found
+// on. With only one 169.254.x.x adapter ever active this didn't matter, but
+// with two direct-link CXs plugged in at once there are two such adapters, and
+// an unbound ping or socket lets the OS routing table pick just one of them,
+// silently failing to ever reach the CX on the other one.
 async function resolveDirectLinkIp(mac, laptopIp) {
   const norm = (m) => String(m || '').replace(/[^0-9a-fA-F]/g, '').toLowerCase();
   const target = norm(mac);
 
-  // no -S flag: let Windows route to 169.254.255.255 via the correct adapter
   const pingCmd = process.platform === 'win32'
-    ? `ping 169.254.255.255 -n 3 -w 1000`
-    : `ping -c 3 -W 1 -b 169.254.255.255`;
+    ? `ping 169.254.255.255 -S ${laptopIp} -n 3 -w 1000`
+    : `ping -c 3 -W 1 -I ${laptopIp} -b 169.254.255.255`;
   await execP(pingCmd);
   await new Promise(r => setTimeout(r, 400));
 
@@ -198,7 +218,7 @@ async function resolveDirectLinkIp(mac, laptopIp) {
   // cache from unsolicited ICMP broadcast replies). run the sweep, which sends ARP
   // requests for every address it probes. the CX will respond to its own ARP request;
   // that response is cached by the OS even if the TCP connect times out first.
-  await scanLinkLocalForSSH(target);
+  await scanLinkLocalForSSH(target, laptopIp);
 
   // this final check is the one that works on first press:
   // the sweep has probed the CX's address, triggering an ARP that is now cached.
@@ -209,7 +229,10 @@ async function resolveDirectLinkIp(mac, laptopIp) {
 
 // scan 169.254.1.1-254.254 for port 22 with high concurrency.
 // on a direct link the CX responds in <10ms so this finds it fast.
-async function scanLinkLocalForSSH(targetMac) {
+// laptopIp binds every probe to the adapter this device was found on, same
+// reason as the ping above - unbound, a second link-local adapter can steal
+// every one of these connects and the real target is never reached.
+async function scanLinkLocalForSSH(targetMac, laptopIp) {
   const norm = (m) => String(m || '').replace(/[^0-9a-fA-F]/g, '').toLowerCase();
   const hosts = [];
   // RFC 3927 reserves 169.254.0.x and 169.254.255.x, so the third octet runs
@@ -234,7 +257,7 @@ async function scanLinkLocalForSSH(targetMac) {
     function next() {
       if (found || idx >= total) return;
       const host = hosts[idx++];
-      tcpProbe(host, 22, 150).then(open => {
+      tcpProbe(host, 22, 150, laptopIp).then(open => {
         completed++;
         if (open && !found) { found = host; resolve(host); return; }
         if (!found) next();
