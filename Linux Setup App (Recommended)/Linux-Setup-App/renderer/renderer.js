@@ -3828,11 +3828,18 @@ $('btn-check-image')?.addEventListener('click', async () => {
     el('fleet-preflight-table').innerHTML = res.results.map(r => {
       const ok = r.reachable && r.authOk;
       if (ok) reachableCount++;
+      // preflight already resolves the real hostname over SSH, feed it back
+      // into the target label so the list and later run rows show it too
+      if (r.hostname) {
+        const t = targets.find(x => x.host === r.host);
+        if (t) t.label = r.hostname;
+      }
       const dot = ok ? '<span style="color:var(--tc-accent2)">●</span>' : '<span style="color:var(--tc-danger)">●</span>';
       const detail = ok ? (r.hostname || 'reachable') : (r.error || 'unreachable');
       return `<div style="display:flex;align-items:center;gap:.6rem;padding:.3rem .5rem;border-bottom:1px solid var(--tc-border)">
         ${dot}<span style="flex:1">${escapeHtml(r.host)}</span><span style="color:${ok ? 'var(--tc-muted)' : 'var(--tc-danger)'}">${escapeHtml(detail)}</span></div>`;
     }).join('');
+    renderTargets();
 
     el('btn-fleet-run').disabled = reachableCount === 0;
     el('fleet-run-status').textContent = `${reachableCount}/${targets.length} device(s) ready`;
