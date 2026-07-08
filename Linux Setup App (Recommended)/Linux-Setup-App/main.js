@@ -1168,6 +1168,31 @@ function parseNeedsReboot(output) {
   return /\[CX\] Reboot required: yes/.test(output);
 }
 
+// Shared shell snippet: list every non-loopback interface, whether or not it
+// currently has an IPv4 address. The old version only emitted a row when an
+// address already existed, so a port with a live cable but no address yet
+// (the common case right after a fresh boot, or a second NIC nobody's
+// configured) was invisible. It also filtered interface names to end/eth/eno
+// only, which misses ens/enp/enx naming, x86 CX models use enp1s0 style
+// names, ARM ones use end0 style, and there's no fixed list that covers every
+// SoC Beckhoff ships on, so this drops name filtering entirely instead.
+// IFACE_LINK reports LOWER_UP (actual carrier, not admin state) for every
+// interface; IFACE adds an address on top of that when one exists. Used by
+// both cx:info and recipe capture so neither one has its own copy of this.
+const IFACE_READ_SNIPPET = `ip -o addr show | awk '/inet / && !/127.0.0.1/{split($4,a,"/"); gsub("\r","",a[1]); n=$2; gsub("\r","",n); print "IFACE|||"n"|||"a[1]"/"substr($4,index($4,"/")+1)}'
+ip -o link show | awk '{ifn=$2; gsub(":","",ifn); gsub("@.*","",ifn); if (ifn=="lo") next; flags=$3; gsub("[<>]","",flags); up=(flags ~ /(^|,)LOWER_UP(,|$)/) ? 1 : 0; print "IFACE_LINK|||"ifn"|||"up}'`;
+
+// Turns the IFACE / IFACE_LINK rows above into the ifaces array the renderer
+// uses. state is one of: 'up' (has an address), 'unconfigured' (carrier but
+// no address), 'no-cable' (no carrier at all).
+function buildIfaceList(ifaceMap) {
+  return Object.entries(ifaceMap).map(([name, d]) => ({
+    name,
+    ip: d.ip || null,
+    state: d.up === false ? 'no-cable' : (d.ip ? 'up' : 'unconfigured')
+  }));
+}
+
 // Full system update check - every upgradable package, not just TwinCAT/
 // Beckhoff ones. This is what surfaces kernel, systemd, OpenSSH, and other
 // OS-level updates that the TwinCAT-scoped check above deliberately hides.
@@ -1593,8 +1618,7 @@ echo "TC_VER|||$(dpkg-query -W -f='\${Version}' tc31-xar-um 2>/dev/null || echo 
 echo "FEED|||$(grep -oE 'trixie-[a-z]+' /etc/apt/sources.list.d/bhf.list 2>/dev/null | head -1 || echo unknown)"
 df -BM / | awk 'NR==2{t=$2;u=$3;a=$4; gsub("M","",t); gsub("M","",u); gsub("M","",a); gsub("\r","",t); gsub("\r","",u); gsub("\r","",a); pct=int(u/t*100); print "DISK_TOTAL|||"t; print "DISK_USED|||"u; print "DISK_AVAIL|||"a; print "DISK_PCT|||"pct}'
 free -m | awk '/^Mem:/{t=$2;u=$3;av=$7; gsub("\r","",t); gsub("\r","",u); gsub("\r","",av); print "MEM_TOTAL|||"t; print "MEM_USED|||"u; print "MEM_AVAIL|||"av}'
-ip -o addr show | awk '/inet / && !/127.0.0.1/{split($4,a,"/"); gsub("\r","",a[1]); n=$2; gsub("\r","",n); print "IFACE|||"n"|||"a[1]"/"substr($4,index($4,"/")+1)}'
-ip link show | awk '/^[0-9]/{iface=$2; gsub(":","",iface); gsub("\r","",iface)} /state/{for(i=1;i<=NF;i++) if($i=="state"){st=$(i+1); gsub("\r","",st); if(iface~/^(end|eth|eno)/) print "IFACE_STATE|||"iface"|||"(st=="UP"?"up":"down")}}'
+${IFACE_READ_SNIPPET}
 for svc in TcSystemServiceUm TcHmiSrv nftables ssh MDPService; do
   st=$(_sudo systemctl is-active $svc 2>/dev/null || echo inactive)
   echo "SVC|||$svc|||$st"
@@ -1617,9 +1641,9 @@ done
           if (!ifaces[v1]) ifaces[v1] = {};
           ifaces[v1].ip = v2;
           break;
-        case 'IFACE_STATE':
+        case 'IFACE_LINK':
           if (!ifaces[v1]) ifaces[v1] = {};
-          ifaces[v1].state = v2;
+          ifaces[v1].up = v2 === '1';
           break;
         case 'SVC':
           svcs.push({ name: v1, state: v2 });
@@ -1632,7 +1656,7 @@ done
     return {
       ok: true,
       info,
-      ifaces: Object.entries(ifaces).map(([name, d]) => ({ name, ip: d.ip || '-', state: d.state || 'unknown' })),
+      ifaces: buildIfaceList(ifaces),
       svcs
     };
   } catch (err) {
@@ -2020,18 +2044,19 @@ echo "OS|||$(grep PRETTY_NAME /etc/os-release | cut -d= -f2 | tr -d '"')"
 echo "TC_VER|||$(dpkg-query -W -f='\${Version}' tc31-xar-um 2>/dev/null || echo unknown)"
 echo "FEED|||$(grep -oE 'trixie-[a-z]+' /etc/apt/sources.list.d/bhf.list 2>/dev/null | head -1 || echo unknown)"
 echo "AMSNETID|||$(_sudo grep -oE 'Name=\\"AmsNetId\\"[^>]*>[0-9A-Fa-f]+' /etc/TwinCAT/3.1/TcRegistry.xml 2>/dev/null | grep -oE '[0-9A-Fa-f]+$' || true)"
-ip -o addr show | awk '/inet / && !/127.0.0.1/{split($4,a,"/"); gsub("\r","",a[1]); n=$2; gsub("\r","",n); print "IFACE|||"n"|||"$4}'
+${IFACE_READ_SNIPPET}
 `;
       const infoRes = await mgr.exec(infoCmd);
       const ifaceMap = {};
       String(infoRes.stdout || '').split(/\r?\n/).forEach(line => {
         const parts = line.trim().replace(/\r/g, '').split('|||');
         if (parts.length < 2) return;
-        if (parts[0] === 'IFACE') { ifaceMap[parts[1]] = { name: parts[1], ip: parts[2], state: 'up' }; }
+        if (parts[0] === 'IFACE') { if (!ifaceMap[parts[1]]) ifaceMap[parts[1]] = {}; ifaceMap[parts[1]].ip = parts[2]; }
+        else if (parts[0] === 'IFACE_LINK') { if (!ifaceMap[parts[1]]) ifaceMap[parts[1]] = {}; ifaceMap[parts[1]].up = parts[2] === '1'; }
         else if (parts[0] === 'AMSNETID') { amsNetIdHex = parts[1] || null; }
         else info[parts[0]] = parts[1];
       });
-      ifaces = Object.values(ifaceMap);
+      ifaces = buildIfaceList(ifaceMap);
     } catch (e) { warnings.push('Could not read system info: ' + e.message); }
 
     // AMS NetID on the wire is 6 hex bytes (e.g. 053B151A0101) - manual section
