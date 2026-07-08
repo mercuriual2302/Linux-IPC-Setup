@@ -685,19 +685,31 @@ ipcMain.handle('cx:check-internet-fleet', async (_evt, { targets }) => {
 async function ensureLaptopProxy(hosts, port) {
   const targetHosts = Array.isArray(hosts) && hosts.length ? hosts : [];
   if (!targetHosts.length) throw new Error('No target hosts to proxy');
-  const probeHost = targetHosts[0];
 
-  // which of this laptop's addresses the CX can actually reach - redone every
-  // call since a different target CX may sit on a different adapter/subnet,
-  // even though the SOCKS server itself is a singleton reused across targets.
-  const localAddress = await new Promise((resolve, reject) => {
-    const probe = net.connect(port || 22, probeHost, () => {
-      const addr = probe.localAddress;
-      probe.destroy();
-      resolve(addr);
-    });
-    probe.on('error', reject);
-  });
+  // Which of this laptop's addresses reaches these CXs. Tried against each
+  // target in turn rather than just the first - a fleet of several CXs on
+  // one switch means a higher chance any single one is momentarily
+  // unreachable (mid-reboot, still coming up), and betting the whole proxy
+  // setup on that one specific host used to take every device down with it.
+  let localAddress = null;
+  let lastErr = null;
+  for (const probeHost of targetHosts) {
+    try {
+      localAddress = await new Promise((resolve, reject) => {
+        const probe = net.connect(port || 22, probeHost);
+        probe.setTimeout(3000);
+        probe.once('connect', () => { const addr = probe.localAddress; probe.destroy(); resolve(addr); });
+        probe.once('timeout', () => { probe.destroy(); reject(new Error('timed out')); });
+        probe.once('error', reject);
+      });
+      break;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  if (!localAddress) {
+    throw new Error('Could not reach any target to determine the laptop adapter' + (lastErr ? `: ${lastErr.message || lastErr}` : ''));
+  }
 
   // If a proxy is already running but bound to a different adapter or a
   // different target set, tear it down and rebind. allowKey captures both.
