@@ -2429,26 +2429,30 @@ async function applyPackagesStep(host, password, port, packages, creds, emit) {
   if (!installArgs) return { ok: false, error: 'No valid packages to install' };
 
   // tf2000-hmi-server needs a one-time initialisation with its own password
-  // after install, same as the main Setup flow and the service reinit action -
-  // otherwise the service is installed but never brought up. Matches
-  // script-builder.js's buildInnerSetupScript hmiBlock exactly.
+  // after install, same as the main Setup flow. Reuses the exact same helpers
+  // Setup uses (src/script-builder.js), rather than main.js keeping its own
+  // copy of this logic - a hand-copied version here previously still checked
+  // "is the service active" as a proxy for "already initialized", which a
+  // fresh install's own postinst script can satisfy without --initialize ever
+  // having run, silently leaving TF2000 up with no user ever configured.
   const needsTf2000 = packages.some(p => p.name === 'tf2000-hmi-server');
-  let tf2000Block = '';
-  if (needsTf2000) {
-    const escTf2000Pass = String(tf2000Pass || '').replace(/'/g, "'\\''");
-    tf2000Block = `
-echo "[CX] Checking TF2000 HMI Server..."
-if _sudo test -f /etc/TwinCAT/Functions/TF2000-HMI-Server/TcHmiSrv.cfg 2>/dev/null || _sudo systemctl is-active TcHmiSrv.service &>/dev/null; then
-  echo "[CX] TF2000 already initialized - skipping init, ensuring service is running."
-  _sudo systemctl enable TcHmiSrv.service || true
-  _sudo systemctl start TcHmiSrv.service || true
-else
-  echo "[CX] Initializing TF2000 HMI Server..."
-  _sudo TcHmiSrv --initialize --password='${escTf2000Pass}'
-  _sudo systemctl enable TcHmiSrv.service
-  _sudo systemctl start TcHmiSrv.service
-fi`;
-  }
+  const tf2000PreCheck = needsTf2000
+    ? `\n${ScriptBuilder.buildWasInstalledSnippet('tf2000-hmi-server', 'TF2000_WAS_INSTALLED')}`
+    : '';
+  const tf2000Block = needsTf2000
+    ? ScriptBuilder.buildTf2000InitBlock(tf2000Pass, 'TF2000_WAS_INSTALLED')
+    : '';
+
+  // tf1200-ui-client needs its Linux user created (home directory, autologin,
+  // kiosk autostart) after install - this step was missing from this path
+  // entirely, so the package would install via apt with nothing behind it: no
+  // user to log into, no config.json directory ever created, and no autologin
+  // meaning the CX sits at a login/splash screen on reboot instead of loading
+  // the kiosk. Reuses the exact same helper Setup uses (src/script-builder.js).
+  const needsTf1200User = packages.some(p => p.name === 'tf1200-ui-client');
+  const tf1200UserBlock = needsTf1200User
+    ? ScriptBuilder.buildTf1200UserSetupBlock()
+    : '';
 
   const mgr = new SSHManager();
   try {
@@ -2457,11 +2461,12 @@ fi`;
 set -e
 trap 'rm -f "$0"' EXIT
 ${buildAptPreamble(escPass, beckhoffUser, beckhoffPass, proxyHost, proxyPort)}
-_sudo apt $APT_OPTS update -y 2>&1 | tail -3
+_sudo apt $APT_OPTS update -y 2>&1 | tail -3${tf2000PreCheck}
 echo "[CX] Installing: ${installArgs}"
 _sudo DEBIAN_FRONTEND=noninteractive apt $APT_OPTS install -y ${installArgs}
 echo "[CX] Package install complete"
-${tf2000Block}`;
+${tf2000Block}
+${tf1200UserBlock}`;
     await withTempScript('rec-pkgs', script, (p) => mgr.putFile(p, '/tmp/rec_pkgs.sh'));
     const res = await mgr.execStream('chmod +x /tmp/rec_pkgs.sh && /tmp/rec_pkgs.sh', {
       onStdout: (c) => emit(c.toString()), onStderr: (c) => emit(c.toString())
