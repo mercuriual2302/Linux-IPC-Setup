@@ -3549,7 +3549,6 @@ $('btn-check-image')?.addEventListener('click', async () => {
     const info = captured.info || {};
     const packages = captured.packages || [];
     const firewall = captured.firewall;
-    const tf1200 = captured.tf1200;
     const ifaces = captured.ifaces || [];
 
     const feedRow = (info.FEED && info.FEED !== 'unknown') ? `
@@ -3589,12 +3588,6 @@ $('btn-check-image')?.addEventListener('click', async () => {
         </div>
       </details>` : '';
 
-    const tfRow = tf1200 ? `
-      <label class="recipe-sec-row">
-        <input type="checkbox" class="scan-check" id="recipe-sel-tf1200" checked>
-        <strong>TF1200</strong><span class="hint" style="margin:0">UI Client config</span>
-      </label>` : '';
-
     const netInfo = ifaces.length
       ? `<div class="hint" style="margin-top:.3rem">Network: ${ifaces.length} interface(s) captured for reference only, never applied automatically</div>`
       : '';
@@ -3604,7 +3597,7 @@ $('btn-check-image')?.addEventListener('click', async () => {
       warnHtml = `<div style="margin-top:.5rem;color:var(--tc-warn)">${warnings.map(w => '⚠ ' + escapeHtml(w)).join('<br>')}</div>`;
     }
 
-    sectionsEl.innerHTML = feedRow + pkgSection + fwSection + tfRow + netInfo + warnHtml;
+    sectionsEl.innerHTML = feedRow + pkgSection + fwSection + netInfo + warnHtml;
     previewBox.style.display = '';
 
     // A section's own checkbox is a select-all/none for its items. Stop the
@@ -3622,13 +3615,11 @@ $('btn-check-image')?.addEventListener('click', async () => {
   // recipe:build-from-capture expects.
   function collectSelection() {
     const feedBox = $('recipe-sel-feed');
-    const tfBox = $('recipe-sel-tf1200');
     const fwAll = sectionsEl.querySelector('.recipe-sec-all[data-sec="firewall"]');
     const packages = [...sectionsEl.querySelectorAll('.recipe-item[data-sec="packages"]')].filter(b => b.checked).map(b => b.dataset.item);
     const firewallPorts = [...sectionsEl.querySelectorAll('.recipe-item[data-sec="firewall"]')].filter(b => b.checked).map(b => b.dataset.item);
     return {
       feed: feedBox ? feedBox.checked : false,
-      tf1200: tfBox ? tfBox.checked : false,
       firewall: fwAll ? fwAll.checked : false,
       packages,
       firewallPorts

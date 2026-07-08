@@ -2108,16 +2108,11 @@ _sudo nft list ruleset 2>/dev/null || true
       firewall = { enabled, ports };
     } catch (e) { warnings.push('Could not read firewall: ' + e.message); }
 
-    // 4. TF1200 config (optional - many CXs won't have it)
-    let tf1200 = null;
-    try {
-      const tfRes = await mgr.exec(`echo '${escPass}' | sudo -S -p '' cat /home/TF1200/.config/TF1200-UI-Client/config.json 2>/dev/null`);
-      const raw = (tfRes.stdout || '').trim();
-      if (raw) {
-        try { tf1200 = { config: JSON.parse(raw) }; }
-        catch (e) { warnings.push('TF1200 config present but not valid JSON - skipped'); }
-      }
-    } catch (e) { /* no TF1200 - fine, just omit */ }
+    // TF1200 config is not captured. It's per-device (the HMI URL typically
+    // ties to the CX's own IP), so cloning it across a fleet the way packages
+    // clone doesn't make sense. Applying TF1200 config stays its own standalone
+    // page for exactly that reason - configure it per CX, not via a recipe.
+    const tf1200 = null;
 
     mgr.dispose();
     activeSessions.delete(sessionId);
