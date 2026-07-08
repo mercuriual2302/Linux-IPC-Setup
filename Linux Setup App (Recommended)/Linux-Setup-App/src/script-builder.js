@@ -45,21 +45,39 @@ function buildWasInstalledSnippet(pkgName, varName) {
 
 // Brings up TF2000 HMI Server safely after install. Only skips --initialize
 // when the package was genuinely already installed before this run AND its
-// config file already exists - checking service-active alone used to also
-// count as "already initialized", but a fresh install's own postinst script
-// can leave the service active without --initialize ever having run, which
-// left the service up with no user ever configured. wasInstalledVar names a
-// shell variable (from buildWasInstalledSnippet) holding "yes"/"no".
+// service instance directory already exists - /var/lib/tchmisrv/service/
+// TcHmiProject is what TcHmiSrv itself creates on a real initialize (confirmed
+// from its own output: "Adding service instance /var/lib/.../TcHmiProject"),
+// not a guessed path. An earlier version of this check used a wrong path that
+// never matched, so a re-run against an already-initialized CX always fell
+// through to attempting init again - which then genuinely fails, since the
+// server really is already running. As a second line of defense in case that
+// directory check ever misses a real case, a failed --initialize is only
+// treated as fatal if it isn't specifically the "already running" error -
+// that one just means it's already up, which is exactly what we wanted.
+// wasInstalledVar names a shell variable (from buildWasInstalledSnippet)
+// holding "yes"/"no".
 function buildTf2000InitBlock(tf2000Pass, wasInstalledVar) {
   return `
 echo "[CX] Checking TF2000 HMI Server..."
-if [ "$${wasInstalledVar}" = "yes" ] && _sudo test -f /etc/TwinCAT/Functions/TF2000-HMI-Server/TcHmiSrv.cfg 2>/dev/null; then
+if [ "$${wasInstalledVar}" = "yes" ] && _sudo test -d /var/lib/tchmisrv/service/TcHmiProject 2>/dev/null; then
   echo "[CX] TF2000 already initialized - skipping init, ensuring service is running."
   _sudo systemctl enable TcHmiSrv.service || true
   _sudo systemctl start TcHmiSrv.service || true
 else
   echo "[CX] Initializing TF2000 HMI Server..."
-  _sudo TcHmiSrv --initialize --password=${shq(tf2000Pass)}
+  set +e
+  TF2000_INIT_OUT=$(_sudo TcHmiSrv --initialize --password=${shq(tf2000Pass)} 2>&1)
+  TF2000_INIT_CODE=$?
+  set -e
+  echo "$TF2000_INIT_OUT"
+  if [ $TF2000_INIT_CODE -ne 0 ]; then
+    if echo "$TF2000_INIT_OUT" | grep -q "HMI_E_SERVER_ALREADY_RUNNING"; then
+      echo "[CX] TF2000 was already initialized (server already running) - continuing."
+    else
+      exit $TF2000_INIT_CODE
+    fi
+  fi
   _sudo systemctl enable TcHmiSrv.service
   _sudo systemctl start TcHmiSrv.service
 fi`;
