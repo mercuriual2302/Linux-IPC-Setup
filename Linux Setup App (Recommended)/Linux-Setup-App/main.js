@@ -2122,10 +2122,10 @@ _sudo nft list ruleset 2>/dev/null || true
     mgr.dispose();
     activeSessions.delete(sessionId);
 
-    // Nudge the user rather than silently capturing an incomplete recipe: if
-    // packages were found but no MyBeckhoff credentials were supplied for
-    // this capture, flag it so they know to add them (or accept the recipe
-    // will require them to be typed in at apply time instead).
+    // Nudge the user rather than silently letting them tick things they can't
+    // actually apply: if packages were found but no MyBeckhoff credentials
+    // were supplied for this capture, flag it so they know to add them (or
+    // accept the recipe will require them to be typed in at apply time).
     if (packages.length && !beckhoffUser && !beckhoffPass) {
       warnings.push('No MyBeckhoff credentials entered for this capture - this recipe will require them to be typed in when applied.');
     }
@@ -2133,18 +2133,40 @@ _sudo nft list ruleset 2>/dev/null || true
       warnings.push('tf2000-hmi-server is installed but no TF2000 password was entered - this recipe will require it when applied.');
     }
 
-    const built = recipe.buildRecipeFromCapture({
-      name, sourceHost: host, info, ifaces, packages, firewall, tf1200,
-      amsNetId, beckhoffUser, beckhoffPass, tf2000Pass
-    });
-    const check = recipe.validateRecipe(built);
-    if (!check.ok) {
-      return { ok: false, error: 'Captured recipe failed validation: ' + check.errors.join('; ') };
-    }
-    return { ok: true, recipe: built, warnings };
+    // Return the raw facts, not a built recipe - the renderer shows these as
+    // a checklist and only the ticked subset gets built, via
+    // recipe:build-from-capture, once the user confirms their selection.
+    return {
+      ok: true,
+      captured: { info, ifaces, packages, firewall, tf1200, amsNetId },
+      warnings
+    };
   } catch (err) {
     mgr.dispose();
     activeSessions.delete(sessionId);
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+// Builds and validates a recipe from a previous recipe:capture's raw data,
+// keeping only the sections/items the user ticked. Split from capture itself
+// so re-picking a different subset doesn't need a fresh SSH round trip to
+// the CX, the capture already read everything once.
+ipcMain.handle('recipe:build-from-capture', async (_evt, opts) => {
+  const { name, sourceHost, captured, selection, beckhoffUser, beckhoffPass, tf2000Pass } = opts || {};
+  try {
+    const filtered = recipe.filterCaptureData(captured || {}, selection || {});
+    const built = recipe.buildRecipeFromCapture({
+      name, sourceHost, beckhoffUser, beckhoffPass, tf2000Pass,
+      info: filtered.info, ifaces: filtered.ifaces, amsNetId: filtered.amsNetId,
+      packages: filtered.packages, firewall: filtered.firewall, tf1200: filtered.tf1200
+    });
+    const check = recipe.validateRecipe(built);
+    if (!check.ok) {
+      return { ok: false, error: 'Recipe failed validation: ' + check.errors.join('; ') };
+    }
+    return { ok: true, recipe: built };
+  } catch (err) {
     return { ok: false, error: err.message || String(err) };
   }
 });

@@ -45,6 +45,7 @@ contextBridge.exposeInMainWorld('api', {
 
   // Provisioning recipes (phase 1)
   recipeCapture:  (opts) => ipcRenderer.invoke('recipe:capture', opts),
+  recipeBuildFromCapture: (opts) => ipcRenderer.invoke('recipe:build-from-capture', opts),
   recipeSave:     (recipe) => ipcRenderer.invoke('recipe:save', { recipe }),
   recipeLoadAll:  ()     => ipcRenderer.invoke('recipe:load-all'),
   recipeDelete:   (file) => ipcRenderer.invoke('recipe:delete', { file }),
