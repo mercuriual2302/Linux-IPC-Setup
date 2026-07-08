@@ -1293,9 +1293,13 @@ function renderNetIfaceToggle(ifaces) {
     toggleGroupInit('net-iface-toggle');
     return;
   }
+  // Default to the first interface that's actually up (cable in, address set)
+  // rather than always the first in the list - defaulting to a dead port
+  // would make it too easy to apply config to the wrong one by accident.
+  const defaultIdx = Math.max(0, ifaces.findIndex(f => f.state === 'up'));
   grp.innerHTML = ifaces.map((f, i) => {
-    const label = f.ip && f.ip !== '-' ? `${f.name} (${f.ip})` : f.name;
-    return `<div class="toggle-opt${i === 0 ? ' active' : ''}" data-val="${f.name}" title="${f.state || 'unknown'}">${label}</div>`;
+    const stateLabel = f.state === 'up' ? f.ip : f.state === 'no-cable' ? 'no cable' : f.state === 'unconfigured' ? 'no address' : (f.state || 'unknown');
+    return `<div class="toggle-opt${i === defaultIdx ? ' active' : ''}" data-val="${f.name}" title="${f.state || 'unknown'}">${f.name} (${stateLabel})</div>`;
   }).join('');
   toggleGroupInit('net-iface-toggle');
 }
@@ -2146,7 +2150,8 @@ $('btn-validate-creds').addEventListener('click', async () => {
 
   function ifaceBadge(state) {
     if (state === 'up') return `<span class="info-badge info-badge-ok">up</span>`;
-    return `<span class="info-badge info-badge-muted">${state}</span>`;
+    const label = state === 'no-cable' ? 'no cable' : state === 'unconfigured' ? 'no address' : (state || 'unknown');
+    return `<span class="info-badge info-badge-muted">${label}</span>`;
   }
 
   function render(data) {
@@ -2197,7 +2202,7 @@ $('btn-validate-creds').addEventListener('click', async () => {
       ? ifaces.map(i => `
           <div class="info-row">
             <span class="info-row-label">${dot(i.state)}&nbsp;<code>${escapeHtml(i.name)}</code>&nbsp;${ifaceBadge(i.state)}</span>
-            <span class="info-row-val">${escapeHtml(i.ip)}</span>
+            <span class="info-row-val">${escapeHtml(i.ip || 'no address')}</span>
           </div>`).join('')
       : '<div class="um-empty">No interfaces found</div>';
 

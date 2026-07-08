@@ -220,8 +220,16 @@ async function resolveDirectLinkIp(mac, laptopIp) {
   // that response is cached by the OS even if the TCP connect times out first.
   await scanLinkLocalForSSH(target, laptopIp);
 
-  // this final check is the one that works on first press:
-  // the sweep has probed the CX's address, triggering an ARP that is now cached.
+  // The sweep's own probe for the correct address can time out at its 150ms
+  // budget before the OS finishes resolving ARP for it, even though the ARP
+  // request already went out as a side effect and the reply is still landing.
+  // Checking the instant the sweep ends can miss that by a hair, needing a
+  // second IDENTIFY press to see the same entry moments later. One short
+  // wait-and-recheck catches it the first time instead.
+  arp = await readArp();
+  hit = arp.find(e => norm(e.mac) === target);
+  if (hit) return hit.ip;
+  await new Promise(r => setTimeout(r, 600));
   arp = await readArp();
   hit = arp.find(e => norm(e.mac) === target);
   return hit ? hit.ip : null;
