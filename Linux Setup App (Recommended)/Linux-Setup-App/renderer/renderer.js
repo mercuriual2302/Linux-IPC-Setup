@@ -2837,9 +2837,10 @@ $('btn-check-image')?.addEventListener('click', async () => {
   };
 
   // Fleet mode entry point: opens the same picker in multi-select mode.
-  // onConfirm gets the array of picked devices when ADD SELECTED is clicked.
-  // Direct-link devices need IDENTIFY to resolve one IP at a time, so they
-  // are not selectable here - use the header scan for those.
+  // onConfirm gets the array of picked devices when ADD SELECTED is clicked,
+  // with any direct-link picks already resolved to a real IP (see the
+  // btnSelectAdd handler - one bulk resolve per adapter, not one per device,
+  // so several CXs on a shared switch segment resolve together).
   window.openScanPicker = (onConfirm) => {
     selectMode = { selected: new Set(), onConfirm };
     open();
@@ -2884,12 +2885,8 @@ $('btn-check-image')?.addEventListener('click', async () => {
 
     let control;
     if (selectMode) {
-      if (isDirect) {
-        control = `<span style="color:var(--tc-muted);font-size:10px;white-space:nowrap">use header scan to add</span>`;
-      } else {
-        const checked = selectMode.selected.has(idx) ? 'checked' : '';
-        control = `<input type="checkbox" class="scan-check" data-idx="${idx}" ${checked}>`;
-      }
+      const checked = selectMode.selected.has(idx) ? 'checked' : '';
+      control = `<input type="checkbox" class="scan-check" data-idx="${idx}" ${checked}>`;
     } else {
       control = isDirect
         ? `<button class="scan-use" data-act="identify" data-idx="${idx}">IDENTIFY</button>`
@@ -2968,12 +2965,47 @@ $('btn-check-image')?.addEventListener('click', async () => {
     }
   });
 
-  if (btnSelectAdd) btnSelectAdd.addEventListener('click', () => {
+  if (btnSelectAdd) btnSelectAdd.addEventListener('click', async () => {
     if (!selectMode) return;
     const picked = [...selectMode.selected].map(i => devices[i]).filter(Boolean);
     const onConfirm = selectMode.onConfirm;
+
+    const networkPicked = picked.filter(d => d.type !== 'direct');
+    const directPicked = picked.filter(d => d.type === 'direct');
+
+    let resolvedDirect = [];
+    if (directPicked.length) {
+      btnSelectAdd.disabled = true;
+      btnSelectAdd.textContent = 'RESOLVING...';
+      // Group by adapter - normally one shared switch segment means one
+      // group, but a laptop with more than one direct-link adapter active
+      // still resolves correctly this way, one bulk lookup per adapter.
+      const groups = new Map();
+      directPicked.forEach(d => {
+        if (!groups.has(d.laptopIp)) groups.set(d.laptopIp, []);
+        groups.get(d.laptopIp).push(d);
+      });
+      let failed = 0;
+      for (const [laptopIp, group] of groups) {
+        const macs = group.map(d => d.mac);
+        let res;
+        try { res = await window.api.resolveDirectLinkMany({ macs, laptopIp }); }
+        catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
+        if (!res || !res.ok) { failed += group.length; continue; }
+        group.forEach(d => {
+          const key = d.mac.replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+          const ip = res.ips ? res.ips[key] : null;
+          if (ip) resolvedDirect.push({ ...d, ip });
+          else failed++;
+        });
+      }
+      btnSelectAdd.disabled = false;
+      btnSelectAdd.textContent = 'ADD SELECTED';
+      if (failed) toast(`Could not resolve ${failed} device(s), check the cable and try again`, 'warn');
+    }
+
     close();
-    if (onConfirm) onConfirm(picked);
+    if (onConfirm) onConfirm([...networkPicked, ...resolvedDirect]);
   });
 
   if (btnScan)   btnScan.addEventListener('click', () => { selectMode = null; open(); });

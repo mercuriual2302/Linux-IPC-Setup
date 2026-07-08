@@ -1999,6 +1999,22 @@ ipcMain.handle('cx:resolve-direct', async (_evt, opts) => {
     return { ok: false, error: err.message || String(err) };
   }
 });
+
+// Multi-target sibling of cx:resolve-direct, for several direct-link CXs on
+// one shared segment (an unmanaged switch with no DHCP/internet, same
+// 169.254.x.x self-addressing a literal single cable uses). Used by Fleet
+// mode's scan picker so multiple direct-link devices can be selected and
+// added at once, instead of one IDENTIFY per device.
+ipcMain.handle('cx:resolve-direct-many', async (_evt, opts) => {
+  const { macs, laptopIp } = opts || {};
+  if (!Array.isArray(macs) || !macs.length || !laptopIp) return { ok: false, error: 'Missing MAC list or laptop IP' };
+  try {
+    const ips = await discovery.resolveDirectLinkIps(macs, laptopIp);
+    return { ok: true, ips };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+});
 // Provisioning recipes: capture a CX's state into a recipe object, save/load/
 // delete/export/import it, and apply it back to a connected CX (streams
 // per-step progress to the renderer). Recipes live next to profiles in userData.
@@ -2285,6 +2301,7 @@ async function applyRecipeToDevice(opts) {
 
   const sessionId = incomingSession || `apply-${Date.now()}`;
   const results = [];
+  let needsReboot = false;
   const emit = (data) => sendToRenderer('ssh:output', { sessionId, data });
   const step = (i, status, message) => sendToRenderer('recipe:step', { sessionId, index: i, status, message, total: plan.length });
 
@@ -2319,6 +2336,7 @@ async function applyRecipeToDevice(opts) {
       }
 
       if (stepResult.ok) {
+        if (stepResult.needsReboot) needsReboot = true;
         step(i, stepResult.skipped ? 'skipped' : 'done', s.label);
         results.push({ kind: s.kind, ok: true, skipped: !!stepResult.skipped });
       } else {
@@ -2337,7 +2355,7 @@ async function applyRecipeToDevice(opts) {
   }
 
   emit(`\r\n\x1b[0;32m[RECIPE]\x1b[0m All steps complete on ${host}.\r\n`);
-  return { ok: true, sessionId, results };
+  return { ok: true, sessionId, results, needsReboot };
 }
 
 ipcMain.handle('recipe:apply', async (_evt, opts) => {
@@ -2466,13 +2484,23 @@ echo "[CX] Installing: ${installArgs}"
 _sudo DEBIAN_FRONTEND=noninteractive apt $APT_OPTS install -y ${installArgs}
 echo "[CX] Package install complete"
 ${tf2000Block}
-${tf1200UserBlock}`;
+${tf1200UserBlock}
+${REBOOT_CHECK_SNIPPET}`;
     await withTempScript('rec-pkgs', script, (p) => mgr.putFile(p, '/tmp/rec_pkgs.sh'));
+    let fullOutput = '';
     const res = await mgr.execStream('chmod +x /tmp/rec_pkgs.sh && /tmp/rec_pkgs.sh', {
-      onStdout: (c) => emit(c.toString()), onStderr: (c) => emit(c.toString())
+      onStdout: (c) => { fullOutput += c.toString(); emit(c.toString()); },
+      onStderr: (c) => { fullOutput += c.toString(); emit(c.toString()); }
     });
     mgr.dispose();
-    return { ok: res.code === 0, error: res.code === 0 ? null : `package step exit ${res.code}` };
+    // TF1200's autologin/kiosk config needs a reboot to actually take effect,
+    // the same way Setup always reboots at the end regardless of what it
+    // installed - this path just never carried that reboot signal before.
+    // The kernel-driven check catches anything else (e.g. a dependency pulling
+    // in a new kernel or bootloader package) the same way the system-upgrade
+    // bulk action already does.
+    const needsReboot = res.code === 0 && (needsTf1200User || parseNeedsReboot(fullOutput));
+    return { ok: res.code === 0, error: res.code === 0 ? null : `package step exit ${res.code}`, needsReboot };
   } catch (e) { mgr.dispose(); return { ok: false, error: e.message }; }
 }
 
