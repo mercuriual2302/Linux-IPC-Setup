@@ -941,6 +941,16 @@ function askProxyChoice() {
 let proxyState = { forIp: null, decided: false, host: null, port: null };
 
 async function ensureProxyDecision(ip, cxPass) {
+  // A proxy already running and covering this exact host - started here
+  // earlier, or by a Fleet run - always wins, even over an earlier "skip"
+  // cached below for this same IP. That skip was decided before this proxy
+  // existed, so it's stale the moment a covering proxy shows up.
+  const status = await window.api.proxyStatus({ host: ip }).catch(() => null);
+  if (status && status.active) {
+    proxyState = { forIp: ip, decided: true, host: status.proxyHost, port: status.proxyPort };
+    return { proxyHost: status.proxyHost, proxyPort: status.proxyPort };
+  }
+
   if (proxyState.forIp !== ip) {
     proxyState = { forIp: ip, decided: false, host: null, port: null };
   }
@@ -982,6 +992,16 @@ async function ensureProxyDecision(ip, cxPass) {
 // lack internet. If accepted, the proxy is started pre-scoped to every target
 // host, so fleet:run reuses it as-is instead of tearing it down and rebinding.
 async function ensureFleetProxyDecision(targets) {
+  const hosts = targets.map(t => t.host);
+
+  // Same "reuse what's already running" check as the single-device version -
+  // if a proxy already covers every target (started here or from Setup/
+  // Recipes on the same CX), reuse it instead of probing and asking again.
+  const status = await window.api.proxyStatus({ hosts }).catch(() => null);
+  if (status && status.active) {
+    return { proxyHost: status.proxyHost, proxyPort: status.proxyPort };
+  }
+
   const res = await window.api.checkInternetFleet({ targets }).catch(() => null);
   const results = (res && res.results) || [];
   // Same philosophy as the single-device check: if nothing came back
@@ -993,7 +1013,6 @@ async function ensureFleetProxyDecision(targets) {
   const choice = await askProxyChoice();
   if (choice === 'cancel') return { proxyHost: null, proxyPort: null, cancelled: true };
   if (choice === 'use') {
-    const hosts = targets.map(t => t.host);
     const proxyRes = await window.api.startProxy({ hosts, port: 22 });
     if (!proxyRes.ok) {
       toast('Could not start the proxy: ' + (proxyRes.error || 'unknown') + ' - continuing without it.', 'error');
@@ -1004,6 +1023,42 @@ async function ensureFleetProxyDecision(targets) {
   }
   // choice === 'skip'
   return { proxyHost: null, proxyPort: null };
+}
+
+// Small shared status-line updater. Used both for the outcome of an actual
+// validate-creds call and for the "picked an already-validated saved
+// profile, no network call needed" case, so every MyBeckhoff credential spot
+// in the app looks and behaves the same way.
+function setStatus(el, text, kind) {
+  if (!el) return;
+  el.textContent = text;
+  if (kind === 'ok')        { el.style.color = 'var(--tc-warn)'; el.className = 'pass-match-ok'; }
+  else if (kind === 'err')  { el.style.color = 'var(--tc-danger)'; el.className = 'pass-match-err'; }
+  else if (kind === 'warn') { el.style.color = 'var(--tc-warn)'; el.className = ''; }
+  else                      { el.style.color = 'var(--tc-muted)'; el.className = ''; }
+}
+
+// Shared "validate MyBeckhoff creds against a CX" flow - proxy-aware via
+// whatever proxy decider the caller hands in (single-device ensureProxyDecision
+// or the fleet-wide ensureFleetProxyDecision). Used at every place these
+// credentials get typed manually: Setup, Recipe capture, Recipe apply, Fleet
+// apply, and when saving a new MyBeckhoff profile. Returns true/false/undefined
+// (undefined if the proxy prompt was cancelled - treated as "not validated").
+async function runCredsValidate({ host, password, beckhoffUser, beckhoffPass, btn, statusEl, getProxyDecision }) {
+  if (!host) { setStatus(statusEl, '⚠ Connect to a CX first', 'warn'); return false; }
+  if (!beckhoffUser || !beckhoffPass) { setStatus(statusEl, '⚠ Enter MyBeckhoff credentials first', 'warn'); return false; }
+  setStatus(statusEl, 'Validating...', 'muted');
+  if (btn) btn.disabled = true;
+  const proxyDecision = await getProxyDecision();
+  if (proxyDecision.cancelled) { setStatus(statusEl, '', 'muted'); if (btn) btn.disabled = false; return false; }
+  const res = await window.api.validateCreds({
+    host, password, port: 22, beckhoffUser, beckhoffPass,
+    proxyHost: proxyDecision.proxyHost, proxyPort: proxyDecision.proxyPort
+  });
+  if (btn) btn.disabled = false;
+  if (res.ok) { setStatus(statusEl, '✓ Credentials valid', 'ok'); return true; }
+  setStatus(statusEl, '✗ ' + (res.error || 'Validation failed'), 'err');
+  return false;
 }
 
 $('btn-run-setup').addEventListener('click', async () => {
@@ -2465,12 +2520,9 @@ $('btn-check-image')?.addEventListener('click', async () => {
   // Read values from the profile form's own fields
   function getFormCreds() {
     return {
-      name:   ($('profile-name-input')  || {}).value?.trim()  || '',
-      ip:     ($('profile-ip-input')    || {}).value?.trim()  || '',
-      pass:   ($('profile-pass-input')  || {}).value          || '',
-      bkUser: ($('profile-bkuser-input')|| {}).value?.trim()  || '',
-      bkPass: ($('profile-bkpass-input')|| {}).value          || '',
-      saveBk: ($('profile-save-bk')     || {}).checked        || false,
+      name: ($('profile-name-input') || {}).value?.trim() || '',
+      ip:   ($('profile-ip-input')   || {}).value?.trim() || '',
+      pass: ($('profile-pass-input') || {}).value         || ''
     };
   }
 
@@ -2478,33 +2530,23 @@ $('btn-check-image')?.addEventListener('click', async () => {
   function prefillForm() {
     const ip   = $('cx-ip')?.value.trim()   || $('cx-ip2')?.value.trim()   || $('cx-ip3')?.value.trim()  || '';
     const pass = $('cx-pass')?.value        || $('cx-pass2')?.value        || $('cx-pass3')?.value       || '';
-    const bkUser = $('bk-user')?.value.trim() || '';
-    const bkPass = $('bk-pass')?.value       || '';
     const ipEl = $('profile-ip-input');
     const passEl = $('profile-pass-input');
-    const bkUserEl = $('profile-bkuser-input');
-    const bkPassEl = $('profile-bkpass-input');
     if (ipEl   && !ipEl.value   && ip)     ipEl.value   = ip;
     if (passEl && !passEl.value && pass)   passEl.value = pass;
-    if (bkUserEl && !bkUserEl.value && bkUser) bkUserEl.value = bkUser;
-    if (bkPassEl && !bkPassEl.value && bkPass) bkPassEl.value = bkPass;
   }
 
   // Push loaded profile to all credential fields
   function applyProfile(p) {
     ['cx-ip','cx-ip2','cx-ip3'].forEach(id => { if ($(id)) $(id).value = p.ip || ''; });
     ['cx-pass','cx-pass2','cx-pass3'].forEach(id => { if ($(id)) $(id).value = p.pass || ''; });
-    if (p.bkUser && $('bk-user')) $('bk-user').value = p.bkUser;
-    if (p.bkPass && $('bk-pass')) $('bk-pass').value = p.bkPass;
     if (typeof propagateCreds === 'function') propagateCreds(p.ip || '', p.pass || '');
     const pmTarget = $('power-menu-target');
     if (pmTarget && p.ip) pmTarget.textContent = 'target: ' + p.ip;
   }
 
   function clearForm() {
-    ['profile-name-input','profile-ip-input','profile-pass-input','profile-bkuser-input','profile-bkpass-input'].forEach(id => { if ($(id)) $(id).value = ''; });
-    const chk = $('profile-save-bk');
-    if (chk) { chk.checked = false; chk.dispatchEvent(new Event('change')); }
+    ['profile-name-input','profile-ip-input','profile-pass-input'].forEach(id => { if ($(id)) $(id).value = ''; });
   }
 
   async function persist() {
@@ -2533,7 +2575,7 @@ $('btn-check-image')?.addEventListener('click', async () => {
       row.innerHTML = `
         <div class="profile-item-info">
           <div class="profile-item-name">${escapeHtml(p.name)}</div>
-          <div class="profile-item-sub">${escapeHtml(p.ip)}${p.bkUser ? '  ·  ' + escapeHtml(p.bkUser) : ''}</div>
+          <div class="profile-item-sub">${escapeHtml(p.ip)}</div>
         </div>
         <button class="profile-item-del" data-idx="${i}" title="Delete">✕</button>`;
       row.addEventListener('click', (e) => {
@@ -2552,17 +2594,6 @@ $('btn-check-image')?.addEventListener('click', async () => {
       listEl.appendChild(row);
     });
     updateBtnLabel();
-  }
-
-  // MyBeckhoff fields toggle
-  const saveBkChk = $('profile-save-bk');
-  if (saveBkChk) {
-    saveBkChk.addEventListener('change', function () {
-      const show = this.checked;
-      ['profile-bkuser-input','profile-bkpass-input'].forEach(id => {
-        if ($(id)) $(id).style.display = show ? 'block' : 'none';
-      });
-    });
   }
 
   function openMenu() {
@@ -2590,14 +2621,7 @@ $('btn-check-image')?.addEventListener('click', async () => {
     const f = getFormCreds();
     if (!f.name) { toast('Enter a profile name', 'warn'); return; }
     if (!f.ip)   { toast('Enter a CX IP address', 'warn'); return; }
-    const profile = {
-      id: Date.now().toString(),
-      name: f.name,
-      ip: f.ip,
-      pass: f.pass,
-      bkUser: f.saveBk ? f.bkUser : '',
-      bkPass: f.saveBk ? f.bkPass : ''
-    };
+    const profile = { id: Date.now().toString(), name: f.name, ip: f.ip, pass: f.pass };
     const existingIdx = profiles.findIndex(p => p.name === f.name);
     if (existingIdx >= 0) {
       if (!confirm(`A profile named "${f.name}" already exists. Overwrite it?`)) return;
@@ -2619,6 +2643,198 @@ $('btn-check-image')?.addEventListener('click', async () => {
     if (res && res.ok && Array.isArray(res.profiles)) {
       profiles = res.profiles;
       renderList();
+    }
+  }).catch(() => {});
+})();
+
+// MyBeckhoff credential profiles - named identities, separate from CX
+// profiles. Encrypted at rest via safeStorage where the OS backend supports
+// it (see main.js bkprofiles:save). Feeds a "load saved profile" select at
+// every place MyBeckhoff creds get typed: Setup, Recipe capture, Recipe
+// apply, Fleet apply.
+(function initBkProfiles() {
+  const wrap    = $('mybk-wrap');
+  const btn     = $('mybk-btn');
+  const menu    = $('mybk-menu');
+  const listEl  = $('mybk-list');
+  const warnEl  = $('mybk-warning');
+  const saveBtn = $('btn-mybk-save');
+  if (!wrap || !btn || !menu || !saveBtn) return;
+
+  let profiles = [];
+  let encryptionAvailable = true;
+
+  const PICKERS = [
+    { select: 'bk-profile-select',              user: 'bk-user',              pass: 'bk-pass',              status: 'creds-status' },
+    { select: 'recipe-bk-profile-select',        user: 'recipe-bk-user',        pass: 'recipe-bk-pass',        status: 'recipe-creds-status' },
+    { select: 'recipe-apply-bk-profile-select',  user: 'recipe-apply-bk-user',  pass: 'recipe-apply-bk-pass',  status: 'recipe-apply-creds-status' },
+    { select: 'fleet-bk-profile-select',         user: 'fleet-bk-user',         pass: 'fleet-bk-pass',         status: 'fleet-creds-validate-status' }
+  ];
+
+  function populateSelects() {
+    PICKERS.forEach(({ select, user, pass, status }) => {
+      const sel = $(select);
+      if (!sel) return;
+      const prevVal = sel.value;
+      sel.innerHTML = '<option value="">-- none --</option>' +
+        profiles.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
+      sel.value = profiles.some(p => p.id === prevVal) ? prevVal : '';
+
+      const userEl = $(user), passEl = $(pass), statusEl = $(status);
+
+      // Typing directly into either field means whatever is there is no
+      // longer the picked profile's own creds - drop back to "not picked"
+      // and clear the validated mark, so a manual edit always needs its own
+      // manual validate rather than silently keeping a stale green tick.
+      const onManualEdit = () => {
+        if (sel.value) sel.value = '';
+        setStatus(statusEl, '', 'muted');
+      };
+      if (userEl && !userEl._bkEditWired) { userEl.addEventListener('input', onManualEdit); userEl._bkEditWired = true; }
+      if (passEl && !passEl._bkEditWired) { passEl.addEventListener('input', onManualEdit); passEl._bkEditWired = true; }
+
+      sel.onchange = () => {
+        const p = profiles.find(x => x.id === sel.value);
+        if (!p) { setStatus(statusEl, '', 'muted'); return; }
+        if (userEl) userEl.value = p.username;
+        if (passEl) passEl.value = p.password;
+        if (p.broken) {
+          toast(`"${p.name}" couldn't be decrypted on this machine - re-save it`, 'warn');
+          setStatus(statusEl, '⚠ could not decrypt on this machine - re-save this profile', 'warn');
+        } else {
+          // Every saved profile is validated at the point it's saved (see the
+          // save handler below), so picking one never needs a fresh network
+          // round trip - that's the whole point of the mark.
+          setStatus(statusEl, '✓ validated (saved profile)', 'ok');
+        }
+      };
+    });
+  }
+
+  function updateWarning() {
+    if (!warnEl) return;
+    warnEl.style.display = encryptionAvailable ? 'none' : 'block';
+    warnEl.textContent = '⚠ OS credential encryption unavailable on this machine - profiles are stored in plain text.';
+  }
+
+  async function persist() {
+    const res = await window.api.bkProfilesSave(profiles).catch(() => null);
+    if (res) encryptionAvailable = res.encryptionAvailable;
+    updateWarning();
+  }
+
+  function updateBtnLabel() {
+    const labelEl = btn.querySelector('.profile-label');
+    if (labelEl) labelEl.textContent = profiles.length ? `MYBECKHOFF (${profiles.length})` : 'MYBECKHOFF';
+  }
+
+  function renderList() {
+    listEl.innerHTML = '';
+    const sep = $('mybk-sep');
+    if (!profiles.length) {
+      listEl.style.display = 'none';
+      if (sep) sep.style.display = 'none';
+      updateBtnLabel();
+      return;
+    }
+    listEl.style.display = 'block';
+    if (sep) sep.style.display = 'block';
+    profiles.forEach((p, i) => {
+      const row = document.createElement('div');
+      row.className = 'profile-item';
+      row.innerHTML = `
+        <div class="profile-item-info">
+          <div class="profile-item-name">${escapeHtml(p.name)}</div>
+          <div class="profile-item-sub">${escapeHtml(p.username)}${p.broken ? '  ·  ⚠ re-save' : (p.validated ? '  ·  ✓ validated' : '')}</div>
+        </div>
+        <button class="profile-item-del" data-idx="${i}" title="Delete">✕</button>`;
+      row.querySelector('.profile-item-del').addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!confirm(`Delete MyBeckhoff profile "${p.name}"?`)) return;
+        profiles.splice(i, 1);
+        await persist();
+        renderList();
+        populateSelects();
+      });
+      listEl.appendChild(row);
+    });
+    updateBtnLabel();
+  }
+
+  function clearForm() {
+    ['mybk-name-input','mybk-user-input','mybk-pass-input'].forEach(id => { if ($(id)) $(id).value = ''; });
+  }
+
+  function openMenu() {
+    menu.classList.add('open');
+    btn.classList.add('active');
+    btn.setAttribute('aria-expanded', 'true');
+    const nameEl = $('mybk-name-input');
+    if (nameEl) nameEl.focus();
+  }
+  function closeMenu() {
+    menu.classList.remove('open');
+    btn.classList.remove('active');
+    btn.setAttribute('aria-expanded', 'false');
+  }
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    menu.classList.contains('open') ? closeMenu() : openMenu();
+  });
+  document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) closeMenu(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); });
+
+  saveBtn.addEventListener('click', async () => {
+    const name = ($('mybk-name-input').value || '').trim();
+    const username = ($('mybk-user-input').value || '').trim();
+    const password = $('mybk-pass-input').value || '';
+    const saveStat = $('mybk-save-status');
+    if (!name) { toast('Enter a profile name', 'warn'); return; }
+    if (!username || !password) { toast('Enter a username and password', 'warn'); return; }
+
+    // Validated once, here, at save time - straight from this laptop, no CX
+    // needed. The MyBeckhoff account isn't CX-specific, so there's no reason
+    // to require one just to check a username/password pair. (The per-CX
+    // validate buttons elsewhere still go through the CX + proxy, since those
+    // are checking whether that specific device can reach the repo.)
+    setStatus(saveStat, 'Validating...', 'muted');
+    saveBtn.disabled = true;
+    const res = await window.api.validateCredsDirect({ beckhoffUser: username, beckhoffPass: password })
+      .catch(e => ({ ok: false, error: String((e && e.message) || e) }));
+    saveBtn.disabled = false;
+    if (!res.ok) {
+      setStatus(saveStat, '✗ ' + (res.error || 'Validation failed'), 'err');
+      return;
+    }
+
+    const profile = { id: Date.now().toString(), name, username, password, validated: true };
+    const existingIdx = profiles.findIndex(p => p.name === name);
+    if (existingIdx >= 0) {
+      if (!confirm(`A MyBeckhoff profile named "${name}" already exists. Overwrite it?`)) return;
+      profile.id = profiles[existingIdx].id;
+      profiles[existingIdx] = profile;
+    } else {
+      profiles.push(profile);
+    }
+    await persist();
+    renderList();
+    populateSelects();
+    clearForm();
+    setStatus(saveStat, '', 'muted');
+    toast('MyBeckhoff profile saved and validated: ' + name, 'success');
+  });
+
+  const nameEl = $('mybk-name-input');
+  if (nameEl) nameEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveBtn.click(); });
+
+  window.api.bkProfilesLoad().then(res => {
+    if (res && res.ok) {
+      profiles = res.profiles || [];
+      encryptionAvailable = res.encryptionAvailable;
+      renderList();
+      populateSelects();
+      updateWarning();
     }
   }).catch(() => {});
 })();
@@ -3574,6 +3790,21 @@ $('btn-check-image')?.addEventListener('click', async () => {
     captureStat.style.color = 'var(--tc-accent2)';
   });
 
+  // ---- validate MyBeckhoff creds (manual entry, not from a saved profile) ----
+  const validateBtn  = $('btn-recipe-validate-creds');
+  const validateStat = $('recipe-creds-status');
+  if (validateBtn) {
+    validateBtn.addEventListener('click', async () => {
+      const conn = getCxMgmtConn();
+      await runCredsValidate({
+        host: conn.host, password: conn.password,
+        beckhoffUser: (bkUserInput.value || '').trim(), beckhoffPass: bkPassInput.value || '',
+        btn: validateBtn, statusEl: validateStat,
+        getProxyDecision: () => ensureProxyDecision(conn.host, conn.password)
+      });
+    });
+  }
+
   // Builds the checklist UI from raw captured facts. Everything starts ticked,
   // matching the old all-or-nothing behaviour, but every package and every
   // firewall port gets its own checkbox so any of them can be left out.
@@ -3833,6 +4064,21 @@ $('btn-check-image')?.addEventListener('click', async () => {
     applyPanel.style.display = 'none';
     applyTarget = null;
   });
+
+  // ---- validate MyBeckhoff creds (manual entry, not from a saved profile) ----
+  const applyValidateBtn  = $('btn-recipe-apply-validate-creds');
+  const applyValidateStat = $('recipe-apply-creds-status');
+  if (applyValidateBtn) {
+    applyValidateBtn.addEventListener('click', async () => {
+      const conn = getCxMgmtConn();
+      await runCredsValidate({
+        host: conn.host, password: conn.password,
+        beckhoffUser: (applyBkUserInput.value || '').trim(), beckhoffPass: applyBkPassInput.value || '',
+        btn: applyValidateBtn, statusEl: applyValidateStat,
+        getProxyDecision: () => ensureProxyDecision(conn.host, conn.password)
+      });
+    });
+  }
 
   applyRunBtn.addEventListener('click', async () => {
     if (!applyTarget) return;
@@ -4105,6 +4351,24 @@ $('btn-check-image')?.addEventListener('click', async () => {
     el('fleet-run-status').style.color = reachableCount === targets.length ? 'var(--tc-accent2)' : 'var(--tc-warn)';
     if (reachableCount < targets.length) toast(`${targets.length - reachableCount} device(s) not reachable - they'll be skipped`, 'warn');
   });
+
+  // ---- validate MyBeckhoff creds (manual entry, not from a saved profile) ----
+  // MyBeckhoff is one account for the whole fleet, not per-device, so this
+  // spot-checks against the first target rather than every device.
+  const fleetValidateBtn  = el('btn-fleet-validate-creds');
+  const fleetValidateStat = el('fleet-creds-validate-status');
+  if (fleetValidateBtn) {
+    fleetValidateBtn.addEventListener('click', async () => {
+      if (!targets.length) { setStatus(fleetValidateStat, '⚠ Add at least one target first', 'warn'); return; }
+      const first = targets[0];
+      await runCredsValidate({
+        host: first.host, password: first.password,
+        beckhoffUser: (el('fleet-bk-user').value || '').trim(), beckhoffPass: el('fleet-bk-pass').value || '',
+        btn: fleetValidateBtn, statusEl: fleetValidateStat,
+        getProxyDecision: () => ensureFleetProxyDecision(targets)
+      });
+    });
+  }
 
   // ---- run ----
   function buildRunTable() {

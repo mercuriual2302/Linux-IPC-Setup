@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('api', {
 
   // CX Management - new
   validateCreds:  (opts) => ipcRenderer.invoke('cx:validate-creds', opts),
+  validateCredsDirect: (opts) => ipcRenderer.invoke('bk:validate-direct', opts),
   applyNetwork:   (opts) => ipcRenderer.invoke('cx:network', opts),
   applyFirewall:  (opts) => ipcRenderer.invoke('cx:firewall', opts),
   readFirewall:   (opts) => ipcRenderer.invoke('cx:read-firewall', opts),
@@ -33,6 +34,8 @@ contextBridge.exposeInMainWorld('api', {
   updateFeed:       (opts) => ipcRenderer.invoke('cx:update-feed', opts),
   profilesLoad:     ()     => ipcRenderer.invoke('profiles:load'),
   profilesSave:     (data) => ipcRenderer.invoke('profiles:save', data),
+  bkProfilesLoad:   ()     => ipcRenderer.invoke('bkprofiles:load'),
+  bkProfilesSave:   (profiles) => ipcRenderer.invoke('bkprofiles:save', { profiles }),
   tcRuntime:      (opts) => ipcRenderer.invoke('cx:tc-runtime', opts),
   serviceMgmt:    (opts) => ipcRenderer.invoke('cx:service-mgmt', opts),
   power:          (opts) => ipcRenderer.invoke('cx:power', opts),
@@ -92,6 +95,7 @@ contextBridge.exposeInMainWorld('api', {
   checkInternetFleet: (opts) => ipcRenderer.invoke('cx:check-internet-fleet', opts),
   startProxy:    (opts) => ipcRenderer.invoke('proxy:start', opts),
   stopProxy:     ()     => ipcRenderer.invoke('proxy:stop'),
+  proxyStatus:   (opts) => ipcRenderer.invoke('proxy:status', opts),
 
   // streaming events
   on: (channel, cb) => {

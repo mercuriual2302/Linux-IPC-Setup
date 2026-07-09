@@ -1,9 +1,10 @@
 // main.js - Electron main process
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const net = require('net');
+const https = require('https');
 
 const SSHManager = require('./src/ssh-manager');
 const ScriptBuilder = require('./src/script-builder');
@@ -646,17 +647,25 @@ ipcMain.handle('fs:join', (_evt, { base, name }) => ({ ok: true, path: path.join
 ipcMain.handle('fs:dirname', (_evt, { p }) => ({ ok: true, path: path.dirname(p) }));
 
 
-// Internet-access check before a Setup run - bash's /dev/tcp pseudo-device
-// needs no extra tools on the CX (no curl/wget dependency), just bash itself.
+// Internet-access check before a Setup run - curl the same InRelease file
+// cx:validate-creds checks, so "reachable" means the same thing here as it
+// does there. Used to be a bare TCP connect to port 443, which only proves
+// the handshake completes - a network that lets that through but blocks or
+// resets the actual HTTPS request (SNI filtering, a transparent proxy, etc.)
+// read as "reachable" and skipped offering the proxy, then failed later in
+// the real check with no way back to that decision. Any HTTP response code
+// (even 401/403 with no creds) means the request actually completed - only
+// curl's "000" means it didn't.
 // Shared by cx:check-internet (single device) and cx:check-internet-fleet
 // (many devices) - one CX, does it have its own route to the Beckhoff feed.
 async function checkInternetOnHost({ host, username, password, port }) {
   const mgr = new SSHManager();
   try {
     await mgr.connect({ host, username: username || 'Administrator', password, port: port || 22 });
-    const result = await mgr.exec(`timeout 5 bash -c 'cat < /dev/null > /dev/tcp/deb.beckhoff.com/443' && echo REACHABLE || echo UNREACHABLE`);
+    const result = await mgr.exec(`curl -s -o /dev/null -w "%{http_code}" --max-time 5 https://deb.beckhoff.com/debian/dists/trixie-stable/InRelease`);
     mgr.dispose();
-    return { host, ok: true, reachable: /REACHABLE/.test(result.stdout) && !/UNREACHABLE/.test(result.stdout) };
+    const code = (result.stdout || '').trim();
+    return { host, ok: true, reachable: code !== '' && code !== '000' };
   } catch (err) {
     mgr.dispose();
     return { host, ok: false, error: err.message || String(err) };
@@ -749,6 +758,21 @@ ipcMain.handle('proxy:stop', async () => {
     activeProxy = null;
   }
   return { ok: true };
+});
+
+// Is there already a running proxy that covers this host (or every host in
+// this list)? Setup, Recipes, and Fleet each decide "does this CX need the
+// proxy" independently, but there's only ever one actual SOCKS5 server - if
+// Fleet already started one covering this CX, Setup asking again (or worse,
+// silently reusing its own stale "skip" answer from before that proxy
+// existed) makes no sense. This lets any flow check the real current state
+// before deciding anything itself.
+ipcMain.handle('proxy:status', async (_evt, { host, hosts } = {}) => {
+  if (!activeProxy) return { active: false };
+  const allowed = new Set((activeProxy.allowKey || '').split(',').filter(Boolean));
+  const need = Array.isArray(hosts) && hosts.length ? hosts : (host ? [host] : []);
+  const covers = need.length > 0 && need.every(h => allowed.has(h));
+  return covers ? { active: true, proxyHost: activeProxy.host, proxyPort: activeProxy.port } : { active: false };
 });
 
 
@@ -849,6 +873,38 @@ ipcMain.handle('cx:validate-creds', async (_evt, { host, password, port, beckhof
   } catch (err) {
     return { ok: false, error: err.message };
   }
+});
+
+// Same check as cx:validate-creds but run straight from this laptop over
+// plain HTTPS, no CX/SSH involved. The MyBeckhoff account itself isn't
+// CX-specific - it's only the credential-in-the-InRelease-file check that
+// happened to be piggybacked on an SSH session before. This lets a profile
+// get saved and validated before any CX is even connected. Deliberately not
+// proxy-aware - it's the laptop's own internet being used here, not a CX's.
+function validateBkCredsDirect(beckhoffUser, beckhoffPass) {
+  return new Promise((resolve) => {
+    const auth = Buffer.from(`${beckhoffUser || ''}:${beckhoffPass || ''}`).toString('base64');
+    const req = https.request({
+      hostname: 'deb.beckhoff.com',
+      path: '/debian/dists/trixie-stable/InRelease',
+      method: 'GET',
+      headers: { Authorization: `Basic ${auth}` },
+      timeout: 10000
+    }, (res) => {
+      res.resume(); // discard body, only the status code matters
+      const code = res.statusCode;
+      if (code === 200) resolve({ ok: true });
+      else if (code === 401 || code === 403) resolve({ ok: false, error: `Invalid MyBeckhoff credentials (server returned ${code})` });
+      else resolve({ ok: false, error: `Unexpected response: HTTP ${code}` });
+    });
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'Could not reach deb.beckhoff.com - check this laptop\'s internet connection' }); });
+    req.on('error', (err) => resolve({ ok: false, error: err.message }));
+    req.end();
+  });
+}
+
+ipcMain.handle('bk:validate-direct', async (_evt, { beckhoffUser, beckhoffPass }) => {
+  return validateBkCredsDirect(beckhoffUser, beckhoffPass);
 });
 
 // Network configurator
@@ -1800,7 +1856,20 @@ ipcMain.handle('profiles:load', async () => {
   const profilesPath = path.join(app.getPath('userData'), 'cx-profiles.json');
   try {
     const raw = await fs.promises.readFile(profilesPath, 'utf8');
-    return { ok: true, profiles: JSON.parse(raw) };
+    const profiles = JSON.parse(raw);
+    // One-time cleanup: MyBeckhoff creds used to be optionally saved in
+    // plaintext inside a CX profile (the old "Save MyBeckhoff credentials"
+    // checkbox). That's retired as of v3.2.0 in favour of the encrypted
+    // MyBeckhoff profile list, so strip any leftovers rather than carry them
+    // forward.
+    let changed = false;
+    profiles.forEach(p => {
+      if ('bkUser' in p || 'bkPass' in p) { delete p.bkUser; delete p.bkPass; changed = true; }
+    });
+    if (changed) {
+      fs.promises.writeFile(profilesPath, JSON.stringify(profiles, null, 2), 'utf8').catch(() => {});
+    }
+    return { ok: true, profiles };
   } catch (e) {
     // File doesn't exist yet - return empty array
     return { ok: true, profiles: [] };
@@ -1815,6 +1884,65 @@ ipcMain.handle('profiles:save', async (_evt, { profiles }) => {
     return { ok: true };
   } catch (e) {
     return { ok: false, error: e.message };
+  }
+});
+
+// MyBeckhoff credential profiles - named identities, separate from CX
+// profiles. Passwords are encrypted at rest with Electron's safeStorage
+// (DPAPI on Windows, Keychain on macOS) when the OS backend is available.
+// If it isn't, we still save rather than block the user - just unencrypted,
+// flagged so the renderer can show a plain-text warning.
+function getBkProfilesPath() {
+  return path.join(app.getPath('userData'), 'mybeckhoff-profiles.json');
+}
+
+ipcMain.handle('bkprofiles:load', async () => {
+  const profilesPath = getBkProfilesPath();
+  const encryptionAvailable = safeStorage.isEncryptionAvailable();
+  try {
+    const raw = await fs.promises.readFile(profilesPath, 'utf8');
+    const stored = JSON.parse(raw);
+    const profiles = stored.map(entry => {
+      let password = '';
+      let broken = false;
+      if (entry.password) {
+        if (entry.encrypted) {
+          try {
+            password = safeStorage.decryptString(Buffer.from(entry.password, 'base64'));
+          } catch (_) {
+            // Can't decrypt - usually means the profile was copied to a
+            // different machine or user account. Surface it, don't crash.
+            broken = true;
+          }
+        } else {
+          password = entry.password;
+        }
+      }
+      return { id: entry.id, name: entry.name, username: entry.username || '', password, broken, validated: !!entry.validated };
+    });
+    return { ok: true, profiles, encryptionAvailable };
+  } catch (e) {
+    return { ok: true, profiles: [], encryptionAvailable };
+  }
+});
+
+ipcMain.handle('bkprofiles:save', async (_evt, { profiles }) => {
+  const profilesPath = getBkProfilesPath();
+  const encryptionAvailable = safeStorage.isEncryptionAvailable();
+  try {
+    const toStore = (profiles || []).map(entry => {
+      let password = entry.password || '';
+      let encrypted = false;
+      if (password && encryptionAvailable) {
+        password = safeStorage.encryptString(password).toString('base64');
+        encrypted = true;
+      }
+      return { id: entry.id, name: entry.name, username: entry.username || '', password, encrypted, validated: !!entry.validated };
+    });
+    await fs.promises.writeFile(profilesPath, JSON.stringify(toStore, null, 2), 'utf8');
+    return { ok: true, encryptionAvailable };
+  } catch (e) {
+    return { ok: false, error: e.message, encryptionAvailable };
   }
 });
 
