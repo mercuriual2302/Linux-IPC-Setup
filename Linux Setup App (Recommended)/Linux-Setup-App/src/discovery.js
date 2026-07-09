@@ -306,16 +306,22 @@ async function scanLinkLocalForSSHMulti(remainingMacs, laptopIp) {
     let completed = 0;
     let idx = 0;
     let stopped = false;
+    let checking = false;
     const total = hosts.length;
 
     async function checkSatisfied() {
-      if (stopped || !remaining.size) return;
-      const arp = await readArp();
-      console.log('[sweep] checkpoint at', completed, 'completed - current arp table:', JSON.stringify(arp));
-      for (const mac of [...remaining]) {
-        if (arp.some(e => norm(e.mac) === mac)) { remaining.delete(mac); console.log('[sweep] resolved', mac, 'at', completed, 'completed'); }
+      if (stopped || !remaining.size || checking) return;
+      checking = true;
+      try {
+        const arp = await readArp();
+        console.log('[sweep] checkpoint at', completed, 'completed - current arp table:', JSON.stringify(arp));
+        for (const mac of [...remaining]) {
+          if (arp.some(e => norm(e.mac) === mac)) { remaining.delete(mac); console.log('[sweep] resolved', mac, 'at', completed, 'completed'); }
+        }
+        if (!remaining.size) { stopped = true; console.log('[sweep] all satisfied, stopping early at', completed); resolve(); }
+      } finally {
+        checking = false;
       }
-      if (!remaining.size) { stopped = true; console.log('[sweep] all satisfied, stopping early at', completed); resolve(); }
     }
 
     function next() {
