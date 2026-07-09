@@ -213,8 +213,13 @@ ${runtimeLine2}
 echo "[CX] Installing TwinCAT runtime..."
 ${runtimeLine1}
 ${tf2000PreCheckBlock}${pkgsBlock}${mdpBlock}${hmiBlock}${tf1200Block}
-echo "[CX] Upgrading all packages..."
-_sudo apt $APT_OPTS upgrade -y
+echo "[CX] Checking for available system upgrades..."
+UPGRADABLE_COUNT=$(apt list --upgradable 2>/dev/null | grep -v '^Listing' | wc -l)
+if [ "$UPGRADABLE_COUNT" -gt 0 ]; then
+  echo "[CX] $UPGRADABLE_COUNT system package(s) can be upgraded. Not applied automatically - review and install them from the Packages page."
+else
+  echo "[CX] No system package upgrades available."
+fi
 echo "[CX] Restoring firewall to its state before setup (was active=$FW_WAS_ACTIVE, enabled=$FW_WAS_ENABLED)..."
 if [ "$FW_WAS_ENABLED" = "enabled" ]; then
   _sudo systemctl enable nftables || true
