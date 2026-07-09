@@ -26,3 +26,7 @@ Thumbs.db
 # Environment / secrets
 .env
 .env.local
+
+# Local update-testing config (see dev-app-update.yml setup) - points at
+# localhost, never meant to be shared
+dev-app-update.yml

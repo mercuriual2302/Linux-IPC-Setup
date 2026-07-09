@@ -19,6 +19,7 @@
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
+    "electron-updater": "^6.8.9",
     "node-ssh": "^13.2.0"
   },
   "devDependencies": {
@@ -30,6 +31,11 @@
     "productName": "Linux Setup Console",
     "copyright": "Copyright © 2026",
     "npmRebuild": false,
+    "publish": {
+      "provider": "github",
+      "owner": "mercuriual2302",
+      "repo": "Linux-IPC-Setup"
+    },
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -61,7 +67,7 @@
         }
       ],
       "icon": "build/icon.ico",
-      "artifactName": "${productName}-${version}-${arch}.${ext}"
+      "artifactName": "${name}-${version}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -72,19 +78,22 @@
       "shortcutName": "Linux Setup Console"
     },
     "portable": {
-      "artifactName": "${productName}-${version}-portable.${ext}"
+      "artifactName": "${name}-${version}-portable.${ext}"
     },
     "linux": {
       "target": [
         "AppImage",
         "deb"
       ],
+      "artifactName": "${name}-${version}-${arch}.${ext}",
       "category": "Development"
     },
     "mac": {
       "target": [
-        "dmg"
+        "dmg",
+        "zip"
       ],
+      "artifactName": "${name}-${version}-${arch}.${ext}",
       "category": "public.app-category.developer-tools"
     }
   }
