@@ -144,11 +144,21 @@ async function checkGithubForUpdate() {
 async function checkForAppUpdates(win) {
   let notifiedByAutoUpdater = false;
 
-  // Skip electron-updater entirely when running unpacked (npm start) - it
-  // needs a packaged build's app-update.yml and just no-ops/errors without
-  // one. Going straight to the fallback here also means the banner is
-  // actually testable during normal dev work.
-  if (app.isPackaged) {
+  // Normally electron-updater is skipped entirely when running unpacked
+  // (npm start) - it needs a packaged build's app-update.yml and just
+  // no-ops/errors without one. The one exception: running with --dev AND a
+  // local dev-app-update.yml present (gitignored, never shipped) means
+  // someone's deliberately testing the real update flow against a local
+  // server - electron-updater's own documented way to do this without a
+  // full packaged build. Absent both of those, this always skips straight to
+  // the fallback below, which is also what makes the banner testable during
+  // normal dev work.
+  const devUpdateConfigPath = path.join(__dirname, 'dev-app-update.yml');
+  const testingUpdatesInDev = !app.isPackaged && process.argv.includes('--dev') && fs.existsSync(devUpdateConfigPath);
+
+  if (app.isPackaged || testingUpdatesInDev) {
+    if (testingUpdatesInDev) autoUpdater.forceDevUpdateConfig = true;
+
     // Checking happens automatically in the background, same as before - it's
     // only the download and install that now waits for the user to actually
     // click Update, rather than happening silently.
