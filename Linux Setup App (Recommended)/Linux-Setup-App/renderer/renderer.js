@@ -2774,25 +2774,20 @@ $('btn-check-image')?.addEventListener('click', async () => {
     if (!name) { toast('Enter a profile name', 'warn'); return; }
     if (!username || !password) { toast('Enter a username and password', 'warn'); return; }
 
-    // Validated once, here, at save time - that's the whole point of the
-    // "validated" mark. Needs a connected CX to actually check the creds
-    // against the Beckhoff apt server, so require one rather than saving an
-    // unverified profile that later gets treated as trusted everywhere else.
-    const conn = getCxMgmtConn();
-    if (!conn.host) {
-      setStatus(saveStat, '⚠ Connect to a CX first - validation is required to save', 'warn');
+    // Validated once, here, at save time - straight from this laptop, no CX
+    // needed. The MyBeckhoff account isn't CX-specific, so there's no reason
+    // to require one just to check a username/password pair. (The per-CX
+    // validate buttons elsewhere still go through the CX + proxy, since those
+    // are checking whether that specific device can reach the repo.)
+    setStatus(saveStat, 'Validating...', 'muted');
+    saveBtn.disabled = true;
+    const res = await window.api.validateCredsDirect({ beckhoffUser: username, beckhoffPass: password })
+      .catch(e => ({ ok: false, error: String((e && e.message) || e) }));
+    saveBtn.disabled = false;
+    if (!res.ok) {
+      setStatus(saveStat, '✗ ' + (res.error || 'Validation failed'), 'err');
       return;
     }
-
-    saveBtn.disabled = true;
-    const ok = await runCredsValidate({
-      host: conn.host, password: conn.password,
-      beckhoffUser: username, beckhoffPass: password,
-      btn: null, statusEl: saveStat,
-      getProxyDecision: () => ensureProxyDecision(conn.host, conn.password)
-    });
-    saveBtn.disabled = false;
-    if (!ok) return; // saveStat already shows why
 
     const profile = { id: Date.now().toString(), name, username, password, validated: true };
     const existingIdx = profiles.findIndex(p => p.name === name);

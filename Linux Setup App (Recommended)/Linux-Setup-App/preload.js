@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('api', {
 
   // CX Management - new
   validateCreds:  (opts) => ipcRenderer.invoke('cx:validate-creds', opts),
+  validateCredsDirect: (opts) => ipcRenderer.invoke('bk:validate-direct', opts),
   applyNetwork:   (opts) => ipcRenderer.invoke('cx:network', opts),
   applyFirewall:  (opts) => ipcRenderer.invoke('cx:firewall', opts),
   readFirewall:   (opts) => ipcRenderer.invoke('cx:read-firewall', opts),

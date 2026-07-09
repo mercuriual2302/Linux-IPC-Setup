@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const net = require('net');
+const https = require('https');
 
 const SSHManager = require('./src/ssh-manager');
 const ScriptBuilder = require('./src/script-builder');
@@ -849,6 +850,38 @@ ipcMain.handle('cx:validate-creds', async (_evt, { host, password, port, beckhof
   } catch (err) {
     return { ok: false, error: err.message };
   }
+});
+
+// Same check as cx:validate-creds but run straight from this laptop over
+// plain HTTPS, no CX/SSH involved. The MyBeckhoff account itself isn't
+// CX-specific - it's only the credential-in-the-InRelease-file check that
+// happened to be piggybacked on an SSH session before. This lets a profile
+// get saved and validated before any CX is even connected. Deliberately not
+// proxy-aware - it's the laptop's own internet being used here, not a CX's.
+function validateBkCredsDirect(beckhoffUser, beckhoffPass) {
+  return new Promise((resolve) => {
+    const auth = Buffer.from(`${beckhoffUser || ''}:${beckhoffPass || ''}`).toString('base64');
+    const req = https.request({
+      hostname: 'deb.beckhoff.com',
+      path: '/debian/dists/trixie-stable/InRelease',
+      method: 'GET',
+      headers: { Authorization: `Basic ${auth}` },
+      timeout: 10000
+    }, (res) => {
+      res.resume(); // discard body, only the status code matters
+      const code = res.statusCode;
+      if (code === 200) resolve({ ok: true });
+      else if (code === 401 || code === 403) resolve({ ok: false, error: `Invalid MyBeckhoff credentials (server returned ${code})` });
+      else resolve({ ok: false, error: `Unexpected response: HTTP ${code}` });
+    });
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'Could not reach deb.beckhoff.com - check this laptop\'s internet connection' }); });
+    req.on('error', (err) => resolve({ ok: false, error: err.message }));
+    req.end();
+  });
+}
+
+ipcMain.handle('bk:validate-direct', async (_evt, { beckhoffUser, beckhoffPass }) => {
+  return validateBkCredsDirect(beckhoffUser, beckhoffPass);
 });
 
 // Network configurator
