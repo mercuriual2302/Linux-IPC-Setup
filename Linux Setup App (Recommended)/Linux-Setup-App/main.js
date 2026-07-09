@@ -647,17 +647,25 @@ ipcMain.handle('fs:join', (_evt, { base, name }) => ({ ok: true, path: path.join
 ipcMain.handle('fs:dirname', (_evt, { p }) => ({ ok: true, path: path.dirname(p) }));
 
 
-// Internet-access check before a Setup run - bash's /dev/tcp pseudo-device
-// needs no extra tools on the CX (no curl/wget dependency), just bash itself.
+// Internet-access check before a Setup run - curl the same InRelease file
+// cx:validate-creds checks, so "reachable" means the same thing here as it
+// does there. Used to be a bare TCP connect to port 443, which only proves
+// the handshake completes - a network that lets that through but blocks or
+// resets the actual HTTPS request (SNI filtering, a transparent proxy, etc.)
+// read as "reachable" and skipped offering the proxy, then failed later in
+// the real check with no way back to that decision. Any HTTP response code
+// (even 401/403 with no creds) means the request actually completed - only
+// curl's "000" means it didn't.
 // Shared by cx:check-internet (single device) and cx:check-internet-fleet
 // (many devices) - one CX, does it have its own route to the Beckhoff feed.
 async function checkInternetOnHost({ host, username, password, port }) {
   const mgr = new SSHManager();
   try {
     await mgr.connect({ host, username: username || 'Administrator', password, port: port || 22 });
-    const result = await mgr.exec(`timeout 5 bash -c 'cat < /dev/null > /dev/tcp/deb.beckhoff.com/443' && echo REACHABLE || echo UNREACHABLE`);
+    const result = await mgr.exec(`curl -s -o /dev/null -w "%{http_code}" --max-time 5 https://deb.beckhoff.com/debian/dists/trixie-stable/InRelease`);
     mgr.dispose();
-    return { host, ok: true, reachable: /REACHABLE/.test(result.stdout) && !/UNREACHABLE/.test(result.stdout) };
+    const code = (result.stdout || '').trim();
+    return { host, ok: true, reachable: code !== '' && code !== '000' };
   } catch (err) {
     mgr.dispose();
     return { host, ok: false, error: err.message || String(err) };
