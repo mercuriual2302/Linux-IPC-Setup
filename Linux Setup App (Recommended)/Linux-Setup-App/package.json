@@ -67,7 +67,7 @@
         }
       ],
       "icon": "build/icon.ico",
-      "artifactName": "${productName}-${version}-${arch}.${ext}"
+      "artifactName": "${name}-${version}-${arch}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -78,19 +78,22 @@
       "shortcutName": "Linux Setup Console"
     },
     "portable": {
-      "artifactName": "${productName}-${version}-portable.${ext}"
+      "artifactName": "${name}-${version}-portable.${ext}"
     },
     "linux": {
       "target": [
         "AppImage",
         "deb"
       ],
+      "artifactName": "${name}-${version}-${arch}.${ext}",
       "category": "Development"
     },
     "mac": {
       "target": [
-        "dmg"
+        "dmg",
+        "zip"
       ],
+      "artifactName": "${name}-${version}-${arch}.${ext}",
       "category": "public.app-category.developer-tools"
     }
   }
