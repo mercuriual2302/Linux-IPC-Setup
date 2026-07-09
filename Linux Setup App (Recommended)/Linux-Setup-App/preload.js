@@ -95,6 +95,7 @@ contextBridge.exposeInMainWorld('api', {
   checkInternetFleet: (opts) => ipcRenderer.invoke('cx:check-internet-fleet', opts),
   startProxy:    (opts) => ipcRenderer.invoke('proxy:start', opts),
   stopProxy:     ()     => ipcRenderer.invoke('proxy:stop'),
+  proxyStatus:   (opts) => ipcRenderer.invoke('proxy:status', opts),
 
   // streaming events
   on: (channel, cb) => {

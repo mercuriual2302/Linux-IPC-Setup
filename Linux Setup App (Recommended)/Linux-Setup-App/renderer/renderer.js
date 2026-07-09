@@ -941,6 +941,16 @@ function askProxyChoice() {
 let proxyState = { forIp: null, decided: false, host: null, port: null };
 
 async function ensureProxyDecision(ip, cxPass) {
+  // A proxy already running and covering this exact host - started here
+  // earlier, or by a Fleet run - always wins, even over an earlier "skip"
+  // cached below for this same IP. That skip was decided before this proxy
+  // existed, so it's stale the moment a covering proxy shows up.
+  const status = await window.api.proxyStatus({ host: ip }).catch(() => null);
+  if (status && status.active) {
+    proxyState = { forIp: ip, decided: true, host: status.proxyHost, port: status.proxyPort };
+    return { proxyHost: status.proxyHost, proxyPort: status.proxyPort };
+  }
+
   if (proxyState.forIp !== ip) {
     proxyState = { forIp: ip, decided: false, host: null, port: null };
   }
@@ -982,6 +992,16 @@ async function ensureProxyDecision(ip, cxPass) {
 // lack internet. If accepted, the proxy is started pre-scoped to every target
 // host, so fleet:run reuses it as-is instead of tearing it down and rebinding.
 async function ensureFleetProxyDecision(targets) {
+  const hosts = targets.map(t => t.host);
+
+  // Same "reuse what's already running" check as the single-device version -
+  // if a proxy already covers every target (started here or from Setup/
+  // Recipes on the same CX), reuse it instead of probing and asking again.
+  const status = await window.api.proxyStatus({ hosts }).catch(() => null);
+  if (status && status.active) {
+    return { proxyHost: status.proxyHost, proxyPort: status.proxyPort };
+  }
+
   const res = await window.api.checkInternetFleet({ targets }).catch(() => null);
   const results = (res && res.results) || [];
   // Same philosophy as the single-device check: if nothing came back
@@ -993,7 +1013,6 @@ async function ensureFleetProxyDecision(targets) {
   const choice = await askProxyChoice();
   if (choice === 'cancel') return { proxyHost: null, proxyPort: null, cancelled: true };
   if (choice === 'use') {
-    const hosts = targets.map(t => t.host);
     const proxyRes = await window.api.startProxy({ hosts, port: 22 });
     if (!proxyRes.ok) {
       toast('Could not start the proxy: ' + (proxyRes.error || 'unknown') + ' - continuing without it.', 'error');

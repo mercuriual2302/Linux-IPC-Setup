@@ -760,6 +760,21 @@ ipcMain.handle('proxy:stop', async () => {
   return { ok: true };
 });
 
+// Is there already a running proxy that covers this host (or every host in
+// this list)? Setup, Recipes, and Fleet each decide "does this CX need the
+// proxy" independently, but there's only ever one actual SOCKS5 server - if
+// Fleet already started one covering this CX, Setup asking again (or worse,
+// silently reusing its own stale "skip" answer from before that proxy
+// existed) makes no sense. This lets any flow check the real current state
+// before deciding anything itself.
+ipcMain.handle('proxy:status', async (_evt, { host, hosts } = {}) => {
+  if (!activeProxy) return { active: false };
+  const allowed = new Set((activeProxy.allowKey || '').split(',').filter(Boolean));
+  const need = Array.isArray(hosts) && hosts.length ? hosts : (host ? [host] : []);
+  const covers = need.length > 0 && need.every(h => allowed.has(h));
+  return covers ? { active: true, proxyHost: activeProxy.host, proxyPort: activeProxy.port } : { active: false };
+});
+
 
 // IPC: save generated script to disk (replaces the in-browser download)
 ipcMain.handle('script:save', async (_evt, { content, defaultName }) => {
