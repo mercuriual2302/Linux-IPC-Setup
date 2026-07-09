@@ -42,9 +42,11 @@ contextBridge.exposeInMainWorld('api', {
   runVerify:      (opts) => ipcRenderer.invoke('cx:verify', opts),
   discoverDevices:   ()     => ipcRenderer.invoke('cx:discover'),
   resolveDirectLink: (opts) => ipcRenderer.invoke('cx:resolve-direct', opts),
+  resolveDirectLinkMany: (opts) => ipcRenderer.invoke('cx:resolve-direct-many', opts),
 
   // Provisioning recipes (phase 1)
   recipeCapture:  (opts) => ipcRenderer.invoke('recipe:capture', opts),
+  recipeBuildFromCapture: (opts) => ipcRenderer.invoke('recipe:build-from-capture', opts),
   recipeSave:     (recipe) => ipcRenderer.invoke('recipe:save', { recipe }),
   recipeLoadAll:  ()     => ipcRenderer.invoke('recipe:load-all'),
   recipeDelete:   (file) => ipcRenderer.invoke('recipe:delete', { file }),

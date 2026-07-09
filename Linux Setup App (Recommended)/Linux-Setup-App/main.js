@@ -685,19 +685,31 @@ ipcMain.handle('cx:check-internet-fleet', async (_evt, { targets }) => {
 async function ensureLaptopProxy(hosts, port) {
   const targetHosts = Array.isArray(hosts) && hosts.length ? hosts : [];
   if (!targetHosts.length) throw new Error('No target hosts to proxy');
-  const probeHost = targetHosts[0];
 
-  // which of this laptop's addresses the CX can actually reach - redone every
-  // call since a different target CX may sit on a different adapter/subnet,
-  // even though the SOCKS server itself is a singleton reused across targets.
-  const localAddress = await new Promise((resolve, reject) => {
-    const probe = net.connect(port || 22, probeHost, () => {
-      const addr = probe.localAddress;
-      probe.destroy();
-      resolve(addr);
-    });
-    probe.on('error', reject);
-  });
+  // Which of this laptop's addresses reaches these CXs. Tried against each
+  // target in turn rather than just the first - a fleet of several CXs on
+  // one switch means a higher chance any single one is momentarily
+  // unreachable (mid-reboot, still coming up), and betting the whole proxy
+  // setup on that one specific host used to take every device down with it.
+  let localAddress = null;
+  let lastErr = null;
+  for (const probeHost of targetHosts) {
+    try {
+      localAddress = await new Promise((resolve, reject) => {
+        const probe = net.connect(port || 22, probeHost);
+        probe.setTimeout(3000);
+        probe.once('connect', () => { const addr = probe.localAddress; probe.destroy(); resolve(addr); });
+        probe.once('timeout', () => { probe.destroy(); reject(new Error('timed out')); });
+        probe.once('error', reject);
+      });
+      break;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  if (!localAddress) {
+    throw new Error('Could not reach any target to determine the laptop adapter' + (lastErr ? `: ${lastErr.message || lastErr}` : ''));
+  }
 
   // If a proxy is already running but bound to a different adapter or a
   // different target set, tear it down and rebind. allowKey captures both.
@@ -1999,6 +2011,22 @@ ipcMain.handle('cx:resolve-direct', async (_evt, opts) => {
     return { ok: false, error: err.message || String(err) };
   }
 });
+
+// Multi-target sibling of cx:resolve-direct, for several direct-link CXs on
+// one shared segment (an unmanaged switch with no DHCP/internet, same
+// 169.254.x.x self-addressing a literal single cable uses). Used by Fleet
+// mode's scan picker so multiple direct-link devices can be selected and
+// added at once, instead of one IDENTIFY per device.
+ipcMain.handle('cx:resolve-direct-many', async (_evt, opts) => {
+  const { macs, laptopIp } = opts || {};
+  if (!Array.isArray(macs) || !macs.length || !laptopIp) return { ok: false, error: 'Missing MAC list or laptop IP' };
+  try {
+    const ips = await discovery.resolveDirectLinkIps(macs, laptopIp);
+    return { ok: true, ips };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+});
 // Provisioning recipes: capture a CX's state into a recipe object, save/load/
 // delete/export/import it, and apply it back to a connected CX (streams
 // per-step progress to the renderer). Recipes live next to profiles in userData.
@@ -2108,24 +2136,19 @@ _sudo nft list ruleset 2>/dev/null || true
       firewall = { enabled, ports };
     } catch (e) { warnings.push('Could not read firewall: ' + e.message); }
 
-    // 4. TF1200 config (optional - many CXs won't have it)
-    let tf1200 = null;
-    try {
-      const tfRes = await mgr.exec(`echo '${escPass}' | sudo -S -p '' cat /home/TF1200/.config/TF1200-UI-Client/config.json 2>/dev/null`);
-      const raw = (tfRes.stdout || '').trim();
-      if (raw) {
-        try { tf1200 = { config: JSON.parse(raw) }; }
-        catch (e) { warnings.push('TF1200 config present but not valid JSON - skipped'); }
-      }
-    } catch (e) { /* no TF1200 - fine, just omit */ }
+    // TF1200 config is not captured. It's per-device (the HMI URL typically
+    // ties to the CX's own IP), so cloning it across a fleet the way packages
+    // clone doesn't make sense. Applying TF1200 config stays its own standalone
+    // page for exactly that reason - configure it per CX, not via a recipe.
+    const tf1200 = null;
 
     mgr.dispose();
     activeSessions.delete(sessionId);
 
-    // Nudge the user rather than silently capturing an incomplete recipe: if
-    // packages were found but no MyBeckhoff credentials were supplied for
-    // this capture, flag it so they know to add them (or accept the recipe
-    // will require them to be typed in at apply time instead).
+    // Nudge the user rather than silently letting them tick things they can't
+    // actually apply: if packages were found but no MyBeckhoff credentials
+    // were supplied for this capture, flag it so they know to add them (or
+    // accept the recipe will require them to be typed in at apply time).
     if (packages.length && !beckhoffUser && !beckhoffPass) {
       warnings.push('No MyBeckhoff credentials entered for this capture - this recipe will require them to be typed in when applied.');
     }
@@ -2133,18 +2156,40 @@ _sudo nft list ruleset 2>/dev/null || true
       warnings.push('tf2000-hmi-server is installed but no TF2000 password was entered - this recipe will require it when applied.');
     }
 
-    const built = recipe.buildRecipeFromCapture({
-      name, sourceHost: host, info, ifaces, packages, firewall, tf1200,
-      amsNetId, beckhoffUser, beckhoffPass, tf2000Pass
-    });
-    const check = recipe.validateRecipe(built);
-    if (!check.ok) {
-      return { ok: false, error: 'Captured recipe failed validation: ' + check.errors.join('; ') };
-    }
-    return { ok: true, recipe: built, warnings };
+    // Return the raw facts, not a built recipe - the renderer shows these as
+    // a checklist and only the ticked subset gets built, via
+    // recipe:build-from-capture, once the user confirms their selection.
+    return {
+      ok: true,
+      captured: { info, ifaces, packages, firewall, tf1200, amsNetId },
+      warnings
+    };
   } catch (err) {
     mgr.dispose();
     activeSessions.delete(sessionId);
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+// Builds and validates a recipe from a previous recipe:capture's raw data,
+// keeping only the sections/items the user ticked. Split from capture itself
+// so re-picking a different subset doesn't need a fresh SSH round trip to
+// the CX, the capture already read everything once.
+ipcMain.handle('recipe:build-from-capture', async (_evt, opts) => {
+  const { name, sourceHost, captured, selection, beckhoffUser, beckhoffPass, tf2000Pass } = opts || {};
+  try {
+    const filtered = recipe.filterCaptureData(captured || {}, selection || {});
+    const built = recipe.buildRecipeFromCapture({
+      name, sourceHost, beckhoffUser, beckhoffPass, tf2000Pass,
+      info: filtered.info, ifaces: filtered.ifaces, amsNetId: filtered.amsNetId,
+      packages: filtered.packages, firewall: filtered.firewall, tf1200: filtered.tf1200
+    });
+    const check = recipe.validateRecipe(built);
+    if (!check.ok) {
+      return { ok: false, error: 'Recipe failed validation: ' + check.errors.join('; ') };
+    }
+    return { ok: true, recipe: built };
+  } catch (err) {
     return { ok: false, error: err.message || String(err) };
   }
 });
@@ -2268,6 +2313,7 @@ async function applyRecipeToDevice(opts) {
 
   const sessionId = incomingSession || `apply-${Date.now()}`;
   const results = [];
+  let needsReboot = false;
   const emit = (data) => sendToRenderer('ssh:output', { sessionId, data });
   const step = (i, status, message) => sendToRenderer('recipe:step', { sessionId, index: i, status, message, total: plan.length });
 
@@ -2302,6 +2348,7 @@ async function applyRecipeToDevice(opts) {
       }
 
       if (stepResult.ok) {
+        if (stepResult.needsReboot) needsReboot = true;
         step(i, stepResult.skipped ? 'skipped' : 'done', s.label);
         results.push({ kind: s.kind, ok: true, skipped: !!stepResult.skipped });
       } else {
@@ -2320,7 +2367,7 @@ async function applyRecipeToDevice(opts) {
   }
 
   emit(`\r\n\x1b[0;32m[RECIPE]\x1b[0m All steps complete on ${host}.\r\n`);
-  return { ok: true, sessionId, results };
+  return { ok: true, sessionId, results, needsReboot };
 }
 
 ipcMain.handle('recipe:apply', async (_evt, opts) => {
@@ -2412,26 +2459,30 @@ async function applyPackagesStep(host, password, port, packages, creds, emit) {
   if (!installArgs) return { ok: false, error: 'No valid packages to install' };
 
   // tf2000-hmi-server needs a one-time initialisation with its own password
-  // after install, same as the main Setup flow and the service reinit action -
-  // otherwise the service is installed but never brought up. Matches
-  // script-builder.js's buildInnerSetupScript hmiBlock exactly.
+  // after install, same as the main Setup flow. Reuses the exact same helpers
+  // Setup uses (src/script-builder.js), rather than main.js keeping its own
+  // copy of this logic - a hand-copied version here previously still checked
+  // "is the service active" as a proxy for "already initialized", which a
+  // fresh install's own postinst script can satisfy without --initialize ever
+  // having run, silently leaving TF2000 up with no user ever configured.
   const needsTf2000 = packages.some(p => p.name === 'tf2000-hmi-server');
-  let tf2000Block = '';
-  if (needsTf2000) {
-    const escTf2000Pass = String(tf2000Pass || '').replace(/'/g, "'\\''");
-    tf2000Block = `
-echo "[CX] Checking TF2000 HMI Server..."
-if _sudo test -f /etc/TwinCAT/Functions/TF2000-HMI-Server/TcHmiSrv.cfg 2>/dev/null || _sudo systemctl is-active TcHmiSrv.service &>/dev/null; then
-  echo "[CX] TF2000 already initialized - skipping init, ensuring service is running."
-  _sudo systemctl enable TcHmiSrv.service || true
-  _sudo systemctl start TcHmiSrv.service || true
-else
-  echo "[CX] Initializing TF2000 HMI Server..."
-  _sudo TcHmiSrv --initialize --password='${escTf2000Pass}'
-  _sudo systemctl enable TcHmiSrv.service
-  _sudo systemctl start TcHmiSrv.service
-fi`;
-  }
+  const tf2000PreCheck = needsTf2000
+    ? `\n${ScriptBuilder.buildWasInstalledSnippet('tf2000-hmi-server', 'TF2000_WAS_INSTALLED')}`
+    : '';
+  const tf2000Block = needsTf2000
+    ? ScriptBuilder.buildTf2000InitBlock(tf2000Pass, 'TF2000_WAS_INSTALLED')
+    : '';
+
+  // tf1200-ui-client needs its Linux user created (home directory, autologin,
+  // kiosk autostart) after install - this step was missing from this path
+  // entirely, so the package would install via apt with nothing behind it: no
+  // user to log into, no config.json directory ever created, and no autologin
+  // meaning the CX sits at a login/splash screen on reboot instead of loading
+  // the kiosk. Reuses the exact same helper Setup uses (src/script-builder.js).
+  const needsTf1200User = packages.some(p => p.name === 'tf1200-ui-client');
+  const tf1200UserBlock = needsTf1200User
+    ? ScriptBuilder.buildTf1200UserSetupBlock()
+    : '';
 
   const mgr = new SSHManager();
   try {
@@ -2440,17 +2491,28 @@ fi`;
 set -e
 trap 'rm -f "$0"' EXIT
 ${buildAptPreamble(escPass, beckhoffUser, beckhoffPass, proxyHost, proxyPort)}
-_sudo apt $APT_OPTS update -y 2>&1 | tail -3
+_sudo apt $APT_OPTS update -y 2>&1 | tail -3${tf2000PreCheck}
 echo "[CX] Installing: ${installArgs}"
 _sudo DEBIAN_FRONTEND=noninteractive apt $APT_OPTS install -y ${installArgs}
 echo "[CX] Package install complete"
-${tf2000Block}`;
+${tf2000Block}
+${tf1200UserBlock}
+${REBOOT_CHECK_SNIPPET}`;
     await withTempScript('rec-pkgs', script, (p) => mgr.putFile(p, '/tmp/rec_pkgs.sh'));
+    let fullOutput = '';
     const res = await mgr.execStream('chmod +x /tmp/rec_pkgs.sh && /tmp/rec_pkgs.sh', {
-      onStdout: (c) => emit(c.toString()), onStderr: (c) => emit(c.toString())
+      onStdout: (c) => { fullOutput += c.toString(); emit(c.toString()); },
+      onStderr: (c) => { fullOutput += c.toString(); emit(c.toString()); }
     });
     mgr.dispose();
-    return { ok: res.code === 0, error: res.code === 0 ? null : `package step exit ${res.code}` };
+    // TF1200's autologin/kiosk config needs a reboot to actually take effect,
+    // the same way Setup always reboots at the end regardless of what it
+    // installed - this path just never carried that reboot signal before.
+    // The kernel-driven check catches anything else (e.g. a dependency pulling
+    // in a new kernel or bootloader package) the same way the system-upgrade
+    // bulk action already does.
+    const needsReboot = res.code === 0 && (needsTf1200User || parseNeedsReboot(fullOutput));
+    return { ok: res.code === 0, error: res.code === 0 ? null : `package step exit ${res.code}`, needsReboot };
   } catch (e) { mgr.dispose(); return { ok: false, error: e.message }; }
 }
 

@@ -319,12 +319,44 @@ function stripSecretsForExport(recipe) {
   return copy;
 }
 
+// Narrows a capture's raw facts down to what the user actually ticked, before
+// buildRecipeFromCapture turns it into a recipe. Kept pure and separate from
+// the capture step itself, so re-picking a different subset never needs a
+// fresh SSH round trip, the CX was already read once.
+//
+// selection: { feed: bool, packages: string[] (names to keep),
+//              firewall: bool, firewallPorts: string[] ("port/proto" to keep) }
+// Network/identity is never gated here - it's always reference-only, and
+// stays behind its own separate applyNetwork gate at apply time regardless.
+// TF1200 config isn't part of capture at all - it's per-device (the HMI URL
+// ties to the CX's own IP), so it's configured on its own page, not cloned.
+function filterCaptureData(captured, selection = {}) {
+  const c = captured || {};
+  const sel = selection || {};
+
+  const packages = (c.packages || []).filter(p => p && (sel.packages || []).includes(p.name));
+
+  const firewall = (sel.firewall && c.firewall)
+    ? {
+        enabled: c.firewall.enabled,
+        ports: (c.firewall.ports || []).filter(p => (sel.firewallPorts || []).includes(`${p.port}/${p.proto}`))
+      }
+    : null;
+
+  // FEED is a single value, not a list - just drop it from info if unticked,
+  // since buildRecipeFromCapture only adds a feed section when info.FEED is set.
+  const info = sel.feed ? c.info : { ...(c.info || {}), FEED: undefined };
+
+  return { info, ifaces: c.ifaces, amsNetId: c.amsNetId, packages, firewall, tf1200: null };
+}
+
 module.exports = {
   RECIPE_VERSION,
   IDENTITY_SECTIONS,
   PACKAGE_INIT_REQUIREMENTS,
   validateRecipe,
   buildRecipeFromCapture,
+  filterCaptureData,
   buildApplyPlan,
   listSections,
   needsBeckhoffAuth,

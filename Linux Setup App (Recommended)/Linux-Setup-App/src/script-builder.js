@@ -36,6 +36,67 @@ function feedSedLine(feed) {
 echo "[CX] APT feed set to: ${channel}"`;
 }
 
+// Snapshots whether a package was already installed before this script's own
+// apt install runs. No sudo needed, dpkg -l is a plain query. Used to tell a
+// genuinely fresh install apart from a re-run against an already-set-up CX.
+function buildWasInstalledSnippet(pkgName, varName) {
+  return `${varName}=no; dpkg -l ${pkgName} 2>/dev/null | grep -q "^ii" && ${varName}=yes`;
+}
+
+// Brings up TF2000 HMI Server safely after install. Only skips --initialize
+// when the package was genuinely already installed before this run AND its
+// service instance directory already exists - /var/lib/tchmisrv/service/
+// TcHmiProject is what TcHmiSrv itself creates on a real initialize (confirmed
+// from its own output: "Adding service instance /var/lib/.../TcHmiProject"),
+// not a guessed path. An earlier version of this check used a wrong path that
+// never matched, so a re-run against an already-initialized CX always fell
+// through to attempting init again - which then genuinely fails, since the
+// server really is already running. As a second line of defense in case that
+// directory check ever misses a real case, a failed --initialize is only
+// treated as fatal if it isn't specifically the "already running" error -
+// that one just means it's already up, which is exactly what we wanted.
+// wasInstalledVar names a shell variable (from buildWasInstalledSnippet)
+// holding "yes"/"no".
+function buildTf2000InitBlock(tf2000Pass, wasInstalledVar) {
+  return `
+echo "[CX] Checking TF2000 HMI Server..."
+if [ "$${wasInstalledVar}" = "yes" ] && _sudo test -d /var/lib/tchmisrv/service/TcHmiProject 2>/dev/null; then
+  echo "[CX] TF2000 already initialized - skipping init, ensuring service is running."
+  _sudo systemctl enable TcHmiSrv.service || true
+  _sudo systemctl start TcHmiSrv.service || true
+else
+  echo "[CX] Initializing TF2000 HMI Server..."
+  set +e
+  TF2000_INIT_OUT=$(_sudo TcHmiSrv --initialize --password=${shq(tf2000Pass)} 2>&1)
+  TF2000_INIT_CODE=$?
+  set -e
+  echo "$TF2000_INIT_OUT"
+  if [ $TF2000_INIT_CODE -ne 0 ]; then
+    if echo "$TF2000_INIT_OUT" | grep -q "HMI_E_SERVER_ALREADY_RUNNING"; then
+      echo "[CX] TF2000 was already initialized (server already running) - continuing."
+    else
+      exit $TF2000_INIT_CODE
+    fi
+  fi
+  _sudo systemctl enable TcHmiSrv.service
+  _sudo systemctl start TcHmiSrv.service
+fi`;
+}
+
+// Creates and configures the TF1200 Linux user: home directory, autologin,
+// kiosk autostart, password, sudo. Without this, tf1200-ui-client installs as
+// a package with nothing behind it - no user to log into, no config.json
+// directory ever created, and no autologin means the CX sits at a login/splash
+// screen on reboot instead of loading the kiosk.
+function buildTf1200UserSetupBlock() {
+  return `
+echo "[CX] Configuring TF1200-UI-Client..."
+cd /etc/TwinCAT/Functions/TF1200-UI-Client/scripts
+_sudo ./setup-full.sh --user=TF1200 --autologin --autostart
+_sudo sh -c 'echo "TF1200:1" | chpasswd'
+_sudo usermod -aG sudo TF1200`;
+}
+
 //INNER: full setup (runs on CX as /tmp/twincat_setup.sh $1 $2 $3)
 function buildInnerSetupScript({ feed = 'trixie-stable', packages = [], pkgVersions = {}, tf2000Pass = '1', proxyHost = null, proxyPort = null } = {}) {
   const pkgs = Array.isArray(packages) ? packages : [];
@@ -61,28 +122,16 @@ function buildInnerSetupScript({ feed = 'trixie-stable', packages = [], pkgVersi
   const _rtInstall2 = sudofy(installLine('console-setup', pkgVersions));
   const runtimeLine2 = `dpkg -l console-setup 2>/dev/null | grep -q "^ii" && echo "[CX] console-setup already installed, skipping." || ${_rtInstall2}`;
 
+  const tf2000PreCheckBlock = pkgs.includes('tf2000-hmi-server')
+    ? `\n${buildWasInstalledSnippet('tf2000-hmi-server', 'TF2000_WAS_INSTALLED')}\n`
+    : '';
+
   const hmiBlock = pkgs.includes('tf2000-hmi-server')
-    ? `
-echo "[CX] Checking TF2000 HMI Server..."
-if _sudo test -f /etc/TwinCAT/Functions/TF2000-HMI-Server/TcHmiSrv.cfg 2>/dev/null || _sudo systemctl is-active TcHmiSrv.service &>/dev/null; then
-  echo "[CX] TF2000 already initialized - skipping init, ensuring service is running."
-  _sudo systemctl enable TcHmiSrv.service || true
-  _sudo systemctl start TcHmiSrv.service || true
-else
-  echo "[CX] Initializing TF2000 HMI Server..."
-  _sudo TcHmiSrv --initialize --password=${shq(tf2000Pass)}
-  _sudo systemctl enable TcHmiSrv.service
-  _sudo systemctl start TcHmiSrv.service
-fi`
+    ? buildTf2000InitBlock(tf2000Pass, 'TF2000_WAS_INSTALLED')
     : '';
 
   const tf1200Block = pkgs.includes('tf1200-ui-client')
-    ? `
-echo "[CX] Configuring TF1200-UI-Client..."
-cd /etc/TwinCAT/Functions/TF1200-UI-Client/scripts
-_sudo ./setup-full.sh --user=TF1200 --autologin --autostart
-_sudo sh -c 'echo "TF1200:1" | chpasswd'
-_sudo usermod -aG sudo TF1200`
+    ? buildTf1200UserSetupBlock()
     : '';
 
   const mdpBlock = pkgs.includes('mdp-bhf') ? '\n_sudo systemctl daemon-reload' : '';
@@ -163,9 +212,14 @@ _sudo sh -c 'echo "console-setup console-setup/codeset47 select Guess optimal ch
 ${runtimeLine2}
 echo "[CX] Installing TwinCAT runtime..."
 ${runtimeLine1}
-${pkgsBlock}${mdpBlock}${hmiBlock}${tf1200Block}
-echo "[CX] Upgrading all packages..."
-_sudo apt $APT_OPTS upgrade -y
+${tf2000PreCheckBlock}${pkgsBlock}${mdpBlock}${hmiBlock}${tf1200Block}
+echo "[CX] Checking for available system upgrades..."
+UPGRADABLE_COUNT=$(apt list --upgradable 2>/dev/null | grep -v '^Listing' | wc -l)
+if [ "$UPGRADABLE_COUNT" -gt 0 ]; then
+  echo "[CX] $UPGRADABLE_COUNT system package(s) can be upgraded. Not applied automatically - review and install them from the Packages page."
+else
+  echo "[CX] No system package upgrades available."
+fi
 echo "[CX] Restoring firewall to its state before setup (was active=$FW_WAS_ACTIVE, enabled=$FW_WAS_ENABLED)..."
 if [ "$FW_WAS_ENABLED" = "enabled" ]; then
   _sudo systemctl enable nftables || true
@@ -434,5 +488,8 @@ module.exports = {
   buildInnerSetupScript,
   buildInnerTF1200Script,
   buildFullSetupScript,
-  buildFullTF1200Script
+  buildFullTF1200Script,
+  buildWasInstalledSnippet,
+  buildTf2000InitBlock,
+  buildTf1200UserSetupBlock
 };

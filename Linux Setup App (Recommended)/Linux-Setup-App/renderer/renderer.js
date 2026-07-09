@@ -2837,9 +2837,10 @@ $('btn-check-image')?.addEventListener('click', async () => {
   };
 
   // Fleet mode entry point: opens the same picker in multi-select mode.
-  // onConfirm gets the array of picked devices when ADD SELECTED is clicked.
-  // Direct-link devices need IDENTIFY to resolve one IP at a time, so they
-  // are not selectable here - use the header scan for those.
+  // onConfirm gets the array of picked devices when ADD SELECTED is clicked,
+  // with any direct-link picks already resolved to a real IP (see the
+  // btnSelectAdd handler - one bulk resolve per adapter, not one per device,
+  // so several CXs on a shared switch segment resolve together).
   window.openScanPicker = (onConfirm) => {
     selectMode = { selected: new Set(), onConfirm };
     open();
@@ -2884,12 +2885,8 @@ $('btn-check-image')?.addEventListener('click', async () => {
 
     let control;
     if (selectMode) {
-      if (isDirect) {
-        control = `<span style="color:var(--tc-muted);font-size:10px;white-space:nowrap">use header scan to add</span>`;
-      } else {
-        const checked = selectMode.selected.has(idx) ? 'checked' : '';
-        control = `<input type="checkbox" class="scan-check" data-idx="${idx}" ${checked}>`;
-      }
+      const checked = selectMode.selected.has(idx) ? 'checked' : '';
+      control = `<input type="checkbox" class="scan-check" data-idx="${idx}" ${checked}>`;
     } else {
       control = isDirect
         ? `<button class="scan-use" data-act="identify" data-idx="${idx}">IDENTIFY</button>`
@@ -2968,12 +2965,47 @@ $('btn-check-image')?.addEventListener('click', async () => {
     }
   });
 
-  if (btnSelectAdd) btnSelectAdd.addEventListener('click', () => {
+  if (btnSelectAdd) btnSelectAdd.addEventListener('click', async () => {
     if (!selectMode) return;
     const picked = [...selectMode.selected].map(i => devices[i]).filter(Boolean);
     const onConfirm = selectMode.onConfirm;
+
+    const networkPicked = picked.filter(d => d.type !== 'direct');
+    const directPicked = picked.filter(d => d.type === 'direct');
+
+    let resolvedDirect = [];
+    if (directPicked.length) {
+      btnSelectAdd.disabled = true;
+      btnSelectAdd.textContent = 'RESOLVING...';
+      // Group by adapter - normally one shared switch segment means one
+      // group, but a laptop with more than one direct-link adapter active
+      // still resolves correctly this way, one bulk lookup per adapter.
+      const groups = new Map();
+      directPicked.forEach(d => {
+        if (!groups.has(d.laptopIp)) groups.set(d.laptopIp, []);
+        groups.get(d.laptopIp).push(d);
+      });
+      let failed = 0;
+      for (const [laptopIp, group] of groups) {
+        const macs = group.map(d => d.mac);
+        let res;
+        try { res = await window.api.resolveDirectLinkMany({ macs, laptopIp }); }
+        catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
+        if (!res || !res.ok) { failed += group.length; continue; }
+        group.forEach(d => {
+          const key = d.mac.replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+          const ip = res.ips ? res.ips[key] : null;
+          if (ip) resolvedDirect.push({ ...d, ip });
+          else failed++;
+        });
+      }
+      btnSelectAdd.disabled = false;
+      btnSelectAdd.textContent = 'ADD SELECTED';
+      if (failed) toast(`Could not resolve ${failed} device(s), check the cable and try again`, 'warn');
+    }
+
     close();
-    if (onConfirm) onConfirm(picked);
+    if (onConfirm) onConfirm([...networkPicked, ...resolvedDirect]);
   });
 
   if (btnScan)   btnScan.addEventListener('click', () => { selectMode = null; open(); });
@@ -3503,8 +3535,9 @@ $('btn-check-image')?.addEventListener('click', async () => {
 
   if (!captureBtn) return; // page not present
 
-  let capturedRecipe = null;   // the recipe just captured, pending save/export
-  let applyTarget = null;      // the recipe currently staged for apply
+  let capturedData = null;    // raw facts from recipe:capture, pending selection
+  let captureMeta = null;     // { name, sourceHost, beckhoffUser, beckhoffPass, tf2000Pass } for this capture
+  let applyTarget = null;     // the recipe currently staged for apply
 
   const IDENTITY_KEYS = ['network'];
 
@@ -3534,35 +3567,113 @@ $('btn-check-image')?.addEventListener('click', async () => {
       return;
     }
 
-    capturedRecipe = res.recipe;
-    renderCapturePreview(res.recipe, res.warnings || []);
+    capturedData = res.captured;
+    captureMeta = { name, sourceHost: conn.host, beckhoffUser, beckhoffPass, tf2000Pass };
+    renderCaptureChecklist(capturedData, res.warnings || []);
     captureStat.textContent = 'Captured from ' + conn.host + ' at ' + new Date().toLocaleTimeString();
     captureStat.style.color = 'var(--tc-accent2)';
   });
 
-  function renderCapturePreview(rec, warnings) {
-    const sections = rec.sections || {};
-    const rows = Object.keys(sections).map(key => {
-      const identity = IDENTITY_KEYS.includes(key);
-      const summary = summariseSection(key, sections[key]);
-      const tag = identity ? ' <span style="color:var(--tc-warn)">(identity - reference only)</span>' : '';
-      return `<div style="padding:.15rem 0">• <strong>${escapeHtml(key)}</strong>: ${escapeHtml(summary)}${tag}</div>`;
-    }).join('');
+  // Builds the checklist UI from raw captured facts. Everything starts ticked,
+  // matching the old all-or-nothing behaviour, but every package and every
+  // firewall port gets its own checkbox so any of them can be left out.
+  function renderCaptureChecklist(captured, warnings) {
+    const info = captured.info || {};
+    const packages = captured.packages || [];
+    const firewall = captured.firewall;
+    const ifaces = captured.ifaces || [];
 
-    const creds = rec.credentials || {};
-    const credBits = [];
-    credBits.push(creds.beckhoffUsername ? `MyBeckhoff: ${escapeHtml(creds.beckhoffUsername)} (password saved)` : 'MyBeckhoff: not set');
-    if (sections.packages && sections.packages.some(p => p.name === 'tf2000-hmi-server')) {
-      credBits.push(creds.tf2000Password ? 'TF2000 password: saved' : 'TF2000 password: not set');
-    }
-    const credRow = `<div style="padding:.15rem 0;margin-top:.3rem;border-top:1px solid var(--tc-border);padding-top:.4rem">• <strong>credentials</strong>: ${credBits.join(' · ')}</div>`;
+    const feedRow = (info.FEED && info.FEED !== 'unknown') ? `
+      <label class="recipe-sec-row">
+        <input type="checkbox" class="scan-check" id="recipe-sel-feed" checked>
+        <strong>Feed</strong><span class="hint" style="margin:0">${escapeHtml(info.FEED)}</span>
+      </label>` : '';
+
+    const pkgSection = packages.length ? `
+      <details class="recipe-section" open>
+        <summary>
+          <input type="checkbox" class="scan-check recipe-sec-all" data-sec="packages" checked>
+          <strong>Packages</strong><span class="hint" style="margin:0">${packages.length} found</span>
+        </summary>
+        <div class="recipe-section-body">
+          ${packages.map(p => `
+            <label class="recipe-item-row">
+              <input type="checkbox" class="scan-check recipe-item" data-sec="packages" data-item="${escapeHtml(p.name)}" checked>
+              <code>${escapeHtml(p.name)}</code><span class="hint" style="margin:0">${escapeHtml(p.version || '')}</span>
+            </label>`).join('')}
+        </div>
+      </details>` : '';
+
+    const fwPorts = (firewall && firewall.ports) || [];
+    const fwSection = firewall ? `
+      <details class="recipe-section" open>
+        <summary>
+          <input type="checkbox" class="scan-check recipe-sec-all" data-sec="firewall" checked>
+          <strong>Firewall</strong><span class="hint" style="margin:0">${firewall.enabled ? fwPorts.length + ' port(s), enabled' : 'disabled'}</span>
+        </summary>
+        <div class="recipe-section-body">
+          ${fwPorts.length ? fwPorts.map(p => `
+            <label class="recipe-item-row">
+              <input type="checkbox" class="scan-check recipe-item" data-sec="firewall" data-item="${p.port}/${p.proto}" checked>
+              <code>${p.port}/${escapeHtml(p.proto)}</code><span class="hint" style="margin:0">${escapeHtml(p.label || '')}</span>
+            </label>`).join('') : '<div class="hint">No custom ports beyond SSH</div>'}
+        </div>
+      </details>` : '';
+
+    const netInfo = ifaces.length
+      ? `<div class="hint" style="margin-top:.3rem">Network: ${ifaces.length} interface(s) captured for reference only, never applied automatically</div>`
+      : '';
 
     let warnHtml = '';
-    if (warnings.length) {
+    if (warnings && warnings.length) {
       warnHtml = `<div style="margin-top:.5rem;color:var(--tc-warn)">${warnings.map(w => '⚠ ' + escapeHtml(w)).join('<br>')}</div>`;
     }
-    sectionsEl.innerHTML = rows + credRow + warnHtml;
+
+    sectionsEl.innerHTML = feedRow + pkgSection + fwSection + netInfo + warnHtml;
     previewBox.style.display = '';
+
+    // A section's own checkbox is a select-all/none for its items. Stop the
+    // click reaching <summary> too, or it would also toggle the section open
+    // or closed, which is confusing when all you meant to do was untick it.
+    sectionsEl.querySelectorAll('.recipe-sec-all').forEach(cb => {
+      cb.addEventListener('click', (e) => e.stopPropagation());
+      cb.addEventListener('change', () => {
+        sectionsEl.querySelectorAll(`.recipe-item[data-sec="${cb.dataset.sec}"]`).forEach(b => { b.checked = cb.checked; });
+      });
+    });
+  }
+
+  // Reads the current checkbox state back into the selection shape
+  // recipe:build-from-capture expects.
+  function collectSelection() {
+    const feedBox = $('recipe-sel-feed');
+    const fwAll = sectionsEl.querySelector('.recipe-sec-all[data-sec="firewall"]');
+    const packages = [...sectionsEl.querySelectorAll('.recipe-item[data-sec="packages"]')].filter(b => b.checked).map(b => b.dataset.item);
+    const firewallPorts = [...sectionsEl.querySelectorAll('.recipe-item[data-sec="firewall"]')].filter(b => b.checked).map(b => b.dataset.item);
+    return {
+      feed: feedBox ? feedBox.checked : false,
+      firewall: fwAll ? fwAll.checked : false,
+      packages,
+      firewallPorts
+    };
+  }
+
+  // Builds a recipe from whatever is currently ticked. Called fresh by Save
+  // and Export both, so adjusting the selection between the two clicks (say,
+  // exporting a smaller subset to hand to someone else) just works.
+  async function buildFromCurrentSelection() {
+    if (!capturedData || !captureMeta) return null;
+    const res = await window.api.recipeBuildFromCapture({
+      name: captureMeta.name,
+      sourceHost: captureMeta.sourceHost,
+      captured: capturedData,
+      selection: collectSelection(),
+      beckhoffUser: captureMeta.beckhoffUser,
+      beckhoffPass: captureMeta.beckhoffPass,
+      tf2000Pass: captureMeta.tf2000Pass
+    }).catch(e => ({ ok: false, error: String((e && e.message) || e) }));
+    if (!res.ok) { toast('Could not build recipe: ' + (res.error || 'unknown'), 'error'); return null; }
+    return res.recipe;
   }
 
   function summariseSection(key, val) {
@@ -3577,15 +3688,17 @@ $('btn-check-image')?.addEventListener('click', async () => {
   }
 
   saveBtn.addEventListener('click', async () => {
-    if (!capturedRecipe) return;
-    const res = await window.api.recipeSave(capturedRecipe).catch(e => ({ ok: false, error: String(e) }));
+    const rec = await buildFromCurrentSelection();
+    if (!rec) return;
+    const res = await window.api.recipeSave(rec).catch(e => ({ ok: false, error: String(e) }));
     if (res.ok) { toast('Recipe saved to library', 'success'); loadLibrary(); }
     else toast('Save failed: ' + (res.error || 'unknown'), 'error');
   });
 
   exportBtn.addEventListener('click', async () => {
-    if (!capturedRecipe) return;
-    const res = await window.api.recipeExport(capturedRecipe).catch(e => ({ ok: false, error: String(e) }));
+    const rec = await buildFromCurrentSelection();
+    if (!rec) return;
+    const res = await window.api.recipeExport(rec).catch(e => ({ ok: false, error: String(e) }));
     if (res.ok) toast('Exported to ' + res.path, 'success');
     else if (!res.canceled) toast('Export failed: ' + (res.error || 'unknown'), 'error');
   });

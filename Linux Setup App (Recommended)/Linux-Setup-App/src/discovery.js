@@ -277,6 +277,109 @@ async function scanLinkLocalForSSH(targetMac, laptopIp) {
   });
 }
 
+// Same address space as scanLinkLocalForSSH, but for resolving several CXs at
+// once (an unmanaged switch with the laptop and multiple direct-link CXs all
+// on it - the same 169.254.x.x self-assigned segment a single direct link
+// uses, just with more than one device on it). The single-target sweep above
+// stops at the very first open port it finds, which is exactly wrong here:
+// we don't yet know which IP belongs to which MAC, only that pinging it
+// triggers an ARP entry, so stopping early can quit before the other targets
+// on the segment ever get probed. This keeps sweeping - checking ARP every
+// CHECK_EVERY completions rather than after every single one, to avoid a
+// pointless flood of `ip neigh`/`arp -a` calls - until every requested MAC
+// has resolved or the whole /16 has been swept.
+async function scanLinkLocalForSSHMulti(remainingMacs, laptopIp) {
+  const norm = (m) => String(m || '').replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+  const hosts = [];
+  for (let a = 1; a < 255; a++) for (let b = 0; b <= 255; b++) hosts.push(`169.254.${a}.${b}`);
+  for (let i = hosts.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [hosts[i], hosts[j]] = [hosts[j], hosts[i]];
+  }
+
+  const CONC = 512;
+  const CHECK_EVERY = 256;
+  const remaining = new Set(remainingMacs.map(norm));
+
+  return new Promise((resolve) => {
+    let completed = 0;
+    let idx = 0;
+    let stopped = false;
+    const total = hosts.length;
+
+    async function checkSatisfied() {
+      if (stopped || !remaining.size) return;
+      const arp = await readArp();
+      for (const mac of [...remaining]) {
+        if (arp.some(e => norm(e.mac) === mac)) remaining.delete(mac);
+      }
+      if (!remaining.size) { stopped = true; resolve(); }
+    }
+
+    function next() {
+      if (stopped || idx >= total) return;
+      const host = hosts[idx++];
+      tcpProbe(host, 22, 150, laptopIp).then(async () => {
+        if (stopped) return;
+        completed++;
+        if (completed % CHECK_EVERY === 0) await checkSatisfied();
+        if (stopped) return;
+        if (completed >= total) {
+          stopped = true;
+          resolve();
+          return;
+        }
+        next();
+      });
+    }
+
+    for (let k = 0; k < Math.min(CONC, total); k++) next();
+  });
+}
+
+// Resolves several direct-link CXs' IPs in one pass, for the case where the
+// laptop and multiple CXs all sit on one unmanaged switch (no DHCP, no
+// internet - same self-assigned 169.254.x.x segment a literal single-cable
+// direct link uses, just with more devices on it). Calling
+// resolveDirectLinkIp once per device would run its own full ping+sweep each
+// time; this does the ping and sweep once for the whole set instead.
+async function resolveDirectLinkIps(macs, laptopIp) {
+  const norm = (m) => String(m || '').replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+  const targets = [...new Set((macs || []).map(norm))];
+  const result = {};
+  targets.forEach(t => { result[t] = null; });
+  if (!targets.length) return result;
+
+  const pingCmd = process.platform === 'win32'
+    ? `ping 169.254.255.255 -S ${laptopIp} -n 3 -w 1000`
+    : `ping -c 3 -W 1 -I ${laptopIp} -b 169.254.255.255`;
+  await execP(pingCmd);
+  await new Promise(r => setTimeout(r, 400));
+
+  const fillFromArp = async () => {
+    const arp = await readArp();
+    targets.forEach(t => {
+      if (result[t]) return;
+      const hit = arp.find(e => norm(e.mac) === t);
+      if (hit) result[t] = hit.ip;
+    });
+  };
+
+  await fillFromArp();
+  const stillMissing = () => targets.filter(t => !result[t]);
+  if (!stillMissing().length) return result;
+
+  await scanLinkLocalForSSHMulti(stillMissing(), laptopIp);
+
+  await fillFromArp();
+  if (!stillMissing().length) return result;
+  // Same reasoning as the single-target resolver: an in-flight ARP reply can
+  // still be landing a moment after the sweep itself reports done.
+  await new Promise(r => setTimeout(r, 600));
+  await fillFromArp();
+  return result;
+}
+
 async function discoverAll() {
   const { routable, linkLocal } = classifyAdapters();
 
@@ -302,4 +405,4 @@ async function discoverAll() {
   return { devices: deduped, capped };
 }
 
-module.exports = { classifyAdapters, scanNetwork, scanDirectLink, discoverAll, resolveDirectLinkIp };
+module.exports = { classifyAdapters, scanNetwork, scanDirectLink, discoverAll, resolveDirectLinkIp, resolveDirectLinkIps };
