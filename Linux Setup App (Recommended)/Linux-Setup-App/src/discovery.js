@@ -298,35 +298,58 @@ async function scanLinkLocalForSSHMulti(remainingMacs, laptopIp) {
   }
 
   const CONC = 512;
-  const CHECK_EVERY = 256;
+  const CHECK_EVERY = 64;
   const remaining = new Set(remainingMacs.map(norm));
+  // Captured the instant each mac is actually seen in the ARP table, and
+  // returned to the caller directly. Windows can evict a link-local ARP
+  // entry again within seconds - if one mac resolves early but the sweep
+  // keeps running to find another, the first entry can vanish again before
+  // the sweep finishes. Relying on a fresh readArp() after the sweep returns
+  // then misses it entirely, even though we definitely saw it earlier. This
+  // is exactly what testing showed happening.
+  const found = {};
 
   return new Promise((resolve) => {
     let completed = 0;
     let idx = 0;
     let stopped = false;
+    let checking = false;
     const total = hosts.length;
 
     async function checkSatisfied() {
-      if (stopped || !remaining.size) return;
-      const arp = await readArp();
-      for (const mac of [...remaining]) {
-        if (arp.some(e => norm(e.mac) === mac)) remaining.delete(mac);
+      if (stopped || !remaining.size || checking) return;
+      checking = true;
+      try {
+        const arp = await readArp();
+        for (const mac of [...remaining]) {
+          const hit = arp.find(e => norm(e.mac) === mac);
+          if (hit) { found[mac] = hit.ip; remaining.delete(mac); }
+        }
+        if (!remaining.size) { stopped = true; resolve(found); }
+      } finally {
+        checking = false;
       }
-      if (!remaining.size) { stopped = true; resolve(); }
     }
 
     function next() {
       if (stopped || idx >= total) return;
       const host = hosts[idx++];
-      tcpProbe(host, 22, 150, laptopIp).then(async () => {
+      tcpProbe(host, 22, 150, laptopIp).then(async (open) => {
         if (stopped) return;
         completed++;
-        if (completed % CHECK_EVERY === 0) await checkSatisfied();
+        // A successful connect is direct proof *something* in our target
+        // space just resolved ARP, right now - worth checking immediately
+        // rather than waiting for the next scheduled checkpoint, in case
+        // the OS doesn't hold onto link-local ARP entries for long.
+        if (open) {
+          await checkSatisfied();
+        } else if (completed % CHECK_EVERY === 0) {
+          await checkSatisfied();
+        }
         if (stopped) return;
         if (completed >= total) {
           stopped = true;
-          resolve();
+          resolve(found);
           return;
         }
         next();
@@ -369,7 +392,8 @@ async function resolveDirectLinkIps(macs, laptopIp) {
   const stillMissing = () => targets.filter(t => !result[t]);
   if (!stillMissing().length) return result;
 
-  await scanLinkLocalForSSHMulti(stillMissing(), laptopIp);
+  const sweepFound = await scanLinkLocalForSSHMulti(stillMissing(), laptopIp);
+  Object.entries(sweepFound || {}).forEach(([mac, ip]) => { if (!result[mac]) result[mac] = ip; });
 
   await fillFromArp();
   if (!stillMissing().length) return result;
