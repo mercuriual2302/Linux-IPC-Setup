@@ -4549,3 +4549,58 @@ $('btn-check-image')?.addEventListener('click', async () => {
   loadRecipesForDropdown();
   renderTargets();
 })();
+
+// App update banner. Two modes depending on which layer in main.js found
+// something:
+//   'auto'   - a real electron-updater update. The button here drives the
+//              actual download, then a restart+install - checking is
+//              automatic, but nothing downloads or installs without the user
+//              clicking through both steps.
+//   'manual' - the fallback GitHub version-compare. There's nothing to
+//              download through the app itself, so this just links to the
+//              release page.
+(function initUpdateBanner() {
+  const banner = $('update-banner');
+  const text = $('update-banner-text');
+  const link = $('update-banner-link');
+  const actionBtn = $('update-banner-action');
+  const dismiss = $('update-banner-dismiss');
+  if (!banner || !text || !link || !actionBtn || !dismiss) return;
+
+  window.api.on('update:available', ({ version, url, mode }) => {
+    text.textContent = `A newer version (v${version}) is available - recommended to update.`;
+    banner.style.display = 'flex';
+
+    if (mode === 'auto') {
+      link.style.display = 'none';
+      actionBtn.style.display = 'inline-block';
+      actionBtn.disabled = false;
+      actionBtn.textContent = 'Update now';
+      actionBtn.onclick = async () => {
+        actionBtn.disabled = true;
+        actionBtn.textContent = 'Downloading...';
+        const res = await window.api.updateDownload().catch(e => ({ ok: false, error: String((e && e.message) || e) }));
+        if (!res.ok) {
+          actionBtn.disabled = false;
+          actionBtn.textContent = 'Update now';
+          toast('Update download failed: ' + (res.error || 'unknown'), 'error');
+        }
+        // On success, wait for the update:ready event below rather than
+        // flipping state here - downloadUpdate() resolves once queued, not
+        // once actually finished.
+      };
+    } else {
+      actionBtn.style.display = 'none';
+      link.style.display = 'inline';
+      link.href = url;
+    }
+  });
+
+  window.api.on('update:ready', () => {
+    actionBtn.disabled = false;
+    actionBtn.textContent = 'Restart & install';
+    actionBtn.onclick = () => window.api.updateInstall();
+  });
+
+  dismiss.addEventListener('click', () => { banner.style.display = 'none'; });
+})();

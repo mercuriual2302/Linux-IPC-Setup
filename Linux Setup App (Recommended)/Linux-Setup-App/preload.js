@@ -4,7 +4,7 @@
 // preload.js runs in isolated context, bridges renderer ↔ main
 const { contextBridge, ipcRenderer } = require('electron');
 
-const VALID_EVENTS = ['ssh:output', 'ssh:status', 'shell:data', 'shell:exit', 'sftp:progress', 'sftp:connect-stage', 'recipe:step', 'fleet:device', 'fleet:device-session', 'fleet:await-next', 'fleet:complete'];
+const VALID_EVENTS = ['ssh:output', 'ssh:status', 'shell:data', 'shell:exit', 'sftp:progress', 'sftp:connect-stage', 'recipe:step', 'fleet:device', 'fleet:device-session', 'fleet:await-next', 'fleet:complete', 'update:available', 'update:ready'];
 
 contextBridge.exposeInMainWorld('api', {
   // one-shot invokes - existing
@@ -95,6 +95,8 @@ contextBridge.exposeInMainWorld('api', {
   checkInternetFleet: (opts) => ipcRenderer.invoke('cx:check-internet-fleet', opts),
   startProxy:    (opts) => ipcRenderer.invoke('proxy:start', opts),
   stopProxy:     ()     => ipcRenderer.invoke('proxy:stop'),
+  updateDownload: () => ipcRenderer.invoke('update:download'),
+  updateInstall:  () => ipcRenderer.invoke('update:install'),
   proxyStatus:   (opts) => ipcRenderer.invoke('proxy:status', opts),
 
   // streaming events

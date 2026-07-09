@@ -1,10 +1,11 @@
 // main.js - Electron main process
-const { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, safeStorage, net: electronNet } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const net = require('net');
 const https = require('https');
+const { autoUpdater } = require('electron-updater');
 
 const SSHManager = require('./src/ssh-manager');
 const ScriptBuilder = require('./src/script-builder');
@@ -51,6 +52,157 @@ const sftpSessions = new Map(); // sessionId → { mgr, sftp } - persistent SFTP
 let activeProxy = null; // { server, port, host, allowKey } - laptop-as-proxy SOCKS5 server, one at a time, shared by single-device and fleet runs (see ensureLaptopProxy)
 
 
+// Update notifications
+//
+// Two layers, tried in order:
+//   1. electron-updater - checks a published GitHub Release in the
+//      background automatically, but the actual download and install only
+//      happen once the user clicks "Update now" in the banner - never
+//      silent. Needs the app to be built with `publish` config (see
+//      package.json) and actually published with electron-builder --publish,
+//      which isn't part of the release process yet. Once it is, this starts
+//      working with no further changes here.
+//   2. A plain version compare against the GitHub API - no download at all,
+//      just a banner with a link to the release page. This is deliberately
+//      the fallback rather than the only mechanism, because it's the one
+//      thing that still works on a locked-down corporate network/GPO that
+//      blocks the real updater, and it needs nothing published, tags from
+//      `npm version` already pushed to origin are enough.
+// Either layer finding nothing (up to date, network blocked, nothing
+// published yet) is a normal, expected outcome - this never surfaces an
+// error to the user, only ever a "there's something newer, recommended to
+// update" notice that the user can act on or dismiss.
+
+const UPDATE_REPO = 'mercuriual2302/Linux-IPC-Setup';
+
+function fetchJson(url) {
+  return new Promise((resolve, reject) => {
+    // electron's net module (not Node's, see the aliased import above) picks
+    // up the OS/Chromium proxy configuration automatically - exactly the
+    // corporate-network case this fallback exists for.
+    const request = electronNet.request({ method: 'GET', url });
+    request.setHeader('User-Agent', 'Linux-Setup-Console');
+    let body = '';
+    request.on('response', (response) => {
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        response.on('data', () => {});
+        reject(new Error('HTTP ' + response.statusCode));
+        return;
+      }
+      response.on('data', (chunk) => { body += chunk; });
+      response.on('end', () => {
+        try { resolve(JSON.parse(body)); } catch (e) { reject(e); }
+      });
+    });
+    request.on('error', reject);
+    request.end();
+  });
+}
+
+function parseSemver(tag) {
+  const m = String(tag || '').match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!m) return null;
+  return [parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)];
+}
+
+function isNewer(a, b) {
+  for (let i = 0; i < 3; i++) { if (a[i] !== b[i]) return a[i] > b[i]; }
+  return false;
+}
+
+async function checkGithubForUpdate() {
+  const current = parseSemver(app.getVersion());
+  if (!current) return null;
+
+  // Prefer a real GitHub Release if one's been published.
+  try {
+    const release = await fetchJson(`https://api.github.com/repos/${UPDATE_REPO}/releases/latest`);
+    const v = parseSemver(release.tag_name);
+    if (v) return isNewer(v, current) ? { version: release.tag_name.replace(/^v/, ''), url: release.html_url } : null;
+  } catch (_) {
+    // no releases published yet, or offline - fall through to tags
+  }
+
+  // Nothing published yet - compare against the highest version tag instead,
+  // which is what `npm version` + git push already gives us today.
+  try {
+    const tags = await fetchJson(`https://api.github.com/repos/${UPDATE_REPO}/tags`);
+    let best = null, bestTag = null;
+    (tags || []).forEach(t => {
+      const v = parseSemver(t.name);
+      if (v && (!best || isNewer(v, best))) { best = v; bestTag = t.name; }
+    });
+    if (best && isNewer(best, current)) {
+      return { version: bestTag.replace(/^v/, ''), url: `https://github.com/${UPDATE_REPO}/releases/tag/${bestTag}` };
+    }
+  } catch (_) {
+    // genuinely offline, or blocked - fail quiet, nothing to show
+  }
+  return null;
+}
+
+async function checkForAppUpdates(win) {
+  let notifiedByAutoUpdater = false;
+
+  // Skip electron-updater entirely when running unpacked (npm start) - it
+  // needs a packaged build's app-update.yml and just no-ops/errors without
+  // one. Going straight to the fallback here also means the banner is
+  // actually testable during normal dev work.
+  if (app.isPackaged) {
+    // Checking happens automatically in the background, same as before - it's
+    // only the download and install that now waits for the user to actually
+    // click Update, rather than happening silently.
+    autoUpdater.autoDownload = false;
+    autoUpdater.autoInstallOnAppQuit = false;
+
+    autoUpdater.removeAllListeners('update-available');
+    autoUpdater.removeAllListeners('update-downloaded');
+
+    autoUpdater.once('update-available', (info) => {
+      notifiedByAutoUpdater = true;
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('update:available', { version: info.version, mode: 'auto' });
+      }
+    });
+
+    autoUpdater.once('update-downloaded', () => {
+      if (win && !win.isDestroyed()) win.webContents.send('update:ready');
+    });
+
+    try {
+      await autoUpdater.checkForUpdates();
+      // give it a beat to actually fire update-available if it found one
+      await new Promise((r) => setTimeout(r, 2000));
+    } catch (_) {
+      // no publish config baked in yet, nothing published, network blocked -
+      // the fallback below covers all of these the same way
+    }
+  }
+
+  if (notifiedByAutoUpdater) return; // banner already sent above
+
+  const update = await checkGithubForUpdate().catch(() => null);
+  if (update && win && !win.isDestroyed()) {
+    win.webContents.send('update:available', { version: update.version, url: update.url, mode: 'manual' });
+  }
+}
+
+// User clicked "Update now" on a real electron-updater notification
+ipcMain.handle('update:download', async () => {
+  try {
+    await autoUpdater.downloadUpdate();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
+// User clicked "Restart & install" once the download finished
+ipcMain.handle('update:install', () => {
+  autoUpdater.quitAndInstall();
+  return { ok: true };
+});
+
 // Window creation
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -76,6 +228,10 @@ function createWindow() {
   });
 
   mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+
+  mainWindow.webContents.once('did-finish-load', () => {
+    checkForAppUpdates(mainWindow);
+  });
 
   if (process.argv.includes('--dev')) {
     mainWindow.webContents.openDevTools({ mode: 'detach' });

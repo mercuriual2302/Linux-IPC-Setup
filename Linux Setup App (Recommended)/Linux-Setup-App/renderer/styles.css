@@ -561,3 +561,13 @@ html:not([data-theme="dark"]) .apt-creds-banner{background:rgba(0,120,80,.06);bo
 .proxy-offer-modal{background:var(--tc-surface);border:1px solid var(--tc-border);border-radius:8px;width:min(460px,92vw);padding:1.75rem;display:flex;flex-direction:column;align-items:center;text-align:center;gap:.85rem}
 .proxy-offer-actions{display:flex;flex-direction:column;gap:.5rem;width:100%;margin-top:.4rem}
 .proxy-offer-actions .power-confirm-btn{width:100%}
+/* app update banner - slim strip pinned above the connbar, only shown when
+   the fallback version-check finds something newer (electron-updater's own
+   path is silent by design and never shows this) */
+.update-banner{display:flex;align-items:center;gap:.6rem;padding:.5rem .9rem;background:var(--tc-accent2);color:#0d1117;font-family:var(--tc-mono);font-size:12px}
+.update-banner a{color:#0d1117;font-weight:600;text-decoration:underline}
+.update-banner-btn{background:#0d1117;color:var(--tc-accent2);border:1px solid #0d1117;border-radius:4px;padding:.25rem .75rem;font-family:var(--tc-mono);font-size:11px;font-weight:600;cursor:pointer}
+.update-banner-btn:hover{opacity:.85}
+.update-banner-btn:disabled{opacity:.6;cursor:default}
+.update-banner button#update-banner-dismiss{margin-left:auto;background:none;border:none;color:#0d1117;font-family:var(--tc-mono);font-size:12px;cursor:pointer;opacity:.75}
+.update-banner button#update-banner-dismiss:hover{opacity:1}
