@@ -300,7 +300,6 @@ async function scanLinkLocalForSSHMulti(remainingMacs, laptopIp) {
   const CONC = 512;
   const CHECK_EVERY = 256;
   const remaining = new Set(remainingMacs.map(norm));
-  console.log('[sweep] starting, hunting for:', [...remaining], 'total addresses:', hosts.length);
 
   return new Promise((resolve) => {
     let completed = 0;
@@ -311,11 +310,10 @@ async function scanLinkLocalForSSHMulti(remainingMacs, laptopIp) {
     async function checkSatisfied() {
       if (stopped || !remaining.size) return;
       const arp = await readArp();
-      console.log('[sweep] checkpoint at', completed, 'completed - current arp table:', JSON.stringify(arp));
       for (const mac of [...remaining]) {
-        if (arp.some(e => norm(e.mac) === mac)) { remaining.delete(mac); console.log('[sweep] resolved', mac, 'at', completed, 'completed'); }
+        if (arp.some(e => norm(e.mac) === mac)) remaining.delete(mac);
       }
-      if (!remaining.size) { stopped = true; console.log('[sweep] all satisfied, stopping early at', completed); resolve(); }
+      if (!remaining.size) { stopped = true; resolve(); }
     }
 
     function next() {
@@ -328,7 +326,6 @@ async function scanLinkLocalForSSHMulti(remainingMacs, laptopIp) {
         if (stopped) return;
         if (completed >= total) {
           stopped = true;
-          console.log('[sweep] exhausted full sweep, still unresolved:', [...remaining]);
           resolve();
           return;
         }
@@ -352,7 +349,6 @@ async function resolveDirectLinkIps(macs, laptopIp) {
   const result = {};
   targets.forEach(t => { result[t] = null; });
   if (!targets.length) return result;
-  console.log('[resolve-many] targets:', targets, 'laptopIp:', laptopIp);
 
   const pingCmd = process.platform === 'win32'
     ? `ping 169.254.255.255 -S ${laptopIp} -n 3 -w 1000`
@@ -370,20 +366,17 @@ async function resolveDirectLinkIps(macs, laptopIp) {
   };
 
   await fillFromArp();
-  console.log('[resolve-many] after broadcast ping:', JSON.stringify(result));
   const stillMissing = () => targets.filter(t => !result[t]);
   if (!stillMissing().length) return result;
 
   await scanLinkLocalForSSHMulti(stillMissing(), laptopIp);
 
   await fillFromArp();
-  console.log('[resolve-many] after sweep:', JSON.stringify(result));
   if (!stillMissing().length) return result;
   // Same reasoning as the single-target resolver: an in-flight ARP reply can
   // still be landing a moment after the sweep itself reports done.
   await new Promise(r => setTimeout(r, 600));
   await fillFromArp();
-  console.log('[resolve-many] final:', JSON.stringify(result));
   return result;
 }
 

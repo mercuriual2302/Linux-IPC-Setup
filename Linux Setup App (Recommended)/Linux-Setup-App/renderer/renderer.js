@@ -2988,16 +2988,13 @@ $('btn-check-image')?.addEventListener('click', async () => {
       let failed = 0;
       for (const [laptopIp, group] of groups) {
         const macs = group.map(d => d.mac);
-        console.log('[resolve-direct-many] sending', { macs, laptopIp });
         let res;
         try { res = await window.api.resolveDirectLinkMany({ macs, laptopIp }); }
         catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
-        console.log('[resolve-direct-many] received', JSON.stringify(res));
         if (!res || !res.ok) { failed += group.length; continue; }
         group.forEach(d => {
           const key = d.mac.replace(/[^0-9a-fA-F]/g, '').toLowerCase();
           const ip = res.ips ? res.ips[key] : null;
-          console.log('[resolve-direct-many] lookup', { mac: d.mac, key, ip, availableKeys: res.ips ? Object.keys(res.ips) : [] });
           if (ip) resolvedDirect.push({ ...d, ip });
           else failed++;
         });
