@@ -37,10 +37,25 @@
             <input type="text"     id="profile-name-input" class="profile-input" placeholder="Profile name (e.g. BTN Office)">
             <input type="text"     id="profile-ip-input"   class="profile-input" placeholder="CX IP address" autocomplete="off">
             <input type="password" id="profile-pass-input" class="profile-input" placeholder="Administrator password (default: 1)" autocomplete="new-password">
-            <input type="text"     id="profile-bkuser-input" class="profile-input" placeholder="MyBeckhoff username (optional)" autocomplete="off" style="display:none">
-            <input type="password" id="profile-bkpass-input" class="profile-input" placeholder="MyBeckhoff password (optional)"  autocomplete="new-password" style="display:none">
-            <label class="um-check" style="margin:.1rem 0"><input type="checkbox" id="profile-save-bk"> Save MyBeckhoff credentials</label>
             <button class="sel-btn" id="btn-profile-save" style="width:100%;margin-top:.25rem">SAVE PROFILE</button>
+          </div>
+        </div>
+      </div>
+      <div class="profile-wrap" id="mybk-wrap">
+        <button class="profile-btn" id="mybk-btn" title="MyBeckhoff credential profiles" aria-haspopup="true" aria-expanded="false">
+          <span class="profile-glyph">🔑</span><span class="profile-label">MYBECKHOFF</span>
+        </button>
+        <div class="profile-menu" id="mybk-menu" role="menu">
+          <div class="profile-menu-hdr">MyBeckhoff Profiles</div>
+          <div id="mybk-warning" class="hint" style="display:none;color:var(--tc-warn);padding:0 .55rem .5rem;margin-top:0"></div>
+          <div id="mybk-list" class="profile-list" style="display:none"></div>
+          <div class="power-menu-sep" id="mybk-sep" style="display:none"></div>
+          <div class="profile-form">
+            <div class="profile-form-title">Save new profile</div>
+            <input type="text"     id="mybk-name-input" class="profile-input" placeholder="Profile name (e.g. My account)">
+            <input type="text"     id="mybk-user-input" class="profile-input" placeholder="MyBeckhoff username" autocomplete="off">
+            <input type="password" id="mybk-pass-input" class="profile-input" placeholder="MyBeckhoff password" autocomplete="new-password">
+            <button class="sel-btn" id="btn-mybk-save" style="width:100%;margin-top:.25rem">SAVE PROFILE</button>
           </div>
         </div>
       </div>
@@ -169,6 +184,10 @@
 
         <div class="section">
           <div class="section-label">mybeckhoff credentials</div>
+          <div class="field" style="margin-bottom:.5rem;max-width:420px">
+            <label>LOAD SAVED PROFILE</label>
+            <select id="bk-profile-select" style="width:100%;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)"><option value="">-- none --</option></select>
+          </div>
           <div class="row">
             <div class="field">
               <label>MYBECKHOFF USERNAME</label>
@@ -255,6 +274,10 @@
             <input type="text" id="recipe-name" placeholder="e.g. F1 cell golden image" style="width:100%;max-width:420px;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)">
           </div>
 
+          <div class="field" style="margin-bottom:.4rem;max-width:420px">
+            <label>LOAD SAVED PROFILE</label>
+            <select id="recipe-bk-profile-select" style="width:100%;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)"><option value="">-- none --</option></select>
+          </div>
           <div style="display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:.4rem">
             <div class="field" style="flex:1;min-width:200px">
               <label>MYBECKHOFF USERNAME</label>
@@ -305,6 +328,10 @@
           <div id="recipe-apply-sections" style="margin-bottom:.75rem"></div>
 
           <div id="recipe-apply-creds" style="display:none;margin-bottom:.75rem">
+            <div class="field" style="margin-bottom:.4rem;max-width:420px">
+              <label>LOAD SAVED PROFILE</label>
+              <select id="recipe-apply-bk-profile-select" style="width:100%;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)"><option value="">-- none --</option></select>
+            </div>
             <div style="display:flex;gap:.6rem;flex-wrap:wrap">
               <div class="field" style="flex:1;min-width:200px">
                 <label>MYBECKHOFF USERNAME</label>
@@ -379,6 +406,10 @@
             </div>
           </div>
           <div id="fleet-creds" style="display:none">
+            <div class="field" style="margin-bottom:.4rem;max-width:420px">
+              <label>LOAD SAVED PROFILE</label>
+              <select id="fleet-bk-profile-select" style="width:100%;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)"><option value="">-- none --</option></select>
+            </div>
             <div style="display:flex;gap:.6rem;flex-wrap:wrap">
               <div class="field" style="flex:1;min-width:190px">
                 <label>MYBECKHOFF USERNAME</label>

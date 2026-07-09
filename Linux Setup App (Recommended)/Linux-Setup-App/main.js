@@ -1,5 +1,5 @@
 // main.js - Electron main process
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -1800,7 +1800,20 @@ ipcMain.handle('profiles:load', async () => {
   const profilesPath = path.join(app.getPath('userData'), 'cx-profiles.json');
   try {
     const raw = await fs.promises.readFile(profilesPath, 'utf8');
-    return { ok: true, profiles: JSON.parse(raw) };
+    const profiles = JSON.parse(raw);
+    // One-time cleanup: MyBeckhoff creds used to be optionally saved in
+    // plaintext inside a CX profile (the old "Save MyBeckhoff credentials"
+    // checkbox). That's retired as of v3.2.0 in favour of the encrypted
+    // MyBeckhoff profile list, so strip any leftovers rather than carry them
+    // forward.
+    let changed = false;
+    profiles.forEach(p => {
+      if ('bkUser' in p || 'bkPass' in p) { delete p.bkUser; delete p.bkPass; changed = true; }
+    });
+    if (changed) {
+      fs.promises.writeFile(profilesPath, JSON.stringify(profiles, null, 2), 'utf8').catch(() => {});
+    }
+    return { ok: true, profiles };
   } catch (e) {
     // File doesn't exist yet - return empty array
     return { ok: true, profiles: [] };
@@ -1815,6 +1828,65 @@ ipcMain.handle('profiles:save', async (_evt, { profiles }) => {
     return { ok: true };
   } catch (e) {
     return { ok: false, error: e.message };
+  }
+});
+
+// MyBeckhoff credential profiles - named identities, separate from CX
+// profiles. Passwords are encrypted at rest with Electron's safeStorage
+// (DPAPI on Windows, Keychain on macOS) when the OS backend is available.
+// If it isn't, we still save rather than block the user - just unencrypted,
+// flagged so the renderer can show a plain-text warning.
+function getBkProfilesPath() {
+  return path.join(app.getPath('userData'), 'mybeckhoff-profiles.json');
+}
+
+ipcMain.handle('bkprofiles:load', async () => {
+  const profilesPath = getBkProfilesPath();
+  const encryptionAvailable = safeStorage.isEncryptionAvailable();
+  try {
+    const raw = await fs.promises.readFile(profilesPath, 'utf8');
+    const stored = JSON.parse(raw);
+    const profiles = stored.map(entry => {
+      let password = '';
+      let broken = false;
+      if (entry.password) {
+        if (entry.encrypted) {
+          try {
+            password = safeStorage.decryptString(Buffer.from(entry.password, 'base64'));
+          } catch (_) {
+            // Can't decrypt - usually means the profile was copied to a
+            // different machine or user account. Surface it, don't crash.
+            broken = true;
+          }
+        } else {
+          password = entry.password;
+        }
+      }
+      return { id: entry.id, name: entry.name, username: entry.username || '', password, broken };
+    });
+    return { ok: true, profiles, encryptionAvailable };
+  } catch (e) {
+    return { ok: true, profiles: [], encryptionAvailable };
+  }
+});
+
+ipcMain.handle('bkprofiles:save', async (_evt, { profiles }) => {
+  const profilesPath = getBkProfilesPath();
+  const encryptionAvailable = safeStorage.isEncryptionAvailable();
+  try {
+    const toStore = (profiles || []).map(entry => {
+      let password = entry.password || '';
+      let encrypted = false;
+      if (password && encryptionAvailable) {
+        password = safeStorage.encryptString(password).toString('base64');
+        encrypted = true;
+      }
+      return { id: entry.id, name: entry.name, username: entry.username || '', password, encrypted };
+    });
+    await fs.promises.writeFile(profilesPath, JSON.stringify(toStore, null, 2), 'utf8');
+    return { ok: true, encryptionAvailable };
+  } catch (e) {
+    return { ok: false, error: e.message, encryptionAvailable };
   }
 });
 

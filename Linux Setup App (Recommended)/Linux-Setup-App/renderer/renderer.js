@@ -2465,12 +2465,9 @@ $('btn-check-image')?.addEventListener('click', async () => {
   // Read values from the profile form's own fields
   function getFormCreds() {
     return {
-      name:   ($('profile-name-input')  || {}).value?.trim()  || '',
-      ip:     ($('profile-ip-input')    || {}).value?.trim()  || '',
-      pass:   ($('profile-pass-input')  || {}).value          || '',
-      bkUser: ($('profile-bkuser-input')|| {}).value?.trim()  || '',
-      bkPass: ($('profile-bkpass-input')|| {}).value          || '',
-      saveBk: ($('profile-save-bk')     || {}).checked        || false,
+      name: ($('profile-name-input') || {}).value?.trim() || '',
+      ip:   ($('profile-ip-input')   || {}).value?.trim() || '',
+      pass: ($('profile-pass-input') || {}).value         || ''
     };
   }
 
@@ -2478,33 +2475,23 @@ $('btn-check-image')?.addEventListener('click', async () => {
   function prefillForm() {
     const ip   = $('cx-ip')?.value.trim()   || $('cx-ip2')?.value.trim()   || $('cx-ip3')?.value.trim()  || '';
     const pass = $('cx-pass')?.value        || $('cx-pass2')?.value        || $('cx-pass3')?.value       || '';
-    const bkUser = $('bk-user')?.value.trim() || '';
-    const bkPass = $('bk-pass')?.value       || '';
     const ipEl = $('profile-ip-input');
     const passEl = $('profile-pass-input');
-    const bkUserEl = $('profile-bkuser-input');
-    const bkPassEl = $('profile-bkpass-input');
     if (ipEl   && !ipEl.value   && ip)     ipEl.value   = ip;
     if (passEl && !passEl.value && pass)   passEl.value = pass;
-    if (bkUserEl && !bkUserEl.value && bkUser) bkUserEl.value = bkUser;
-    if (bkPassEl && !bkPassEl.value && bkPass) bkPassEl.value = bkPass;
   }
 
   // Push loaded profile to all credential fields
   function applyProfile(p) {
     ['cx-ip','cx-ip2','cx-ip3'].forEach(id => { if ($(id)) $(id).value = p.ip || ''; });
     ['cx-pass','cx-pass2','cx-pass3'].forEach(id => { if ($(id)) $(id).value = p.pass || ''; });
-    if (p.bkUser && $('bk-user')) $('bk-user').value = p.bkUser;
-    if (p.bkPass && $('bk-pass')) $('bk-pass').value = p.bkPass;
     if (typeof propagateCreds === 'function') propagateCreds(p.ip || '', p.pass || '');
     const pmTarget = $('power-menu-target');
     if (pmTarget && p.ip) pmTarget.textContent = 'target: ' + p.ip;
   }
 
   function clearForm() {
-    ['profile-name-input','profile-ip-input','profile-pass-input','profile-bkuser-input','profile-bkpass-input'].forEach(id => { if ($(id)) $(id).value = ''; });
-    const chk = $('profile-save-bk');
-    if (chk) { chk.checked = false; chk.dispatchEvent(new Event('change')); }
+    ['profile-name-input','profile-ip-input','profile-pass-input'].forEach(id => { if ($(id)) $(id).value = ''; });
   }
 
   async function persist() {
@@ -2533,7 +2520,7 @@ $('btn-check-image')?.addEventListener('click', async () => {
       row.innerHTML = `
         <div class="profile-item-info">
           <div class="profile-item-name">${escapeHtml(p.name)}</div>
-          <div class="profile-item-sub">${escapeHtml(p.ip)}${p.bkUser ? '  ·  ' + escapeHtml(p.bkUser) : ''}</div>
+          <div class="profile-item-sub">${escapeHtml(p.ip)}</div>
         </div>
         <button class="profile-item-del" data-idx="${i}" title="Delete">✕</button>`;
       row.addEventListener('click', (e) => {
@@ -2552,17 +2539,6 @@ $('btn-check-image')?.addEventListener('click', async () => {
       listEl.appendChild(row);
     });
     updateBtnLabel();
-  }
-
-  // MyBeckhoff fields toggle
-  const saveBkChk = $('profile-save-bk');
-  if (saveBkChk) {
-    saveBkChk.addEventListener('change', function () {
-      const show = this.checked;
-      ['profile-bkuser-input','profile-bkpass-input'].forEach(id => {
-        if ($(id)) $(id).style.display = show ? 'block' : 'none';
-      });
-    });
   }
 
   function openMenu() {
@@ -2590,14 +2566,7 @@ $('btn-check-image')?.addEventListener('click', async () => {
     const f = getFormCreds();
     if (!f.name) { toast('Enter a profile name', 'warn'); return; }
     if (!f.ip)   { toast('Enter a CX IP address', 'warn'); return; }
-    const profile = {
-      id: Date.now().toString(),
-      name: f.name,
-      ip: f.ip,
-      pass: f.pass,
-      bkUser: f.saveBk ? f.bkUser : '',
-      bkPass: f.saveBk ? f.bkPass : ''
-    };
+    const profile = { id: Date.now().toString(), name: f.name, ip: f.ip, pass: f.pass };
     const existingIdx = profiles.findIndex(p => p.name === f.name);
     if (existingIdx >= 0) {
       if (!confirm(`A profile named "${f.name}" already exists. Overwrite it?`)) return;
@@ -2619,6 +2588,159 @@ $('btn-check-image')?.addEventListener('click', async () => {
     if (res && res.ok && Array.isArray(res.profiles)) {
       profiles = res.profiles;
       renderList();
+    }
+  }).catch(() => {});
+})();
+
+// MyBeckhoff credential profiles - named identities, separate from CX
+// profiles. Encrypted at rest via safeStorage where the OS backend supports
+// it (see main.js bkprofiles:save). Feeds a "load saved profile" select at
+// every place MyBeckhoff creds get typed: Setup, Recipe capture, Recipe
+// apply, Fleet apply.
+(function initBkProfiles() {
+  const wrap    = $('mybk-wrap');
+  const btn     = $('mybk-btn');
+  const menu    = $('mybk-menu');
+  const listEl  = $('mybk-list');
+  const warnEl  = $('mybk-warning');
+  const saveBtn = $('btn-mybk-save');
+  if (!wrap || !btn || !menu || !saveBtn) return;
+
+  let profiles = [];
+  let encryptionAvailable = true;
+
+  const PICKERS = [
+    { select: 'bk-profile-select',              user: 'bk-user',              pass: 'bk-pass' },
+    { select: 'recipe-bk-profile-select',        user: 'recipe-bk-user',        pass: 'recipe-bk-pass' },
+    { select: 'recipe-apply-bk-profile-select',  user: 'recipe-apply-bk-user',  pass: 'recipe-apply-bk-pass' },
+    { select: 'fleet-bk-profile-select',         user: 'fleet-bk-user',         pass: 'fleet-bk-pass' }
+  ];
+
+  function populateSelects() {
+    PICKERS.forEach(({ select, user, pass }) => {
+      const sel = $(select);
+      if (!sel) return;
+      const prevVal = sel.value;
+      sel.innerHTML = '<option value="">-- none --</option>' +
+        profiles.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
+      sel.value = profiles.some(p => p.id === prevVal) ? prevVal : '';
+      sel.onchange = () => {
+        const p = profiles.find(x => x.id === sel.value);
+        if (!p) return;
+        const userEl = $(user), passEl = $(pass);
+        if (userEl) userEl.value = p.username;
+        if (passEl) passEl.value = p.password;
+        if (p.broken) toast(`"${p.name}" couldn't be decrypted on this machine - re-save it`, 'warn');
+      };
+    });
+  }
+
+  function updateWarning() {
+    if (!warnEl) return;
+    warnEl.style.display = encryptionAvailable ? 'none' : 'block';
+    warnEl.textContent = '⚠ OS credential encryption unavailable on this machine - profiles are stored in plain text.';
+  }
+
+  async function persist() {
+    const res = await window.api.bkProfilesSave(profiles).catch(() => null);
+    if (res) encryptionAvailable = res.encryptionAvailable;
+    updateWarning();
+  }
+
+  function updateBtnLabel() {
+    const labelEl = btn.querySelector('.profile-label');
+    if (labelEl) labelEl.textContent = profiles.length ? `MYBECKHOFF (${profiles.length})` : 'MYBECKHOFF';
+  }
+
+  function renderList() {
+    listEl.innerHTML = '';
+    const sep = $('mybk-sep');
+    if (!profiles.length) {
+      listEl.style.display = 'none';
+      if (sep) sep.style.display = 'none';
+      updateBtnLabel();
+      return;
+    }
+    listEl.style.display = 'block';
+    if (sep) sep.style.display = 'block';
+    profiles.forEach((p, i) => {
+      const row = document.createElement('div');
+      row.className = 'profile-item';
+      row.innerHTML = `
+        <div class="profile-item-info">
+          <div class="profile-item-name">${escapeHtml(p.name)}</div>
+          <div class="profile-item-sub">${escapeHtml(p.username)}</div>
+        </div>
+        <button class="profile-item-del" data-idx="${i}" title="Delete">✕</button>`;
+      row.querySelector('.profile-item-del').addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!confirm(`Delete MyBeckhoff profile "${p.name}"?`)) return;
+        profiles.splice(i, 1);
+        await persist();
+        renderList();
+        populateSelects();
+      });
+      listEl.appendChild(row);
+    });
+    updateBtnLabel();
+  }
+
+  function clearForm() {
+    ['mybk-name-input','mybk-user-input','mybk-pass-input'].forEach(id => { if ($(id)) $(id).value = ''; });
+  }
+
+  function openMenu() {
+    menu.classList.add('open');
+    btn.classList.add('active');
+    btn.setAttribute('aria-expanded', 'true');
+    const nameEl = $('mybk-name-input');
+    if (nameEl) nameEl.focus();
+  }
+  function closeMenu() {
+    menu.classList.remove('open');
+    btn.classList.remove('active');
+    btn.setAttribute('aria-expanded', 'false');
+  }
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    menu.classList.contains('open') ? closeMenu() : openMenu();
+  });
+  document.addEventListener('click', (e) => { if (!wrap.contains(e.target)) closeMenu(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); });
+
+  saveBtn.addEventListener('click', async () => {
+    const name = ($('mybk-name-input').value || '').trim();
+    const username = ($('mybk-user-input').value || '').trim();
+    const password = $('mybk-pass-input').value || '';
+    if (!name) { toast('Enter a profile name', 'warn'); return; }
+    if (!username || !password) { toast('Enter a username and password', 'warn'); return; }
+    const profile = { id: Date.now().toString(), name, username, password };
+    const existingIdx = profiles.findIndex(p => p.name === name);
+    if (existingIdx >= 0) {
+      if (!confirm(`A MyBeckhoff profile named "${name}" already exists. Overwrite it?`)) return;
+      profile.id = profiles[existingIdx].id;
+      profiles[existingIdx] = profile;
+    } else {
+      profiles.push(profile);
+    }
+    await persist();
+    renderList();
+    populateSelects();
+    clearForm();
+    toast('MyBeckhoff profile saved: ' + name, 'success');
+  });
+
+  const nameEl = $('mybk-name-input');
+  if (nameEl) nameEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveBtn.click(); });
+
+  window.api.bkProfilesLoad().then(res => {
+    if (res && res.ok) {
+      profiles = res.profiles || [];
+      encryptionAvailable = res.encryptionAvailable;
+      renderList();
+      populateSelects();
+      updateWarning();
     }
   }).catch(() => {});
 })();

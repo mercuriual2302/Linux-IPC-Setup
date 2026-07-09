@@ -33,6 +33,8 @@ contextBridge.exposeInMainWorld('api', {
   updateFeed:       (opts) => ipcRenderer.invoke('cx:update-feed', opts),
   profilesLoad:     ()     => ipcRenderer.invoke('profiles:load'),
   profilesSave:     (data) => ipcRenderer.invoke('profiles:save', data),
+  bkProfilesLoad:   ()     => ipcRenderer.invoke('bkprofiles:load'),
+  bkProfilesSave:   (profiles) => ipcRenderer.invoke('bkprofiles:save', { profiles }),
   tcRuntime:      (opts) => ipcRenderer.invoke('cx:tc-runtime', opts),
   serviceMgmt:    (opts) => ipcRenderer.invoke('cx:service-mgmt', opts),
   power:          (opts) => ipcRenderer.invoke('cx:power', opts),
