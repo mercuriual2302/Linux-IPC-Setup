@@ -298,7 +298,7 @@ async function scanLinkLocalForSSHMulti(remainingMacs, laptopIp) {
   }
 
   const CONC = 512;
-  const CHECK_EVERY = 256;
+  const CHECK_EVERY = 64;
   const remaining = new Set(remainingMacs.map(norm));
   console.log('[sweep] starting, hunting for:', [...remaining], 'total addresses:', hosts.length);
 
@@ -321,10 +321,19 @@ async function scanLinkLocalForSSHMulti(remainingMacs, laptopIp) {
     function next() {
       if (stopped || idx >= total) return;
       const host = hosts[idx++];
-      tcpProbe(host, 22, 150, laptopIp).then(async () => {
+      tcpProbe(host, 22, 150, laptopIp).then(async (open) => {
         if (stopped) return;
         completed++;
-        if (completed % CHECK_EVERY === 0) await checkSatisfied();
+        // A successful connect is direct proof *something* in our target
+        // space just resolved ARP, right now - worth checking immediately
+        // rather than waiting for the next scheduled checkpoint, in case
+        // the OS doesn't hold onto link-local ARP entries for long.
+        if (open) {
+          console.log('[sweep] probe succeeded at', completed, 'completed - checking immediately');
+          await checkSatisfied();
+        } else if (completed % CHECK_EVERY === 0) {
+          await checkSatisfied();
+        }
         if (stopped) return;
         if (completed >= total) {
           stopped = true;
