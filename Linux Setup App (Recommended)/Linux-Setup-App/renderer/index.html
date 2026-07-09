@@ -56,6 +56,7 @@
             <input type="text"     id="mybk-user-input" class="profile-input" placeholder="MyBeckhoff username" autocomplete="off">
             <input type="password" id="mybk-pass-input" class="profile-input" placeholder="MyBeckhoff password" autocomplete="new-password">
             <button class="sel-btn" id="btn-mybk-save" style="width:100%;margin-top:.25rem">SAVE PROFILE</button>
+            <div id="mybk-save-status" style="font-family:var(--tc-mono);font-size:10px;color:var(--tc-muted)"></div>
           </div>
         </div>
       </div>
@@ -292,6 +293,10 @@
               <input type="password" id="recipe-tf2000-pass" placeholder="•••••••" style="width:100%;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)">
             </div>
           </div>
+          <div class="row-inline" style="margin-top:-.25rem;margin-bottom:.5rem;align-items:center;gap:.75rem">
+            <button class="sel-btn" id="btn-recipe-validate-creds" style="font-size:11px;padding:.35rem .9rem">✓ VALIDATE MYBECKHOFF CREDENTIALS</button>
+            <span id="recipe-creds-status" style="font-family:var(--tc-mono);font-size:10px;color:var(--tc-muted)"></span>
+          </div>
           <div class="hint" style="margin-bottom:.6rem">Saved with this recipe in your local library so it never needs re-typing on repeat applies. Automatically removed if you export the recipe to share it - whoever imports it types their own.</div>
 
           <div class="btn-row" style="gap:.5rem">
@@ -345,6 +350,10 @@
                 <label>TF2000 INIT PASSWORD</label>
                 <input type="password" id="recipe-apply-tf2000-pass" placeholder="•••••••" style="width:100%;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)">
               </div>
+            </div>
+            <div class="row-inline" style="margin-top:.35rem;margin-bottom:0;align-items:center;gap:.75rem">
+              <button class="sel-btn" id="btn-recipe-apply-validate-creds" style="font-size:11px;padding:.35rem .9rem">✓ VALIDATE MYBECKHOFF CREDENTIALS</button>
+              <span id="recipe-apply-creds-status" style="font-family:var(--tc-mono);font-size:10px;color:var(--tc-muted)"></span>
             </div>
             <div class="hint" id="recipe-apply-creds-hint" style="margin-top:.35rem"></div>
           </div>
@@ -423,6 +432,10 @@
                 <label>TF2000 PASSWORD</label>
                 <input type="password" id="fleet-tf2000-pass" placeholder="•••••••" style="width:100%;background:var(--tc-bg);border:1px solid var(--tc-border);border-radius:4px;padding:.5rem .75rem;font-family:var(--tc-mono);font-size:12px;color:var(--tc-text)">
               </div>
+            </div>
+            <div class="row-inline" style="margin-top:.35rem;margin-bottom:0;align-items:center;gap:.75rem">
+              <button class="sel-btn" id="btn-fleet-validate-creds" style="font-size:11px;padding:.35rem .9rem">✓ VALIDATE MYBECKHOFF CREDENTIALS</button>
+              <span id="fleet-creds-validate-status" style="font-family:var(--tc-mono);font-size:10px;color:var(--tc-muted)"></span>
             </div>
             <div class="hint" id="fleet-creds-hint" style="margin-top:.35rem">Asked once for the whole fleet.</div>
           </div>

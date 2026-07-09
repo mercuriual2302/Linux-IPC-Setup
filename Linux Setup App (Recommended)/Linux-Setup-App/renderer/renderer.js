@@ -1006,6 +1006,42 @@ async function ensureFleetProxyDecision(targets) {
   return { proxyHost: null, proxyPort: null };
 }
 
+// Small shared status-line updater. Used both for the outcome of an actual
+// validate-creds call and for the "picked an already-validated saved
+// profile, no network call needed" case, so every MyBeckhoff credential spot
+// in the app looks and behaves the same way.
+function setStatus(el, text, kind) {
+  if (!el) return;
+  el.textContent = text;
+  if (kind === 'ok')        { el.style.color = 'var(--tc-warn)'; el.className = 'pass-match-ok'; }
+  else if (kind === 'err')  { el.style.color = 'var(--tc-danger)'; el.className = 'pass-match-err'; }
+  else if (kind === 'warn') { el.style.color = 'var(--tc-warn)'; el.className = ''; }
+  else                      { el.style.color = 'var(--tc-muted)'; el.className = ''; }
+}
+
+// Shared "validate MyBeckhoff creds against a CX" flow - proxy-aware via
+// whatever proxy decider the caller hands in (single-device ensureProxyDecision
+// or the fleet-wide ensureFleetProxyDecision). Used at every place these
+// credentials get typed manually: Setup, Recipe capture, Recipe apply, Fleet
+// apply, and when saving a new MyBeckhoff profile. Returns true/false/undefined
+// (undefined if the proxy prompt was cancelled - treated as "not validated").
+async function runCredsValidate({ host, password, beckhoffUser, beckhoffPass, btn, statusEl, getProxyDecision }) {
+  if (!host) { setStatus(statusEl, '⚠ Connect to a CX first', 'warn'); return false; }
+  if (!beckhoffUser || !beckhoffPass) { setStatus(statusEl, '⚠ Enter MyBeckhoff credentials first', 'warn'); return false; }
+  setStatus(statusEl, 'Validating...', 'muted');
+  if (btn) btn.disabled = true;
+  const proxyDecision = await getProxyDecision();
+  if (proxyDecision.cancelled) { setStatus(statusEl, '', 'muted'); if (btn) btn.disabled = false; return false; }
+  const res = await window.api.validateCreds({
+    host, password, port: 22, beckhoffUser, beckhoffPass,
+    proxyHost: proxyDecision.proxyHost, proxyPort: proxyDecision.proxyPort
+  });
+  if (btn) btn.disabled = false;
+  if (res.ok) { setStatus(statusEl, '✓ Credentials valid', 'ok'); return true; }
+  setStatus(statusEl, '✗ ' + (res.error || 'Validation failed'), 'err');
+  return false;
+}
+
 $('btn-run-setup').addEventListener('click', async () => {
   const ip = $('cx-ip').value.trim();
   const cxPass = $('cx-pass').value;
@@ -2610,27 +2646,48 @@ $('btn-check-image')?.addEventListener('click', async () => {
   let encryptionAvailable = true;
 
   const PICKERS = [
-    { select: 'bk-profile-select',              user: 'bk-user',              pass: 'bk-pass' },
-    { select: 'recipe-bk-profile-select',        user: 'recipe-bk-user',        pass: 'recipe-bk-pass' },
-    { select: 'recipe-apply-bk-profile-select',  user: 'recipe-apply-bk-user',  pass: 'recipe-apply-bk-pass' },
-    { select: 'fleet-bk-profile-select',         user: 'fleet-bk-user',         pass: 'fleet-bk-pass' }
+    { select: 'bk-profile-select',              user: 'bk-user',              pass: 'bk-pass',              status: 'creds-status' },
+    { select: 'recipe-bk-profile-select',        user: 'recipe-bk-user',        pass: 'recipe-bk-pass',        status: 'recipe-creds-status' },
+    { select: 'recipe-apply-bk-profile-select',  user: 'recipe-apply-bk-user',  pass: 'recipe-apply-bk-pass',  status: 'recipe-apply-creds-status' },
+    { select: 'fleet-bk-profile-select',         user: 'fleet-bk-user',         pass: 'fleet-bk-pass',         status: 'fleet-creds-validate-status' }
   ];
 
   function populateSelects() {
-    PICKERS.forEach(({ select, user, pass }) => {
+    PICKERS.forEach(({ select, user, pass, status }) => {
       const sel = $(select);
       if (!sel) return;
       const prevVal = sel.value;
       sel.innerHTML = '<option value="">-- none --</option>' +
         profiles.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name)}</option>`).join('');
       sel.value = profiles.some(p => p.id === prevVal) ? prevVal : '';
+
+      const userEl = $(user), passEl = $(pass), statusEl = $(status);
+
+      // Typing directly into either field means whatever is there is no
+      // longer the picked profile's own creds - drop back to "not picked"
+      // and clear the validated mark, so a manual edit always needs its own
+      // manual validate rather than silently keeping a stale green tick.
+      const onManualEdit = () => {
+        if (sel.value) sel.value = '';
+        setStatus(statusEl, '', 'muted');
+      };
+      if (userEl && !userEl._bkEditWired) { userEl.addEventListener('input', onManualEdit); userEl._bkEditWired = true; }
+      if (passEl && !passEl._bkEditWired) { passEl.addEventListener('input', onManualEdit); passEl._bkEditWired = true; }
+
       sel.onchange = () => {
         const p = profiles.find(x => x.id === sel.value);
-        if (!p) return;
-        const userEl = $(user), passEl = $(pass);
+        if (!p) { setStatus(statusEl, '', 'muted'); return; }
         if (userEl) userEl.value = p.username;
         if (passEl) passEl.value = p.password;
-        if (p.broken) toast(`"${p.name}" couldn't be decrypted on this machine - re-save it`, 'warn');
+        if (p.broken) {
+          toast(`"${p.name}" couldn't be decrypted on this machine - re-save it`, 'warn');
+          setStatus(statusEl, '⚠ could not decrypt on this machine - re-save this profile', 'warn');
+        } else {
+          // Every saved profile is validated at the point it's saved (see the
+          // save handler below), so picking one never needs a fresh network
+          // round trip - that's the whole point of the mark.
+          setStatus(statusEl, '✓ validated (saved profile)', 'ok');
+        }
       };
     });
   }
@@ -2669,7 +2726,7 @@ $('btn-check-image')?.addEventListener('click', async () => {
       row.innerHTML = `
         <div class="profile-item-info">
           <div class="profile-item-name">${escapeHtml(p.name)}</div>
-          <div class="profile-item-sub">${escapeHtml(p.username)}</div>
+          <div class="profile-item-sub">${escapeHtml(p.username)}${p.broken ? '  ·  ⚠ re-save' : (p.validated ? '  ·  ✓ validated' : '')}</div>
         </div>
         <button class="profile-item-del" data-idx="${i}" title="Delete">✕</button>`;
       row.querySelector('.profile-item-del').addEventListener('click', async (e) => {
@@ -2713,9 +2770,31 @@ $('btn-check-image')?.addEventListener('click', async () => {
     const name = ($('mybk-name-input').value || '').trim();
     const username = ($('mybk-user-input').value || '').trim();
     const password = $('mybk-pass-input').value || '';
+    const saveStat = $('mybk-save-status');
     if (!name) { toast('Enter a profile name', 'warn'); return; }
     if (!username || !password) { toast('Enter a username and password', 'warn'); return; }
-    const profile = { id: Date.now().toString(), name, username, password };
+
+    // Validated once, here, at save time - that's the whole point of the
+    // "validated" mark. Needs a connected CX to actually check the creds
+    // against the Beckhoff apt server, so require one rather than saving an
+    // unverified profile that later gets treated as trusted everywhere else.
+    const conn = getCxMgmtConn();
+    if (!conn.host) {
+      setStatus(saveStat, '⚠ Connect to a CX first - validation is required to save', 'warn');
+      return;
+    }
+
+    saveBtn.disabled = true;
+    const ok = await runCredsValidate({
+      host: conn.host, password: conn.password,
+      beckhoffUser: username, beckhoffPass: password,
+      btn: null, statusEl: saveStat,
+      getProxyDecision: () => ensureProxyDecision(conn.host, conn.password)
+    });
+    saveBtn.disabled = false;
+    if (!ok) return; // saveStat already shows why
+
+    const profile = { id: Date.now().toString(), name, username, password, validated: true };
     const existingIdx = profiles.findIndex(p => p.name === name);
     if (existingIdx >= 0) {
       if (!confirm(`A MyBeckhoff profile named "${name}" already exists. Overwrite it?`)) return;
@@ -2728,7 +2807,8 @@ $('btn-check-image')?.addEventListener('click', async () => {
     renderList();
     populateSelects();
     clearForm();
-    toast('MyBeckhoff profile saved: ' + name, 'success');
+    setStatus(saveStat, '', 'muted');
+    toast('MyBeckhoff profile saved and validated: ' + name, 'success');
   });
 
   const nameEl = $('mybk-name-input');
@@ -3696,6 +3776,21 @@ $('btn-check-image')?.addEventListener('click', async () => {
     captureStat.style.color = 'var(--tc-accent2)';
   });
 
+  // ---- validate MyBeckhoff creds (manual entry, not from a saved profile) ----
+  const validateBtn  = $('btn-recipe-validate-creds');
+  const validateStat = $('recipe-creds-status');
+  if (validateBtn) {
+    validateBtn.addEventListener('click', async () => {
+      const conn = getCxMgmtConn();
+      await runCredsValidate({
+        host: conn.host, password: conn.password,
+        beckhoffUser: (bkUserInput.value || '').trim(), beckhoffPass: bkPassInput.value || '',
+        btn: validateBtn, statusEl: validateStat,
+        getProxyDecision: () => ensureProxyDecision(conn.host, conn.password)
+      });
+    });
+  }
+
   // Builds the checklist UI from raw captured facts. Everything starts ticked,
   // matching the old all-or-nothing behaviour, but every package and every
   // firewall port gets its own checkbox so any of them can be left out.
@@ -3955,6 +4050,21 @@ $('btn-check-image')?.addEventListener('click', async () => {
     applyPanel.style.display = 'none';
     applyTarget = null;
   });
+
+  // ---- validate MyBeckhoff creds (manual entry, not from a saved profile) ----
+  const applyValidateBtn  = $('btn-recipe-apply-validate-creds');
+  const applyValidateStat = $('recipe-apply-creds-status');
+  if (applyValidateBtn) {
+    applyValidateBtn.addEventListener('click', async () => {
+      const conn = getCxMgmtConn();
+      await runCredsValidate({
+        host: conn.host, password: conn.password,
+        beckhoffUser: (applyBkUserInput.value || '').trim(), beckhoffPass: applyBkPassInput.value || '',
+        btn: applyValidateBtn, statusEl: applyValidateStat,
+        getProxyDecision: () => ensureProxyDecision(conn.host, conn.password)
+      });
+    });
+  }
 
   applyRunBtn.addEventListener('click', async () => {
     if (!applyTarget) return;
@@ -4227,6 +4337,24 @@ $('btn-check-image')?.addEventListener('click', async () => {
     el('fleet-run-status').style.color = reachableCount === targets.length ? 'var(--tc-accent2)' : 'var(--tc-warn)';
     if (reachableCount < targets.length) toast(`${targets.length - reachableCount} device(s) not reachable - they'll be skipped`, 'warn');
   });
+
+  // ---- validate MyBeckhoff creds (manual entry, not from a saved profile) ----
+  // MyBeckhoff is one account for the whole fleet, not per-device, so this
+  // spot-checks against the first target rather than every device.
+  const fleetValidateBtn  = el('btn-fleet-validate-creds');
+  const fleetValidateStat = el('fleet-creds-validate-status');
+  if (fleetValidateBtn) {
+    fleetValidateBtn.addEventListener('click', async () => {
+      if (!targets.length) { setStatus(fleetValidateStat, '⚠ Add at least one target first', 'warn'); return; }
+      const first = targets[0];
+      await runCredsValidate({
+        host: first.host, password: first.password,
+        beckhoffUser: (el('fleet-bk-user').value || '').trim(), beckhoffPass: el('fleet-bk-pass').value || '',
+        btn: fleetValidateBtn, statusEl: fleetValidateStat,
+        getProxyDecision: () => ensureFleetProxyDecision(targets)
+      });
+    });
+  }
 
   // ---- run ----
   function buildRunTable() {

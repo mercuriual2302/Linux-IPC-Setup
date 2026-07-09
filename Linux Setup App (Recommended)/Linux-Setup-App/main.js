@@ -1862,7 +1862,7 @@ ipcMain.handle('bkprofiles:load', async () => {
           password = entry.password;
         }
       }
-      return { id: entry.id, name: entry.name, username: entry.username || '', password, broken };
+      return { id: entry.id, name: entry.name, username: entry.username || '', password, broken, validated: !!entry.validated };
     });
     return { ok: true, profiles, encryptionAvailable };
   } catch (e) {
@@ -1881,7 +1881,7 @@ ipcMain.handle('bkprofiles:save', async (_evt, { profiles }) => {
         password = safeStorage.encryptString(password).toString('base64');
         encrypted = true;
       }
-      return { id: entry.id, name: entry.name, username: entry.username || '', password, encrypted };
+      return { id: entry.id, name: entry.name, username: entry.username || '', password, encrypted, validated: !!entry.validated };
     });
     await fs.promises.writeFile(profilesPath, JSON.stringify(toStore, null, 2), 'utf8');
     return { ok: true, encryptionAvailable };
