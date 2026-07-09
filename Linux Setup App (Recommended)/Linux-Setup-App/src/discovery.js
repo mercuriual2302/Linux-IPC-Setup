@@ -300,6 +300,14 @@ async function scanLinkLocalForSSHMulti(remainingMacs, laptopIp) {
   const CONC = 512;
   const CHECK_EVERY = 64;
   const remaining = new Set(remainingMacs.map(norm));
+  // Captured the instant each mac is actually seen in the ARP table, and
+  // returned to the caller directly. Windows can evict a link-local ARP
+  // entry again within seconds - if one mac resolves early but the sweep
+  // keeps running to find another, the first entry can vanish again before
+  // the sweep finishes. Relying on a fresh readArp() after the sweep returns
+  // then misses it entirely, even though we definitely saw it earlier. This
+  // is exactly what testing showed happening.
+  const found = {};
   console.log('[sweep] starting, hunting for:', [...remaining], 'total addresses:', hosts.length);
 
   return new Promise((resolve) => {
@@ -316,9 +324,10 @@ async function scanLinkLocalForSSHMulti(remainingMacs, laptopIp) {
         const arp = await readArp();
         console.log('[sweep] checkpoint at', completed, 'completed - current arp table:', JSON.stringify(arp));
         for (const mac of [...remaining]) {
-          if (arp.some(e => norm(e.mac) === mac)) { remaining.delete(mac); console.log('[sweep] resolved', mac, 'at', completed, 'completed'); }
+          const hit = arp.find(e => norm(e.mac) === mac);
+          if (hit) { found[mac] = hit.ip; remaining.delete(mac); console.log('[sweep] resolved', mac, 'to', hit.ip, 'at', completed, 'completed'); }
         }
-        if (!remaining.size) { stopped = true; console.log('[sweep] all satisfied, stopping early at', completed); resolve(); }
+        if (!remaining.size) { stopped = true; console.log('[sweep] all satisfied, stopping early at', completed); resolve(found); }
       } finally {
         checking = false;
       }
@@ -344,7 +353,7 @@ async function scanLinkLocalForSSHMulti(remainingMacs, laptopIp) {
         if (completed >= total) {
           stopped = true;
           console.log('[sweep] exhausted full sweep, still unresolved:', [...remaining]);
-          resolve();
+          resolve(found);
           return;
         }
         next();
@@ -389,7 +398,9 @@ async function resolveDirectLinkIps(macs, laptopIp) {
   const stillMissing = () => targets.filter(t => !result[t]);
   if (!stillMissing().length) return result;
 
-  await scanLinkLocalForSSHMulti(stillMissing(), laptopIp);
+  const sweepFound = await scanLinkLocalForSSHMulti(stillMissing(), laptopIp);
+  Object.entries(sweepFound || {}).forEach(([mac, ip]) => { if (!result[mac]) result[mac] = ip; });
+  console.log('[resolve-many] sweep itself reported:', JSON.stringify(sweepFound));
 
   await fillFromArp();
   console.log('[resolve-many] after sweep:', JSON.stringify(result));
