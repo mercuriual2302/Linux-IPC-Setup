@@ -200,6 +200,14 @@ FW_WAS_ACTIVE=$(_sudo systemctl is-active nftables 2>/dev/null || true)
 FW_WAS_ACTIVE=\${FW_WAS_ACTIVE:-inactive}
 FW_WAS_ENABLED=$(_sudo systemctl is-enabled nftables 2>/dev/null || true)
 FW_WAS_ENABLED=\${FW_WAS_ENABLED:-disabled}
+if [ "$FW_WAS_ACTIVE" = "active" ]; then
+  # Capture the actual ruleset, not just whether the service was on - a
+  # package's own install can silently overwrite the firewall's persisted
+  # config while it's disabled below, and nothing else here would notice.
+  # Restoring service state alone would then just re-launch nftables against
+  # whatever got left behind.
+  _sudo nft list ruleset > /tmp/fw_backup.nft 2>/dev/null || true
+fi
 echo "[CX] Disabling firewall for setup..."
 _sudo systemctl stop nftables || true
 _sudo systemctl disable nftables || true
@@ -221,6 +229,12 @@ else
   echo "[CX] No system package upgrades available."
 fi
 echo "[CX] Restoring firewall to its state before setup (was active=$FW_WAS_ACTIVE, enabled=$FW_WAS_ENABLED)..."
+if [ "$FW_WAS_ACTIVE" = "active" ] && [ -s /tmp/fw_backup.nft ]; then
+  echo "[CX] Re-applying the pre-setup firewall ruleset..."
+  _sudo nft -f /tmp/fw_backup.nft
+  _sudo sh -c 'nft list ruleset | tee /etc/nftables-bhf.conf' >/dev/null
+fi
+_sudo rm -f /tmp/fw_backup.nft
 if [ "$FW_WAS_ENABLED" = "enabled" ]; then
   _sudo systemctl enable nftables || true
 else

@@ -1206,7 +1206,7 @@ _sudo nft add rule inet filter input tcp dport 22 accept
 ${openRules}
 _sudo systemctl enable nftables
 _sudo systemctl start nftables
-_sudo nft list ruleset | _sudo tee /etc/nftables.conf
+_sudo sh -c 'nft list ruleset | tee /etc/nftables-bhf.conf'
 echo "[CX] Firewall enabled with selected ports open."` :
 `echo "[CX] Disabling nftables firewall..."
 _sudo systemctl stop nftables || true
@@ -2893,7 +2893,7 @@ _sudo nft add rule inet filter input tcp dport 22 accept
 ${openRules}
 _sudo systemctl enable nftables
 _sudo systemctl start nftables
-_sudo nft list ruleset | _sudo tee /etc/nftables.conf >/dev/null
+_sudo sh -c 'nft list ruleset | tee /etc/nftables-bhf.conf' >/dev/null
 echo "[CX] Firewall configured."` :
 `echo "[CX] Disabling firewall..."
 _sudo systemctl stop nftables || true
