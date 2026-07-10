@@ -4,7 +4,7 @@ node_modules/
 # Build outputs
 dist/
 out/
-build/
+
 
 # Electron builder icon sources (large raw assets)
 build/icon-sources/
