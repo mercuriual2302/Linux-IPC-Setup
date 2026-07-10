@@ -780,8 +780,8 @@
           <div id="installed-result" style="display:none">
             <div id="installed-count" style="font-family:var(--tc-mono);font-size:11px;color:var(--tc-muted);margin-bottom:.5rem"></div>
             <div id="installed-table" style="background:var(--tc-surface2);border:1px solid var(--tc-border);border-radius:4px;overflow:hidden;font-family:var(--tc-mono);font-size:11px;max-height:300px;overflow-y:auto">
-              <div style="display:grid;grid-template-columns:1fr auto auto 36px;gap:.5rem;padding:.4rem .6rem;background:var(--tc-surface);font-size:10px;color:var(--tc-muted);font-weight:600;border-bottom:1px solid var(--tc-border)">
-                <span>PACKAGE</span><span>INSTALLED</span><span>AVAILABLE</span><span></span>
+              <div style="display:grid;grid-template-columns:1fr auto auto 36px 36px;gap:.5rem;padding:.4rem .6rem;background:var(--tc-surface);font-size:10px;color:var(--tc-muted);font-weight:600;border-bottom:1px solid var(--tc-border)">
+                <span>PACKAGE</span><span>INSTALLED</span><span>AVAILABLE</span><span></span><span></span>
               </div>
               <div id="installed-rows"></div>
             </div>
@@ -1000,6 +1000,20 @@
       <button class="power-confirm-btn go" id="proxy-offer-use">USE MY LAPTOP'S INTERNET</button>
       <button class="power-confirm-btn" id="proxy-offer-skip">CONTINUE WITHOUT (LIKELY TO FAIL)</button>
       <button class="power-confirm-btn" id="proxy-offer-cancel">CANCEL</button>
+    </div>
+  </div>
+</div>
+
+<!-- offered when removing an installed TwinCAT package -->
+<div id="uninstall-confirm-overlay" class="power-confirm-overlay">
+  <div class="proxy-offer-modal">
+    <div class="power-confirm-glyph">🗑</div>
+    <div class="power-confirm-title" id="uninstall-confirm-title">Remove package?</div>
+    <div class="power-confirm-body" id="uninstall-confirm-body"></div>
+    <div class="proxy-offer-actions">
+      <button class="power-confirm-btn" id="uninstall-confirm-remove">REMOVE (KEEP CONFIG FILES)</button>
+      <button class="power-confirm-btn go danger" id="uninstall-confirm-purge">PURGE (REMOVE CONFIG TOO)</button>
+      <button class="power-confirm-btn" id="uninstall-confirm-cancel">CANCEL</button>
     </div>
   </div>
 </div>

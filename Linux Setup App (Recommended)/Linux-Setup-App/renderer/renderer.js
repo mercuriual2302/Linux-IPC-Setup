@@ -1644,11 +1644,12 @@ function renderInstalledTable() {
   const rows = $('installed-rows');
   const hasUpdates = _installedPkgs.some(p => p.upgradable);
   rows.innerHTML = _installedPkgs.map(p => `
-    <div class="upd-row" style="display:grid;grid-template-columns:1fr auto auto 36px;gap:.5rem;padding:.35rem .6rem;border-bottom:1px solid var(--tc-border);align-items:center">
+    <div class="upd-row" style="display:grid;grid-template-columns:1fr auto auto 36px 36px;gap:.5rem;padding:.35rem .6rem;border-bottom:1px solid var(--tc-border);align-items:center">
       <span class="upd-name">${escapeHtml(p.name)}</span>
       <span class="upd-old">${escapeHtml(p.version)}</span>
       <span class="${p.upgradable ? 'upd-new' : ''}" style="${p.upgradable ? '' : 'color:var(--tc-muted)'}">${p.upgradable ? '→ ' + escapeHtml(p.newVer) : '✓ up to date'}</span>
       <span>${p.upgradable ? `<input type="checkbox" class="upd-chk" data-pkg="${escapeHtml(p.name)}" data-ver="${escapeHtml(p.newVer)}" checked style="cursor:pointer">` : ''}</span>
+      <span><button class="pkg-uninstall-btn" data-pkg="${escapeHtml(p.name)}" title="Uninstall this package" style="background:none;border:none;cursor:pointer;color:var(--tc-danger);font-size:13px;padding:.1rem .3rem">🗑</button></span>
     </div>`).join('');
   $('updates-select-all-row').style.display = hasUpdates ? 'block' : 'none';
   $('btn-upgrade-selected').style.display = hasUpdates ? '' : 'none';
@@ -1661,6 +1662,56 @@ function renderInstalledTable() {
       rows.querySelectorAll('.upd-chk').forEach(c => c.checked = this.checked);
     });
   }
+}
+
+// One event-delegated listener on the container rather than one per row -
+// rows.innerHTML gets fully replaced on every fetch/refresh, so a per-row
+// listener would just leak; delegation survives re-renders for free.
+$('installed-rows').addEventListener('click', async (e) => {
+  const btn = e.target.closest('.pkg-uninstall-btn');
+  if (!btn) return;
+  const pkg = btn.dataset.pkg;
+  const conn = getCxMgmtConn();
+  if (!conn.host) { toast('Enter CX IP address', 'warn'); return; }
+  const choice = await confirmUninstall(pkg);
+  if (choice === 'cancel') return;
+  goToTerminal(null);
+  const res = await window.api.uninstallPackage({ ...conn, pkg, purge: choice === 'purge' });
+  if (res.ok) {
+    toast(`${choice === 'purge' ? 'Purged' : 'Removed'}: ${pkg}`, 'success');
+    _installedPkgs = _installedPkgs.filter(p => p.name !== pkg);
+    $('installed-count').textContent = `${_installedPkgs.length} TwinCAT package${_installedPkgs.length !== 1 ? 's' : ''} installed`;
+    renderInstalledTable();
+  } else {
+    toast(`Failed to ${choice === 'purge' ? 'purge' : 'remove'} ${pkg} - see terminal`, 'error');
+  }
+});
+
+// Uninstall confirmation - modeled on askProxyChoice(), same three-way
+// modal pattern (two real actions plus cancel), resolves 'remove' | 'purge' | 'cancel'.
+function confirmUninstall(pkgName) {
+  return new Promise((resolve) => {
+    const overlay = $('uninstall-confirm-overlay');
+    $('uninstall-confirm-title').textContent = `Uninstall ${pkgName}?`;
+    $('uninstall-confirm-body').textContent = `This stops and removes ${pkgName} from the CX. Choose whether to also wipe its config files, or cancel to leave it installed.`;
+    const btnRemove = $('uninstall-confirm-remove');
+    const btnPurge = $('uninstall-confirm-purge');
+    const btnCancel = $('uninstall-confirm-cancel');
+    function finish(choice) {
+      overlay.classList.remove('open');
+      btnRemove.removeEventListener('click', onRemove);
+      btnPurge.removeEventListener('click', onPurge);
+      btnCancel.removeEventListener('click', onCancel);
+      resolve(choice);
+    }
+    function onRemove() { finish('remove'); }
+    function onPurge() { finish('purge'); }
+    function onCancel() { finish('cancel'); }
+    btnRemove.addEventListener('click', onRemove);
+    btnPurge.addEventListener('click', onPurge);
+    btnCancel.addEventListener('click', onCancel);
+    overlay.classList.add('open');
+  });
 }
 
 $('btn-fetch-installed').addEventListener('click', async () => {

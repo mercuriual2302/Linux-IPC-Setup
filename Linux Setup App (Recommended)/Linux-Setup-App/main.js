@@ -1501,6 +1501,56 @@ ${REBOOT_CHECK_SNIPPET}
   }
 });
 
+// Uninstall a single TwinCAT package. Deliberately scoped to the "installed
+// packages" (TwinCAT) list only, not the system-updates list - kernel/
+// systemd/openssh-server are too easy to brick a remote CX with. No feed
+// or proxy involvement at all here, unlike install/upgrade - removing an
+// already-installed package never needs to reach the Beckhoff feed.
+ipcMain.handle('cx:uninstall-package', async (_evt, opts) => {
+  const { host, password, port, pkg, purge } = opts;
+  const sessionId = `uninstall-${Date.now()}`;
+  const aptCmd = purge ? 'purge' : 'remove';
+  const esc = (s) => String(s || '').replace(/'/g, "'\\''");
+  const script = `#!/bin/bash
+set -e
+export TERM=dumb
+export DEBIAN_FRONTEND=noninteractive
+APT_OPTS='-o Dpkg::Progress-Fancy=0 -o Dpkg::Use-Pty=0 -o APT::Color=0'
+SUDO_PASS='${esc(password)}'
+_sudo() { echo "$SUDO_PASS" | sudo -S -p '' "$@"; }
+_sudo -v
+trap 'rm -f "$0"' EXIT
+echo "[CX] ${purge ? 'Purging' : 'Removing'} ${esc(pkg)}..."
+_sudo apt $APT_OPTS ${aptCmd} -y '${esc(pkg)}'
+echo "[CX] ${purge ? 'Purge' : 'Removal'} complete."
+${REBOOT_CHECK_SNIPPET}
+`;
+  try {
+    const mgr = new SSHManager();
+    activeSessions.set(sessionId, mgr);
+    sendToRenderer('ssh:output', { sessionId, data: `\x1b[0;36m[LOCAL]\x1b[0m Starting ${purge ? 'purge' : 'removal'} of ${pkg} on ${host}...\r\n` });
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+    await withTempScript('cx-uninstall', script, (p) => mgr.putFile(p, '/tmp/cx_uninstall.sh'));
+    let fullOutput = '';
+    const result = await mgr.execStream('chmod +x /tmp/cx_uninstall.sh && /tmp/cx_uninstall.sh', {
+      onStdout: (c) => { fullOutput += c.toString(); sendToRenderer('ssh:output', { sessionId, data: c.toString() }); },
+      onStderr: (c) => { fullOutput += c.toString(); sendToRenderer('ssh:output', { sessionId, data: c.toString() }); }
+    });
+    mgr.dispose();
+    activeSessions.delete(sessionId);
+    const needsReboot = parseNeedsReboot(fullOutput);
+    sendToRenderer('ssh:status', {
+      sessionId,
+      status: result.code === 0 ? 'complete' : 'failed',
+      message: result.code === 0 ? (purge ? 'Purge complete' : 'Removal complete') : `Exit ${result.code}`
+    });
+    return { ok: result.code === 0, sessionId, needsReboot };
+  } catch (err) {
+    sendToRenderer('ssh:status', { sessionId, status: 'failed', message: err.message });
+    return { ok: false, error: err.message };
+  }
+});
+
 // Post-install verification
 ipcMain.handle('cx:verify', async (_evt, opts) => {
   const { host, password, port, packages = [] } = opts;
