@@ -95,7 +95,7 @@ Captures a known-good CX's desired state - feed channel, TwinCAT packages with p
 Runs one action - apply a recipe, switch feed, or run a full system upgrade - across many CXs at once instead of connecting to each one in turn. Add targets by scanning the network (pick which discovered devices to add with checkboxes, nothing gets added automatically), loading saved profiles, or typing an IP. Preflight checks reachability and reads back each device's real hostname before you run anything. Two modes: network mode runs a configurable number of devices in parallel with a circuit breaker to stop the whole run if too many fail at once, sequential mode walks through devices one at a time for a plug-in-one-swap-the-next workflow. If a system upgrade needs a reboot to take effect, the app tells you which devices and offers to reboot them all in one click. Internet-through-laptop proxying is checked across every target before the run starts, not just one representative device.
 
 ### Services, Network, Firewall, Users, Packages
-Day to day management once a CX is already set up. Restart services, change network settings, manage the firewall, add or remove users, switch the APT feed, and check for package updates, all without running a full setup again.
+Day to day management once a CX is already set up. Restart services, change network settings, manage the firewall, add or remove users, switch the APT feed, check for package updates, and uninstall a TwinCAT package you no longer need, with the choice to keep or also purge its config files, all without running a full setup again.
 
 ### TF1200 UI Client
 Configures the kiosk browser that shows your HMI on a screen plugged into the CX. Reads the existing config first so nothing gets overwritten by accident, and takes a timestamped backup before applying changes.
@@ -112,17 +112,26 @@ Press Scan in the connection bar to find a CX without typing its IP. Works two w
 ### Internet access for the CX
 If Setup or credential validation detects the CX can't reach the Beckhoff package feed, the app offers to route that traffic through your own laptop's internet connection instead. You're always asked first, nothing happens automatically. Once you've answered for a given CX, the same answer is reused for the rest of that session, you won't be asked twice for the same unit. Fleet mode makes this decision separately, checking every target in the run rather than just one device, since a fleet can be a mix of reachable and isolated CXs.
 
+### Update notifications
+The app checks for a newer version in the background on launch. If one's found, a banner appears with the option to update, checking happens automatically, acting on it never does. If a signed release is available it downloads and installs through the app directly once you click through; otherwise the banner links out to the release on GitHub instead.
+
 ---
 
 ## Connection profiles
 
-The Profiles button in the connection bar saves and loads named CX configurations (name, IP, Administrator password, optionally MyBeckhoff credentials). Profiles are stored locally in the app's user data folder and are never committed to the repo. Click a saved profile to load every field at once.
+Two separate kinds of saved profile sit in the connection bar.
+
+**Profiles** saves and loads named CX configurations (name, IP, Administrator password). Click a saved profile to load every field at once.
+
+**MyBeckhoff** saves named MyBeckhoff account credentials, separate from any specific CX. A profile is validated the moment you save it, checked directly against the Beckhoff apt server from your laptop, no CX connection needed, so once it's saved it's trusted everywhere without retyping or re-checking it. Setup, Recipes, and Fleet all offer the same saved profiles from one dropdown, and picking one shows a validated mark instantly. Typing credentials in manually still works everywhere too, that just needs its own manual validate.
+
+Both are stored locally in the app's user data folder and are never committed to the repo. MyBeckhoff credentials are additionally encrypted at rest using Electron's `safeStorage` API (Windows DPAPI / macOS Keychain). If the OS has no keyring available to back that, they're saved in plain text instead with a clear warning shown in the app.
 
 ---
 
 ## Credentials
 
-MyBeckhoff credentials are used only to write `/etc/apt/auth.conf.d/bhf.conf` on the CX. They are not stored locally anywhere. The Administrator password is held in memory for the duration of the session and used only for SSH authentication and `sudo` operations on the CX. Connection profiles are stored in the OS user data folder outside the repo.
+MyBeckhoff credentials are used to write `/etc/apt/auth.conf.d/bhf.conf` on the CX and, if saved as a named MyBeckhoff profile, are stored locally encrypted (see Connection profiles above). The Administrator password is held in memory for the duration of the session and used only for SSH authentication and `sudo` operations on the CX. Connection profiles are stored in the OS user data folder outside the repo.
 
 ---
 
@@ -160,4 +169,4 @@ Linux Setup Guide.docx  -- end user guide
 - Shutting down the CX from the Power menu is a full ACPI power-off. It will not come back on its own. Use Restart if you want it to come back automatically.
 - The `trixie-unstable` feed should only be used if Beckhoff support specifically instructs you to. Stable is the right choice for production deployments.
 - SFTP needs the `sftp-server` subsystem enabled on the CX's sshd. It's present on the standard CX9240 image, but if you're working with a more stripped-down image and Files won't connect, check `/etc/ssh/sshd_config` for a `Subsystem sftp ...` line.
-- Connection profiles are stored in `%APPDATA%\Linux Setup Console\cx-profiles.json` on Windows (Electron keys the user data folder off the product name). They are not synced to any repo.
+- Connection profiles are stored in `%APPDATA%\Linux Setup Console\cx-profiles.json` on Windows (Electron keys the user data folder off the product name). MyBeckhoff profiles live alongside it in the same folder, as `mybeckhoff-profiles.json`, encrypted. Neither is synced to any repo.
