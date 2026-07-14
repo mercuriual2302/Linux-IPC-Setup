@@ -4769,6 +4769,7 @@ $('btn-check-image')?.addEventListener('click', async () => {
     const spaceBelow = vh - rect.bottom - margin;
     const spaceAbove = rect.top - margin;
     const spaceRight = vw - rect.right - margin;
+    console.log('[tour] step', idx, TOUR_STEPS[idx].title, JSON.stringify({ rect: { left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom, width: rect.width, height: rect.height }, spaceBelow, spaceAbove, spaceRight, tw, th, vw, vh }));
     let top, left;
 
     if (spaceBelow >= th) {
