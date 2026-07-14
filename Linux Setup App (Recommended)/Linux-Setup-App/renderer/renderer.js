@@ -4747,13 +4747,16 @@ $('btn-check-image')?.addEventListener('click', async () => {
     return null;
   }
 
+  function clamp(v, min, max) { return Math.max(min, Math.min(v, max)); }
+
+  // Tries below first, then above, then beside - a tall spotlight (a sidebar
+  // group spanning several items) plus a multi-line tooltip can together be
+  // taller than the viewport, so neither above nor below ever has room, and
+  // the sidebar always has the main content area open to its right for
+  // exactly that case.
   function positionTooltip(rect) {
     const margin = 12;
     const vw = window.innerWidth, vh = window.innerHeight;
-    // Width is fixed by CSS (260px), height only varies a little with body
-    // text length - both readable directly, wherever the tooltip currently
-    // sits, no need to move it anywhere first. Falls back to sane defaults
-    // if it somehow isn't rendered yet, rather than trusting a 0.
     const tw = tooltip.offsetWidth || 260;
     const th = tooltip.offsetHeight || 120;
 
@@ -4763,12 +4766,25 @@ $('btn-check-image')?.addEventListener('click', async () => {
       return;
     }
 
-    let top = rect.bottom + margin;
-    if (top + th > vh - margin) top = rect.top - th - margin;
-    if (top < margin) top = margin;
+    const spaceBelow = vh - rect.bottom - margin;
+    const spaceAbove = rect.top - margin;
+    const spaceRight = vw - rect.right - margin;
+    let top, left;
 
-    let left = rect.left + (rect.width / 2) - (tw / 2);
-    left = Math.max(margin, Math.min(left, vw - tw - margin));
+    if (spaceBelow >= th) {
+      top = rect.bottom + margin;
+      left = clamp(rect.left + rect.width / 2 - tw / 2, margin, vw - tw - margin);
+    } else if (spaceAbove >= th) {
+      top = rect.top - th - margin;
+      left = clamp(rect.left + rect.width / 2 - tw / 2, margin, vw - tw - margin);
+    } else if (spaceRight >= tw) {
+      left = rect.right + margin;
+      top = clamp(rect.top, margin, vh - th - margin);
+    } else {
+      // genuinely nowhere clean fits - best-effort clamp rather than fail
+      top = clamp(rect.bottom + margin, margin, vh - th - margin);
+      left = clamp(rect.left + rect.width / 2 - tw / 2, margin, vw - tw - margin);
+    }
 
     tooltip.style.top = top + 'px';
     tooltip.style.left = left + 'px';
