@@ -4692,3 +4692,139 @@ $('btn-check-image')?.addEventListener('click', async () => {
 
   dismiss.addEventListener('click', () => { banner.style.display = 'none'; });
 })();
+
+// First-run onboarding tour. Orientation, not documentation - one stop per
+// sidebar group rather than per tab, the wiki is where real depth lives.
+// Every step targets something already visible in the app's chrome
+// (connbar, sidebar, terminal toggle) - nothing here ever switches tabs or
+// changes state, so re-running the tour mid-session never disrupts whatever
+// the user was actually doing.
+(function initTour() {
+  const TOUR_STEPS = [
+    { title: 'Welcome', body: "A quick look around before you start. Skip any time, and you can bring this back later from the ? button." },
+    { spanFrom: '#cx-ip', spanTo: '#btn-test', title: 'Connection bar', body: 'Enter a CX IP and Administrator password here, or click Scan to find one on the network without knowing its IP.' },
+    { selector: '#global-conn', title: 'Connection status', body: "This checks in the background on its own, so it always shows whether the CX is actually reachable, not just whatever you last clicked." },
+    { selector: '#profile-wrap', title: 'Profiles', body: 'Save named CX configurations, IP and password, so you never have to type the same details twice.' },
+    { selector: '#mybk-wrap', title: 'MyBeckhoff', body: "Save a named MyBeckhoff account. It's validated the moment you save it, then reused everywhere without retyping." },
+    { selector: '#power-wrap', title: 'Power', body: 'Restart or shut down the connected CX remotely.' },
+    { selector: '#sidebar', title: 'Navigation', body: 'Everything lives here, grouped by what it does. The rest of this tour is a quick pass through each group.' },
+    { selector: '[data-tab="dashboard"]', title: 'Dashboard', body: 'A live read-out of the connected CX, hostname, uptime, TwinCAT version, storage, and more.' },
+    { spanFrom: '[data-tab="setup"]', spanTo: '[data-tab="fleet"]', title: 'Provision', body: 'Setup runs the full first-time provisioning flow. Recipes capture a known-good CX to replay elsewhere. Fleet runs one action across many CXs at once.' },
+    { spanFrom: '[data-tab="services"]', spanTo: '[data-tab="packages"]', title: 'Manage', body: 'Day to day work on a CX that is already set up, services, network, firewall, users, and packages.' },
+    { selector: '[data-tab="tf1200"]', title: 'Configure', body: 'Configures the kiosk browser that shows your HMI on a screen plugged into the CX.' },
+    { spanFrom: '[data-tab="shell"]', spanTo: '[data-tab="sftp"]', title: 'Tools', body: 'A real interactive terminal, and a dual-pane file browser for moving things on and off the CX.' },
+    { selector: '#btn-open-term', title: 'Terminal drawer', body: 'Live output from whatever you run shows up here, separate from Shell, this is a passive log of what the app itself is doing.' },
+    { title: "That's everything", body: 'Click the ? next to the theme toggle any time you want this again.' }
+  ];
+
+  const spotlight = $('tour-spotlight');
+  const tooltip = $('tour-tooltip');
+  const titleEl = $('tour-title');
+  const bodyEl = $('tour-body');
+  const countEl = $('tour-count');
+  const nextBtn = $('tour-next');
+  const skipBtn = $('tour-skip');
+  const tourBtn = $('btn-tour');
+  if (!spotlight || !tooltip || !tourBtn) return;
+
+  let idx = 0;
+
+  function stepRect(step) {
+    if (step.spanFrom && step.spanTo) {
+      const a = document.querySelector(step.spanFrom);
+      const b = document.querySelector(step.spanTo);
+      if (!a || !b) return null;
+      const ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+      const left = Math.min(ra.left, rb.left), top = Math.min(ra.top, rb.top);
+      const right = Math.max(ra.right, rb.right), bottom = Math.max(ra.bottom, rb.bottom);
+      return { left, top, width: right - left, height: bottom - top };
+    }
+    if (step.selector) {
+      const el = document.querySelector(step.selector);
+      if (!el) return null;
+      return el.getBoundingClientRect();
+    }
+    return null;
+  }
+
+  // Places the tooltip near the target, preferring below, flipping above if
+  // there's not enough room, and always clamped so it can never render
+  // outside the actual window regardless of screen size or target position.
+  function positionTooltip(rect) {
+    const margin = 12;
+    const vw = window.innerWidth, vh = window.innerHeight;
+    tooltip.style.top = '-9999px'; // measure off-screen first for a real height
+    tooltip.style.left = '-9999px';
+    const tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
+
+    if (!rect) {
+      tooltip.style.top = ((vh - th) / 2) + 'px';
+      tooltip.style.left = ((vw - tw) / 2) + 'px';
+      return;
+    }
+
+    let top = rect.bottom + margin;
+    if (top + th > vh - margin) top = rect.top - th - margin;
+    if (top < margin) top = margin;
+
+    let left = rect.left + (rect.width / 2) - (tw / 2);
+    left = Math.max(margin, Math.min(left, vw - tw - margin));
+
+    tooltip.style.top = top + 'px';
+    tooltip.style.left = left + 'px';
+  }
+
+  function renderStep() {
+    const step = TOUR_STEPS[idx];
+    const rect = stepRect(step);
+
+    if (rect) {
+      spotlight.style.display = 'block';
+      spotlight.style.top = (rect.top - 4) + 'px';
+      spotlight.style.left = (rect.left - 4) + 'px';
+      spotlight.style.width = (rect.width + 8) + 'px';
+      spotlight.style.height = (rect.height + 8) + 'px';
+    } else {
+      spotlight.style.display = 'none';
+    }
+
+    titleEl.textContent = step.title;
+    bodyEl.textContent = step.body;
+    countEl.textContent = (idx + 1) + ' / ' + TOUR_STEPS.length;
+    nextBtn.textContent = idx === TOUR_STEPS.length - 1 ? 'Finish' : 'Next';
+    positionTooltip(rect);
+  }
+
+  function startTour() {
+    idx = 0;
+    spotlight.style.display = 'block';
+    tooltip.style.display = 'block';
+    renderStep();
+  }
+
+  // Skipping and finishing both mean the same thing: don't show this
+  // automatically again. The ? button is always there for anyone who
+  // changes their mind later.
+  function endTour() {
+    spotlight.style.display = 'none';
+    tooltip.style.display = 'none';
+    localStorage.setItem('tc-tour-seen', '1');
+  }
+
+  nextBtn.addEventListener('click', () => {
+    if (idx === TOUR_STEPS.length - 1) { endTour(); return; }
+    idx++;
+    renderStep();
+  });
+  skipBtn.addEventListener('click', endTour);
+  tourBtn.addEventListener('click', startTour);
+  window.addEventListener('resize', () => {
+    if (tooltip.style.display === 'block') renderStep();
+  });
+
+  if (!localStorage.getItem('tc-tour-seen')) {
+    // Small delay so the tour appears after the app's own initial render
+    // and connection checks have settled, not layered on top of them.
+    setTimeout(startTour, 800);
+  }
+})();

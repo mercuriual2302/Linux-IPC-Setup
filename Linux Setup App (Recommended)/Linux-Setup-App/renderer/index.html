@@ -16,6 +16,19 @@
     <button id="update-banner-dismiss" title="Dismiss">✕</button>
   </div>
 
+  <div class="tour-spotlight" id="tour-spotlight" style="display:none"></div>
+  <div class="tour-tooltip" id="tour-tooltip" style="display:none">
+    <div class="tour-tooltip-title" id="tour-title"></div>
+    <div class="tour-tooltip-body" id="tour-body"></div>
+    <div class="tour-tooltip-footer">
+      <span class="tour-tooltip-count" id="tour-count"></span>
+      <div class="tour-tooltip-actions">
+        <button class="tour-skip-btn" id="tour-skip">Skip tour</button>
+        <button class="tour-next-btn" id="tour-next">Next</button>
+      </div>
+    </div>
+  </div>
+
   <!-- PERSISTENT CONNECTION BAR -->
   <div class="connbar">
     <div class="connbar-left">
@@ -97,6 +110,7 @@
           </button>
         </div>
       </div>
+      <button class="theme-toggle" id="btn-tour" title="Show the tour">?</button>
       <button class="theme-toggle" id="theme-toggle" title="Switch theme">☀ LIGHT</button>
     </div>
   </div>
