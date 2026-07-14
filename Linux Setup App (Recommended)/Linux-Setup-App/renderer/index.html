@@ -232,20 +232,6 @@
         <div class="section">
           <div class="section-label">packages</div>
 
-          <div class="pkg-section-hdr">Runtime - always installed</div>
-          <div class="pkg-grid" style="margin-bottom:.25rem">
-            <div class="pkg-card required">
-              <div class="pkg-badge badge-req">REQUIRED</div>
-              <div class="pkg-name"><span class="pkg-check"><svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></span>tc31-xar-um</div>
-              <div class="pkg-desc">TwinCAT 3 XAR base runtime</div>
-            </div>
-            <div class="pkg-card required">
-              <div class="pkg-badge badge-req">REQUIRED</div>
-              <div class="pkg-name"><span class="pkg-check"><svg viewBox="0 0 8 8"><polyline points="1,4 3,6 7,2" stroke="#000" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></span>console-setup</div>
-              <div class="pkg-desc">Keyboard / console config</div>
-            </div>
-          </div>
-
           <div class="pkg-section-hdr">Optional functions - click to toggle</div>
           <div class="pkg-controls">
             <input class="pkg-search" type="text" id="pkg-search" placeholder="filter...">
@@ -1014,6 +1000,19 @@
       <button class="power-confirm-btn" id="uninstall-confirm-remove">REMOVE (KEEP CONFIG FILES)</button>
       <button class="power-confirm-btn go danger" id="uninstall-confirm-purge">PURGE (REMOVE CONFIG TOO)</button>
       <button class="power-confirm-btn" id="uninstall-confirm-cancel">CANCEL</button>
+    </div>
+  </div>
+</div>
+
+<!-- offered before Setup runs, only if console-setup isn't already on the CX -->
+<div id="console-setup-confirm-overlay" class="power-confirm-overlay">
+  <div class="proxy-offer-modal">
+    <div class="power-confirm-glyph">⚠</div>
+    <div class="power-confirm-title">console-setup isn't installed yet</div>
+    <div class="power-confirm-body">This CX doesn't have console-setup installed. Some parts of the app may not work correctly without it. It'll be installed automatically as part of this run.</div>
+    <div class="proxy-offer-actions">
+      <button class="power-confirm-btn go" id="console-setup-confirm-continue">CONTINUE</button>
+      <button class="power-confirm-btn" id="console-setup-confirm-cancel">CANCEL</button>
     </div>
   </div>
 </div>

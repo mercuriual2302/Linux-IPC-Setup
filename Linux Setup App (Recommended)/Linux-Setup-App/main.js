@@ -1506,6 +1506,23 @@ ${REBOOT_CHECK_SNIPPET}
 // systemd/openssh-server are too easy to brick a remote CX with. No feed
 // or proxy involvement at all here, unlike install/upgrade - removing an
 // already-installed package never needs to reach the Beckhoff feed.
+// Quick presence check for a single package - used before Setup runs to
+// decide whether console-setup needs a heads-up dialog. Deliberately minimal:
+// no version info, no dependency resolution, just "is it there right now".
+ipcMain.handle('cx:check-package-installed', async (_evt, opts) => {
+  const { host, password, port, pkg } = opts;
+  const esc = (s) => String(s || '').replace(/'/g, "'\\''");
+  try {
+    const mgr = new SSHManager();
+    await mgr.connect({ host, username: 'Administrator', password, port: port || 22 });
+    const result = await mgr.exec(`dpkg -l '${esc(pkg)}' 2>/dev/null | grep -q "^ii" && echo INSTALLED || echo MISSING`);
+    mgr.dispose();
+    return { ok: true, installed: /INSTALLED/.test(result.stdout || '') };
+  } catch (err) {
+    return { ok: false, error: err.message || String(err) };
+  }
+});
+
 ipcMain.handle('cx:uninstall-package', async (_evt, opts) => {
   const { host, password, port, pkg, purge } = opts;
   const sessionId = `uninstall-${Date.now()}`;
