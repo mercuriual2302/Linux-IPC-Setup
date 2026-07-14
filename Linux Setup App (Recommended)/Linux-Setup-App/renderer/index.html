@@ -1018,6 +1018,19 @@
   </div>
 </div>
 
+<!-- offered before Setup runs, only if console-setup isn't already on the CX -->
+<div id="console-setup-confirm-overlay" class="power-confirm-overlay">
+  <div class="proxy-offer-modal">
+    <div class="power-confirm-glyph">⚠</div>
+    <div class="power-confirm-title">console-setup isn't installed yet</div>
+    <div class="power-confirm-body">This CX doesn't have console-setup installed. Some parts of the app may not work correctly without it. It'll be installed automatically as part of this run.</div>
+    <div class="proxy-offer-actions">
+      <button class="power-confirm-btn go" id="console-setup-confirm-continue">CONTINUE</button>
+      <button class="power-confirm-btn" id="console-setup-confirm-cancel">CANCEL</button>
+    </div>
+  </div>
+</div>
+
 <!-- device discovery -->
 <div id="scan-overlay" class="scan-overlay">
   <div class="scan-modal">

@@ -4,6 +4,7 @@
 
 // Curated package list. Extras from apt-cache search get appended as discovered.
 const PACKAGES_SEED = [
+  { name:'tc31-xar-um',                  desc:'TwinCAT 3 XAR runtime',                   group:'System',        default:false  },
   { name:'tf1200-ui-client',             desc:'TF1200 TwinCAT UI Client',                group:'HMI / UI',      default:false  },
   { name:'tf1810-plc-hmi-web',           desc:'TF1810 TC3 PLC HMI Web',                  group:'HMI / UI',      default:false },
   { name:'tf2000-hmi-server',            desc:'TF2000 HMI Server',                       group:'HMI / UI',      default:false  },
@@ -33,8 +34,6 @@ let PACKAGES = [...PACKAGES_SEED];
 const selectedPkgs = new Set(PACKAGES.filter(p => p.default).map(p => p.name));
 const pkgVersions = {};
 PACKAGES.forEach(p => pkgVersions[p.name] = { mode:'latest', version:'' });
-pkgVersions['tc31-xar-um'] = { mode:'latest', version:'' };
-pkgVersions['console-setup'] = { mode:'latest', version:'' };
 
 // TF1200 JSON config state
 const jsonConfig = {
@@ -429,7 +428,7 @@ $('btn-fetch-pkgs').addEventListener('click', async () => {
 
   // Merge discovered packages with seed list, preserving curated descriptions.
   const existingNames = new Set(PACKAGES.map(p => p.name));
-  const runtimePkgs = new Set(['tc31-xar-um', 'console-setup']);  // shown separately, don't duplicate
+  const runtimePkgs = new Set(['console-setup']);  // never shown as a selectable package
   let added = 0;
   for (const p of res.packages) {
     if (runtimePkgs.has(p.name) || existingNames.has(p.name)) continue;
@@ -545,7 +544,7 @@ $('sel-none').addEventListener('click', () => { selectedPkgs.clear(); renderPkgG
 // Version list
 function renderVersionList() {
   const container = $('ver-list');
-  const allPkgs = ['tc31-xar-um', 'console-setup', ...PACKAGES.filter(p => selectedPkgs.has(p.name)).map(p => p.name)];
+  const allPkgs = PACKAGES.filter(p => selectedPkgs.has(p.name)).map(p => p.name);
   container.innerHTML = '';
   allPkgs.forEach(name => {
     if (!pkgVersions[name]) pkgVersions[name] = { mode:'latest', version:'' };
@@ -555,8 +554,7 @@ function renderVersionList() {
 
     const nameCol = document.createElement('div');
     nameCol.style.cssText = 'font-family:var(--tc-mono);font-size:11px;color:var(--tc-text);flex:0 0 240px;padding-top:.25rem';
-    const isRequired = name === 'tc31-xar-um' || name === 'console-setup';
-    nameCol.innerHTML = `<span style="color:${isRequired ? 'var(--tc-warn)' : 'var(--tc-accent2)'}">${escapeHtml(name)}</span>`;
+    nameCol.innerHTML = `<span style="color:var(--tc-accent2)">${escapeHtml(name)}</span>`;
 
     const rightCol = document.createElement('div');
     rightCol.style.cssText = 'flex:1';
@@ -1061,6 +1059,38 @@ async function runCredsValidate({ host, password, beckhoffUser, beckhoffPass, bt
   return false;
 }
 
+// Informational dialog offered before Setup runs, only if console-setup
+// isn't already on the CX. Not a real either/or choice like uninstall's
+// remove/purge, just Continue or back out entirely.
+function showConsoleSetupDialog() {
+  return new Promise((resolve) => {
+    const overlay = $('console-setup-confirm-overlay');
+    const btnContinue = $('console-setup-confirm-continue');
+    const btnCancel = $('console-setup-confirm-cancel');
+    function finish(proceed) {
+      overlay.classList.remove('open');
+      btnContinue.removeEventListener('click', onContinue);
+      btnCancel.removeEventListener('click', onCancel);
+      resolve(proceed);
+    }
+    function onContinue() { finish(true); }
+    function onCancel() { finish(false); }
+    btnContinue.addEventListener('click', onContinue);
+    btnCancel.addEventListener('click', onCancel);
+    overlay.classList.add('open');
+  });
+}
+
+// Returns true if it's fine to proceed with Setup, false if the user backed
+// out. If the check itself fails (SSH hiccup) this fails open rather than
+// blocking the whole run over a diagnostic that didn't complete - Setup's own
+// dpkg-skip-if-present logic still does the right thing either way.
+async function ensureConsoleSetupAcknowledged(host, password) {
+  const res = await window.api.checkPackageInstalled({ host, password, port: 22, pkg: 'console-setup' }).catch(() => null);
+  if (!res || !res.ok || res.installed) return true;
+  return await showConsoleSetupDialog();
+}
+
 $('btn-run-setup').addEventListener('click', async () => {
   const ip = $('cx-ip').value.trim();
   const cxPass = $('cx-pass').value;
@@ -1080,11 +1110,18 @@ $('btn-run-setup').addEventListener('click', async () => {
   if (proxyDecision.cancelled) return;
   const { proxyHost, proxyPort } = proxyDecision;
 
+  runBtn.disabled = true;
+  runBtn.textContent = 'CHECKING CONSOLE-SETUP...';
+  const consoleSetupOk = await ensureConsoleSetupAcknowledged(ip, cxPass);
+  runBtn.textContent = prevLabel;
+  runBtn.disabled = false;
+  if (!consoleSetupOk) return;
+
   const pkgs = [...selectedPkgs];
   if (!confirm(
     `Ready to run full setup on ${ip}?\n\n` +
     `Feed: ${selectedFeed}\n` +
-    `Packages: tc31-xar-um, console-setup${pkgs.length ? ', ' + pkgs.join(', ') : ''}\n\n` +
+    `Packages: ${pkgs.length ? pkgs.join(', ') : '(none selected)'}\n\n` +
     `This will take 10–15 min and will REBOOT the CX.`
   )) return;
 

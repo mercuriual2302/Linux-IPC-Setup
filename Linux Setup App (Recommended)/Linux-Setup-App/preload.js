@@ -42,6 +42,7 @@ contextBridge.exposeInMainWorld('api', {
   fetchUpdates:   (opts) => ipcRenderer.invoke('cx:fetch-updates', opts),
   fetchSystemUpdates: (opts) => ipcRenderer.invoke('cx:fetch-system-updates', opts),
   runUpgrade:     (opts) => ipcRenderer.invoke('cx:upgrade', opts),
+  checkPackageInstalled: (opts) => ipcRenderer.invoke('cx:check-package-installed', opts),
   uninstallPackage: (opts) => ipcRenderer.invoke('cx:uninstall-package', opts),
   runVerify:      (opts) => ipcRenderer.invoke('cx:verify', opts),
   discoverDevices:   ()     => ipcRenderer.invoke('cx:discover'),
