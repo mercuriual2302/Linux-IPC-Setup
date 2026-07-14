@@ -80,17 +80,17 @@ The app is one window. A connection bar runs across the top, enter the CX IP and
 
 A collapsible terminal drawer sits at the bottom of the window and shows live output from whatever action you run. This is separate from the Shell tool, the drawer is a passive log of what the app itself is doing, Shell is a real interactive terminal session you type into yourself.
 
+A `?` button next to the theme toggle replays the first-run tour, a short walkthrough of the connection bar, sidebar groups, and terminal drawer. It shows automatically the first time the app opens and is skippable at any point after that.
+
 ### Dashboard
 Live system info: hostname, uptime, kernel, TwinCAT version, APT feed, storage, memory, network interfaces, and service status. Loads automatically once you're connected.
 
 ### Setup
 The main provisioning flow. Pick a saved MyBeckhoff profile or enter your credentials manually, choose a feed channel (`trixie-stable` recommended, `trixie-unstable` only if Beckhoff support tells you to), pick your packages, optionally pin specific versions, and run.
 
-Always installed:
-- `tc31-xar-um` (TwinCAT 3 XAR runtime)
-- `console-setup`
+`tc31-xar-um` (the TwinCAT 3 XAR runtime) is just a normal package in the list now, tick it like anything else, it's no longer forced. `console-setup` is handled silently in the background instead, installed only if it isn't already there, with a heads-up dialog before it happens, it never appears as a selectable package at all.
 
-Optional packages are fetched live from the connected feed, so the list always reflects what's actually available.
+Optional packages, `tc31-xar-um` included, are fetched live from the connected feed, so the list always reflects what's actually available.
 
 If the HMI server has already been initialised from a previous run, setup skips re-initialisation and just ensures the service is running, so you can run setup more than once without wiping your HMI project. The same goes for MyBeckhoff credentials, if they're already saved on the CX from a past run, you don't need to retype the password to run setup again.
 
