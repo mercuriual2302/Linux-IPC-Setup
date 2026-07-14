@@ -4747,15 +4747,15 @@ $('btn-check-image')?.addEventListener('click', async () => {
     return null;
   }
 
-  // Places the tooltip near the target, preferring below, flipping above if
-  // there's not enough room, and always clamped so it can never render
-  // outside the actual window regardless of screen size or target position.
   function positionTooltip(rect) {
     const margin = 12;
     const vw = window.innerWidth, vh = window.innerHeight;
-    tooltip.style.top = '-9999px'; // measure off-screen first for a real height
-    tooltip.style.left = '-9999px';
-    const tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
+    // Width is fixed by CSS (260px), height only varies a little with body
+    // text length - both readable directly, wherever the tooltip currently
+    // sits, no need to move it anywhere first. Falls back to sane defaults
+    // if it somehow isn't rendered yet, rather than trusting a 0.
+    const tw = tooltip.offsetWidth || 260;
+    const th = tooltip.offsetHeight || 120;
 
     if (!rect) {
       tooltip.style.top = ((vh - th) / 2) + 'px';
@@ -4775,24 +4775,32 @@ $('btn-check-image')?.addEventListener('click', async () => {
   }
 
   function renderStep() {
-    const step = TOUR_STEPS[idx];
-    const rect = stepRect(step);
+    // Fail-safe: if anything here throws for any reason, close the tour
+    // rather than risk leaving it stuck in a half-rendered state with no
+    // visible way out.
+    try {
+      const step = TOUR_STEPS[idx];
+      const rect = stepRect(step);
 
-    if (rect) {
-      spotlight.style.display = 'block';
-      spotlight.style.top = (rect.top - 4) + 'px';
-      spotlight.style.left = (rect.left - 4) + 'px';
-      spotlight.style.width = (rect.width + 8) + 'px';
-      spotlight.style.height = (rect.height + 8) + 'px';
-    } else {
-      spotlight.style.display = 'none';
+      if (rect) {
+        spotlight.style.display = 'block';
+        spotlight.style.top = (rect.top - 4) + 'px';
+        spotlight.style.left = (rect.left - 4) + 'px';
+        spotlight.style.width = (rect.width + 8) + 'px';
+        spotlight.style.height = (rect.height + 8) + 'px';
+      } else {
+        spotlight.style.display = 'none';
+      }
+
+      titleEl.textContent = step.title;
+      bodyEl.textContent = step.body;
+      countEl.textContent = (idx + 1) + ' / ' + TOUR_STEPS.length;
+      nextBtn.textContent = idx === TOUR_STEPS.length - 1 ? 'Finish' : 'Next';
+      positionTooltip(rect);
+    } catch (e) {
+      console.warn('[tour] step failed, closing tour:', e);
+      endTour();
     }
-
-    titleEl.textContent = step.title;
-    bodyEl.textContent = step.body;
-    countEl.textContent = (idx + 1) + ' / ' + TOUR_STEPS.length;
-    nextBtn.textContent = idx === TOUR_STEPS.length - 1 ? 'Finish' : 'Next';
-    positionTooltip(rect);
   }
 
   function startTour() {
@@ -4818,6 +4826,9 @@ $('btn-check-image')?.addEventListener('click', async () => {
   });
   skipBtn.addEventListener('click', endTour);
   tourBtn.addEventListener('click', startTour);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && tooltip.style.display === 'block') endTour();
+  });
   window.addEventListener('resize', () => {
     if (tooltip.style.display === 'block') renderStep();
   });
