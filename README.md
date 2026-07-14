@@ -1,8 +1,14 @@
 # Linux IPC Setup Console
 
+[![License: MIT](https://img.shields.io/github/license/mercuriual2302/Linux-IPC-Setup)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/mercuriual2302/Linux-IPC-Setup)](https://github.com/mercuriual2302/Linux-IPC-Setup/releases)
+[![Last commit](https://img.shields.io/github/last-commit/mercuriual2302/Linux-IPC-Setup)](https://github.com/mercuriual2302/Linux-IPC-Setup/commits/main)
+![Platform](https://img.shields.io/badge/platform-Windows-0078D6?logo=windows&logoColor=white)
+![Electron](https://img.shields.io/badge/Electron-42-47848F?logo=electron&logoColor=white)
+
 A desktop app for provisioning Beckhoff Linux IPCs without touching a terminal. Point it at a CX, pick your packages, and let it handle the rest over SSH.
 
-Built with Electron. Tested on CX9240 running Debian trixie (arm64).
+Built with Electron. Tested on CX9240 (arm64) and CX5120 (amd64), both running Debian trixie RT Linux.
 
 ---
 
@@ -10,11 +16,13 @@ Built with Electron. Tested on CX9240 running Debian trixie (arm64).
 
 Connects to a target CX over SSH and runs the full provisioning sequence automatically: writes MyBeckhoff APT credentials, sets the feed channel, installs the TwinCAT 3 runtime and any optional packages you select, initialises TF2000 HMI Server if needed, configures TF1200 UI Client, and reboots. Output streams live so you can watch it happen.
 
-Beyond initial setup there's a full set of post-provisioning tools: network configuration, firewall management, user and password management, SSH key installation, package updates, APT feed switching, a live system info dashboard, a device discovery scanner for finding a CX with no known IP, a live interactive shell, and a dual-pane SFTP file browser.
+Beyond initial setup there's a full set of post-provisioning tools: network configuration, firewall management, user and password management, SSH key installation, package updates and uninstalls, APT feed switching, a live system info dashboard, a device discovery scanner for finding a CX with no known IP, a live interactive shell, and a dual-pane SFTP file browser.
 
 Two provisioning workflows sit on top of that: Recipes capture a known-good CX's state into a portable JSON file and replay it onto a fresh unit, and Fleet mode applies a recipe, a feed switch, or a full system upgrade across many CXs at once instead of one at a time.
 
 If the CX itself has no internet access, the app can offer to route package downloads through your own laptop's connection for that run - in fleet mode this is checked across every target, not just one, and shared by the whole run.
+
+The app also checks for its own updates in the background and lets you know when a newer version is available, checking is automatic, installing never is.
 
 ---
 
@@ -28,7 +36,7 @@ If the CX itself has no internet access, the app can offer to route package down
 - Nothing. Just double-click it.
 
 **Target hardware:**
-- Beckhoff CX9240 (or compatible) running Debian trixie RT Linux (arm64)
+- Beckhoff CX9240 (arm64) or CX5120 (amd64), or compatible, running Debian trixie RT Linux
 - SSH enabled, port 22, `Administrator` account active
 - MyBeckhoff account with a TwinCAT software entitlement
 
@@ -76,7 +84,7 @@ A collapsible terminal drawer sits at the bottom of the window and shows live ou
 Live system info: hostname, uptime, kernel, TwinCAT version, APT feed, storage, memory, network interfaces, and service status. Loads automatically once you're connected.
 
 ### Setup
-The main provisioning flow. Enter your MyBeckhoff credentials, choose a feed channel (`trixie-stable` recommended, `trixie-unstable` only if Beckhoff support tells you to), pick your packages, optionally pin specific versions, and run.
+The main provisioning flow. Pick a saved MyBeckhoff profile or enter your credentials manually, choose a feed channel (`trixie-stable` recommended, `trixie-unstable` only if Beckhoff support tells you to), pick your packages, optionally pin specific versions, and run.
 
 Always installed:
 - `tc31-xar-um` (TwinCAT 3 XAR runtime)
@@ -110,7 +118,7 @@ A dual-pane SFTP browser, your laptop on one side and the CX on the other. Uploa
 Press Scan in the connection bar to find a CX without typing its IP. Works two ways: a CX on the same network as your laptop is found by its MAC address, a CX wired directly to your laptop with no IP assigned yet is found over its link-local address. Devices are tagged Linux or Windows so you don't pick the wrong one, and picking a device asks for its password right there rather than reusing whatever's already in the connection bar.
 
 ### Internet access for the CX
-If Setup or credential validation detects the CX can't reach the Beckhoff package feed, the app offers to route that traffic through your own laptop's internet connection instead. You're always asked first, nothing happens automatically. Once you've answered for a given CX, the same answer is reused for the rest of that session, you won't be asked twice for the same unit. Fleet mode makes this decision separately, checking every target in the run rather than just one device, since a fleet can be a mix of reachable and isolated CXs.
+If Setup or credential validation detects the CX can't reach the Beckhoff package feed, the app offers to route that traffic through your own laptop's internet connection instead. You're always asked first, nothing happens automatically. Once you've answered for a given CX, the same answer is reused for the rest of that session, you won't be asked twice for the same unit, and Setup, Recipes, and Fleet all share the same answer rather than deciding independently. Fleet mode makes this decision separately from a single CX, checking every target in the run rather than just one device, since a fleet can be a mix of reachable and isolated CXs.
 
 ### Update notifications
 The app checks for a newer version in the background on launch. If one's found, a banner appears with the option to update, checking happens automatically, acting on it never does. If a signed release is available it downloads and installs through the app directly once you click through; otherwise the banner links out to the release on GitHub instead.
@@ -168,5 +176,5 @@ Linux Setup Guide.docx  -- end user guide
 - If you change the CX IP via the Network Configurator while connected through that interface, the SSH session will drop. That is expected.
 - Shutting down the CX from the Power menu is a full ACPI power-off. It will not come back on its own. Use Restart if you want it to come back automatically.
 - The `trixie-unstable` feed should only be used if Beckhoff support specifically instructs you to. Stable is the right choice for production deployments.
-- SFTP needs the `sftp-server` subsystem enabled on the CX's sshd. It's present on the standard CX9240 image, but if you're working with a more stripped-down image and Files won't connect, check `/etc/ssh/sshd_config` for a `Subsystem sftp ...` line.
+- SFTP needs the `sftp-server` subsystem enabled on the CX's sshd. It's present on the standard CX9240/CX5120 image, but if you're working with a more stripped-down image and Files won't connect, check `/etc/ssh/sshd_config` for a `Subsystem sftp ...` line.
 - Connection profiles are stored in `%APPDATA%\Linux Setup Console\cx-profiles.json` on Windows (Electron keys the user data folder off the product name). MyBeckhoff profiles live alongside it in the same folder, as `mybeckhoff-profiles.json`, encrypted. Neither is synced to any repo.
