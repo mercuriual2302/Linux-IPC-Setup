@@ -671,8 +671,20 @@ ipcMain.handle('sftp:mkdir', async (_evt, { sessionId, remotePath }) => {
   const s = sftpSessions.get(sessionId);
   if (!s) return { ok: false, error: 'not connected' };
   try { await sftpManager.mkdir(s.sftp, remotePath); return { ok: true }; }
-  catch (err) { return { ok: false, error: err.message || String(err) }; }
+  catch (err) { return { ok: false, error: friendlySftpError(err) }; }
 });
+
+// SFTP has no concept of sudo - it can only reach what the connected account
+// already has permission for. A raw "Permission denied" from the SFTP layer
+// looks like a bug to someone who doesn't know that distinction, this turns
+// it into an actionable message pointing at the tool that actually can do it.
+function friendlySftpError(err) {
+  const msg = err && err.message ? err.message : String(err);
+  if (/permission denied/i.test(msg)) {
+    return 'Permission denied - SFTP can only reach files the connected account already has access to, it has no way to use sudo. For files owned by another user (like TwinCAT license files under /etc/TwinCAT), use Shell instead, which does support sudo.';
+  }
+  return msg;
+}
 
 ipcMain.handle('sftp:delete', async (_evt, { sessionId, remotePath, isDir }) => {
   const s = sftpSessions.get(sessionId);
@@ -681,7 +693,7 @@ ipcMain.handle('sftp:delete', async (_evt, { sessionId, remotePath, isDir }) => 
     if (isDir) await sftpManager.rmdir(s.sftp, remotePath);
     else await sftpManager.unlink(s.sftp, remotePath);
     return { ok: true };
-  } catch (err) { return { ok: false, error: err.message || String(err) }; }
+  } catch (err) { return { ok: false, error: friendlySftpError(err) }; }
 });
 
 ipcMain.handle('sftp:stat', async (_evt, { sessionId, remotePath }) => {
@@ -713,7 +725,7 @@ ipcMain.handle('sftp:upload', async (_evt, { sessionId, localPath, remotePath, t
     });
     return { ok: true };
   } catch (err) {
-    return { ok: false, error: err.message || String(err) };
+    return { ok: false, error: friendlySftpError(err) };
   }
 });
 
