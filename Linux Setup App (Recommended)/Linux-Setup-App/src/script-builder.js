@@ -117,8 +117,6 @@ function buildInnerSetupScript({ feed = 'trixie-stable', packages = [], pkgVersi
     return `dpkg -l ${p} 2>/dev/null | grep -q "^ii" && echo "[CX] ${p} already installed, skipping." || ${install}`;
   }).join('\n');
   const feedLine = sudofy(feedSedLine(feed));
-  const _rtInstall2 = sudofy(installLine('console-setup', pkgVersions));
-  const runtimeLine2 = `dpkg -l console-setup 2>/dev/null | grep -q "^ii" && echo "[CX] console-setup already installed, skipping." || ${_rtInstall2}`;
 
   const tf2000PreCheckBlock = pkgs.includes('tf2000-hmi-server')
     ? `\n${buildWasInstalledSnippet('tf2000-hmi-server', 'TF2000_WAS_INSTALLED')}\n`
@@ -213,9 +211,33 @@ echo "[CX] Installing console-setup..."
 # debconf-set-selections needs data on stdin - but so does sudo -S for the
 # password. Wrap both in a single "sh -c" so _sudo's stdin carries only the
 # password, and the debconf data is piped inside the elevated shell.
+#
+# keyboard-configuration/layout and console-setup/charmap47 are separate
+# follow-up questions from layoutcode/codeset47 respectively (the "which
+# family" vs "which specific option within it" pattern debconf uses here) -
+# missing either one is enough to leave an interactive prompt waiting for
+# input that will never come over a plain SSH exec.
+_sudo sh -c 'echo "keyboard-configuration keyboard-configuration/layout select English (US)" | debconf-set-selections'
 _sudo sh -c 'echo "keyboard-configuration keyboard-configuration/layoutcode string us" | debconf-set-selections'
 _sudo sh -c 'echo "console-setup console-setup/codeset47 select Guess optimal character set" | debconf-set-selections'
-${runtimeLine2}
+_sudo sh -c 'echo "console-setup console-setup/charmap47 select UTF-8" | debconf-set-selections'
+if dpkg -l console-setup 2>/dev/null | grep -q "^ii"; then
+  echo "[CX] console-setup already installed, skipping."
+else
+  # set -e is active for this whole script - temporarily suspend it around
+  # this one command so a timeout or failure here degrades gracefully with a
+  # clear message instead of silently killing the entire Setup run before it
+  # ever reaches TwinCAT itself.
+  set +e
+  echo "$SUDO_PASS" | timeout 180 sudo -S -p '' apt $APT_OPTS install -y console-setup
+  CONSOLE_SETUP_RC=$?
+  set -e
+  if [ "$CONSOLE_SETUP_RC" -eq 124 ]; then
+    echo "[CX] WARNING: console-setup install timed out after 180s, likely an interactive prompt that wasn't fully suppressed. Continuing setup - install it manually later via Shell (sudo apt install console-setup) if needed."
+  elif [ "$CONSOLE_SETUP_RC" -ne 0 ]; then
+    echo "[CX] WARNING: console-setup install failed (exit $CONSOLE_SETUP_RC). Continuing setup."
+  fi
+fi
 ${tf2000PreCheckBlock}${pkgsBlock}${mdpBlock}${hmiBlock}${tf1200Block}
 echo "[CX] Checking for available system upgrades..."
 UPGRADABLE_COUNT=$(apt list --upgradable 2>/dev/null | grep -v '^Listing' | wc -l)
